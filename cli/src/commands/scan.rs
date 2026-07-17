@@ -8,12 +8,12 @@ use std::time::Instant;
 
 use colored::*;
 use tracing::info_span;
-
+use zond_core::config::ZondConfig;
+use zond_core::models::port::PortSet;
+use zond_core::parse;
 use crate::terminal::colors;
 use crate::terminal::print::Print;
 use crate::terminal::spinner::SpinnerGuard;
-
-use zond_engine::{config::ZondConfig, models::port::PortSet, parse};
 
 pub async fn scan(
     targets: &[String],

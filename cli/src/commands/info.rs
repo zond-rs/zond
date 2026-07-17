@@ -18,14 +18,11 @@ use is_root::is_root;
 use pnet::datalink::NetworkInterface;
 use std::{cmp, env};
 use sys_info;
-
+use zond_core::config::ZondConfig;
+use zond_core::models::localhost::{FirewallStatus, IpServiceGroup, Service};
 use crate::{
     terminal::{colors, print},
     zprint,
-};
-use zond_engine::{
-    config::ZondConfig,
-    models::localhost::{FirewallStatus, IpServiceGroup, Service},
 };
 
 /// Prints system and network information to the terminal.
@@ -56,7 +53,7 @@ pub fn info(_cfg: &ZondConfig) -> anyhow::Result<()> {
         printer.print_local_services(&system_info.services)?;
     }
 
-    let interfaces = zond_core::net::interface::get_prioritized_interfaces(5)?;
+    let interfaces = zond_system::interface::get_prioritized_interfaces(5)?;
     print_network_interfaces(&interfaces)?;
 
     Ok(())

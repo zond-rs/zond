@@ -8,7 +8,9 @@ use std::{sync::OnceLock, time::Duration};
 
 use anyhow::bail;
 use colored::*;
-use zond_engine::{config::ZondConfig, models::host::Host, success};
+use zond_core::config::ZondConfig;
+use zond_core::models::host::Host;
+use zond_core::success;
 
 use crate::terminal::{banner, colors, host::PrintableHost};
 

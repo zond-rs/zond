@@ -2430,6 +2430,7 @@ dependencies = [
  "unicode-width",
  "zond-core",
  "zond-engine",
+ "zond-system",
 ]
 
 [[package]]
@@ -2467,6 +2468,7 @@ dependencies = [
  "zond-core",
  "zond-plugins",
  "zond-protocols",
+ "zond-system",
 ]
 
 [[package]]

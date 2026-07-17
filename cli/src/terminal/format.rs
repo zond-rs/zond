@@ -9,7 +9,7 @@ use colored::*;
 use std::net::{IpAddr, Ipv6Addr};
 use zond_core::models::host::Host;
 use zond_core::models::ip;
-use zond_core::utils::redact;
+use zond_core::redact;
 
 // Logic moved from network/ip.rs
 pub fn ipv6_to_type_str(ipv6_addr: &Ipv6Addr) -> &'static str {
@@ -89,7 +89,7 @@ pub fn mac_to_detail(mac_opt: Option<zond_core::models::mac::MacAddr>, redact: b
 
     if let Some(mac) = mac_opt {
         let mac_str: String = if redact {
-            redact::mac_addr(mac)
+            redact::mac_addr(&mac)
         } else {
             mac.to_string()
         };

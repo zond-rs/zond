@@ -34,3 +34,4 @@ zond-engine = { path = "./engine" }
 zond-core = { path = "./core" }
 zond-protocols = { path = "./protocols" }
 zond-plugins = { path = "./plugins" }
+zond-system = { path = "./system" }

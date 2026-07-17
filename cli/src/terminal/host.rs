@@ -56,8 +56,9 @@ impl PrintableHost for Host {
 
         print::as_tree(details);
 
-        if !self.ports().is_empty() {
-            print_services(self.ports());
+        let ports: Vec<_> = self.ports().cloned().collect();
+        if !ports.is_empty() {
+            print_services(&ports);
         }
     }
 }
