@@ -2506,3 +2506,14 @@ dependencies = [
  "tracing",
  "zond-core",
 ]
+
+[[package]]
+name = "zond-system"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "pnet",
+ "rayon",
+ "tracing",
+ "zond-core",
+]

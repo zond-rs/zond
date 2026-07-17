@@ -6,6 +6,7 @@ members = [
     "core",
     "protocols",
     "plugins",
+    "system",
     "tests",
 ]
 
