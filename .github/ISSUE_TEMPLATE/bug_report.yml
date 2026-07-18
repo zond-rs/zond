@@ -1,0 +1,64 @@
+name: 🐛 Bug Report
+description: Create a report to help us improve zond
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A concise description of the bug.
+      placeholder: e.g. Discovery probes local IP during unprivileged scans.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can we make this happen again?
+      placeholder: |
+        1. Run 'zond discover...'
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      placeholder: The tool should skip the local interface IP.
+  - type: input
+    id: version
+    attributes:
+      label: Zond Version
+      description: Run `zond --version`
+      placeholder: v0.1.0
+  - type: textarea
+    id: logs
+    attributes:
+      label: Trace Logs
+      description: Please run the command with `-vv` and paste the relevant output.
+      placeholder: |
+        [TRACE] ...
+        [DEBUG] ...
+    validations:
+      required: false
+  - type: textarea
+    id: fix
+    attributes:
+      label: Proposed Fix
+      description: If you have a technical suggestion or a snippet, please share it!
+      placeholder: e.g. We should use zond_core::net::interface to filter the scan targets.
+    validations:
+      required: false
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other

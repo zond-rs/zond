@@ -1,0 +1,121 @@
+name: Build Zond
+
+on:
+  release:
+    types: [published]
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'core/**'
+      - 'engine/**'
+      - 'cli/**'
+      - 'plugins/**'
+      - 'protocols/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'core/**'
+      - 'engine/**'
+      - 'cli/**'
+      - 'plugins/**'
+      - 'protocols/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false 
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download and Configure Npcap SDK (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.13.zip" -OutFile "npcap-sdk.zip"
+          Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
+          echo "LIB=$env:GITHUB_WORKSPACE\npcap-sdk\Lib\x64;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run Tests (macOS & Linux)
+        if: matrix.os != 'windows-latest'
+        run: cargo test --workspace
+
+
+      - name: Verify Compilation (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo check --workspace
+
+      - name: Build Release Binary
+        if: github.event_name == 'release'
+        run: cargo build --release
+
+
+      - name: Package MacOS Binary
+        if: matrix.os == 'macos-latest' && github.event_name == 'release'
+        run: |
+          cd target/release
+          zip zond-macos.zip zond
+
+      - name: Package Linux Binary
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'release'
+        run: |
+          cd target/release
+          tar -czf zond-linux.tar.gz zond
+
+      - name: Build Windows Installer (Inno Setup)
+        if: matrix.os == 'windows-latest' && github.event_name == 'release'
+        run: iscc packaging/windows/zond_installer.iss
+
+      - name: Build Debian Package
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'release'
+        run: |
+          cargo install cargo-deb
+          cargo deb -p zond-cli
+
+      # --- RELEASE STEP (Only runs on actual Release events) ---
+
+      - name: Upload Release Assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/zond-macos.zip
+            target/release/zond-linux.tar.gz
+            target/release/Zond_Setup.exe
+            target/debian/*.deb
+  test-docker:
+    name: Docker Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Docker Integration Tests
+        run: |
+          chmod +x scripts/run_integration_docker.sh
+          ./scripts/run_integration_docker.sh
