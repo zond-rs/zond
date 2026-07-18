@@ -1,0 +1,10 @@
+/Users/erik/GitHub/zond-cli/target/debug/deps/pnet_datalink-756e40b824981bb8.d: /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/lib.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bindings/mod.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bindings/bpf.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bpf.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/unix_interfaces.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/dummy.rs
+
+/Users/erik/GitHub/zond-cli/target/debug/deps/libpnet_datalink-756e40b824981bb8.rmeta: /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/lib.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bindings/mod.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bindings/bpf.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bpf.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/unix_interfaces.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/dummy.rs
+
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/lib.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bindings/mod.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bindings/bpf.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/bpf.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/unix_interfaces.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pnet_datalink-0.35.0/src/dummy.rs:

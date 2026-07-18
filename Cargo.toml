@@ -2,12 +2,6 @@
 resolver = "2"
 members = [
     "cli",
-    "engine",
-    "core",
-    "protocols",
-    "plugins",
-    "system",
-    "tests",
 ]
 
 [workspace.package]
@@ -30,8 +24,8 @@ crossterm = "0.29.0"
 rayon = "1.11.0"
 tracing = "0.1.44"
 
-zond-engine = { path = "./engine" }
-zond-core = { path = "./core" }
-zond-protocols = { path = "./protocols" }
-zond-plugins = { path = "./plugins" }
-zond-system = { path = "./system" }
+zond-engine = { git = "https://github.com/zond-rs/zond-engine.git", branch = "main" }
+zond-core = { git = "https://github.com/zond-rs/zond-engine.git", branch = "main" }
+zond-protocols = { git = "https://github.com/zond-rs/zond-engine.git", branch = "main" }
+zond-plugins = { git = "https://github.com/zond-rs/zond-engine.git", branch = "main" }
+zond-system = { git = "https://github.com/zond-rs/zond-engine.git", branch = "main" }

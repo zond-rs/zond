@@ -1,0 +1,10 @@
+/Users/erik/GitHub/zond-cli/target/debug/deps/tracing_indicatif-9831688d16e4a421.d: /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/lib.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/filter.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/pb_manager.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/span_ext.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/util.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/writer.rs
+
+/Users/erik/GitHub/zond-cli/target/debug/deps/libtracing_indicatif-9831688d16e4a421.rmeta: /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/lib.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/filter.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/pb_manager.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/span_ext.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/util.rs /Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/writer.rs
+
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/lib.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/filter.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/pb_manager.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/span_ext.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/util.rs:
+/Users/erik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-indicatif-0.3.14/src/writer.rs:
