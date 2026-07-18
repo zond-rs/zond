@@ -84,7 +84,10 @@ pub fn hostname_to_detail(
     result
 }
 
-pub fn mac_to_detail(mac_opt: Option<zond_engine::core::models::mac::MacAddr>, redact: bool) -> Option<(String, ColoredString)> {
+pub fn mac_to_detail(
+    mac_opt: Option<zond_engine::core::models::mac::MacAddr>,
+    redact: bool,
+) -> Option<(String, ColoredString)> {
     let mut result: Option<(String, ColoredString)> = None;
 
     if let Some(mac) = mac_opt {

@@ -22,15 +22,15 @@
 
 use std::time::Instant;
 
-use colored::*;
-use tracing::info_span;
-use zond_engine::core::config::ZondConfig;
 use crate::terminal::colors;
 use crate::terminal::print::Print;
 use crate::terminal::spinner::SpinnerGuard;
+use colored::*;
+use tracing::info_span;
+use zond_engine::core::config::ZondConfig;
 
-use zond_engine::core::parse;
 use zond_engine::core::models::host::Host;
+use zond_engine::core::parse;
 use zond_engine::scanner;
 
 /// Runs the active discovery scan on the provided targets.
@@ -55,7 +55,10 @@ pub async fn discover(targets: &[String], cfg: &ZondConfig) -> anyhow::Result<()
 
     let _guard: SpinnerGuard = run_spinner();
 
-    let ip_set = parse::to_ipset(targets, Some(zond_engine::system::interface::resolve::resolve))?;
+    let ip_set = parse::to_ipset(
+        targets,
+        Some(zond_engine::system::interface::resolve::resolve),
+    )?;
     let start_time = Instant::now();
 
     let mut hosts: Vec<Host> = scanner::discover(ip_set, cfg).await?;

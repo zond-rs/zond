@@ -12,6 +12,10 @@
 //! It serves as a diagnostic tool for users to quickly assess their local network configuration
 //! and potential security exposure.
 
+use crate::{
+    terminal::{colors, print},
+    zprint,
+};
 use anyhow;
 use colored::*;
 use is_root::is_root;
@@ -20,10 +24,6 @@ use std::{cmp, env};
 use sys_info;
 use zond_engine::core::config::ZondConfig;
 use zond_engine::core::models::localhost::{FirewallStatus, IpServiceGroup, Service};
-use crate::{
-    terminal::{colors, print},
-    zprint,
-};
 
 /// Prints system and network information to the terminal.
 ///
