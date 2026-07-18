@@ -73,3 +73,15 @@ jobs:
             target/release/zond-macos.zip
             target/release/zond-linux.tar.gz
             target/debian/*.deb
+
+  test-docker:
+    name: Docker Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Docker Integration Tests
+        run: |
+          chmod +x scripts/run_integration_docker.sh
+          ./scripts/run_integration_docker.sh
