@@ -8,6 +8,7 @@ pub mod banner;
 pub mod colors;
 pub mod format;
 pub mod host;
+pub mod input;
 pub mod insights;
 pub mod logging;
 pub mod network_fmt;

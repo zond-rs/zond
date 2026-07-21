@@ -7,22 +7,25 @@
 use std::time::Instant;
 
 use crate::terminal::colors;
+use crate::terminal::input;
 use crate::terminal::print::Print;
 use crate::terminal::spinner::SpinnerGuard;
 use colored::*;
+use dashmap::DashMap;
+use std::net::IpAddr;
+use std::sync::Arc;
 use tracing::info_span;
 use zond_engine::core::config::ZondConfig;
+use zond_engine::core::models::host::Host;
 use zond_engine::core::models::port::PortSet;
 use zond_engine::core::parse;
 
 pub async fn scan(
     targets: &[String],
     global_ports: PortSet,
-    cfg: &ZondConfig,
+    _cfg: &ZondConfig,
 ) -> anyhow::Result<()> {
     Print::header("starting scanner");
-
-    let _guard: SpinnerGuard = run_spinner();
 
     let target_map = parse::to_target_map(
         targets,
@@ -31,7 +34,12 @@ pub async fn scan(
     )?;
     let start_time = Instant::now();
 
-    let mut hosts = zond_engine::scanner::scan(target_map, cfg).await?;
+    let (session, scan_task) = zond_engine::scanner::scan(target_map).await?;
+    let _input_guard = input::start_listener(session.handle.clone());
+    let _guard: SpinnerGuard = run_spinner(session.store.clone());
+
+    scan_task.await??;
+    let mut hosts: Vec<Host> = session.store.iter().map(|kv| kv.value().clone()).collect();
 
     if hosts.is_empty() {
         Print::no_results();
@@ -48,12 +56,12 @@ pub async fn scan(
     Ok(())
 }
 
-fn run_spinner() -> SpinnerGuard {
+fn run_spinner(store: Arc<DashMap<IpAddr, Host>>) -> SpinnerGuard {
     let span = info_span!("scan", indicatif.pb_show = true);
     let _enter = span.enter();
 
-    SpinnerGuard::with_status(span.clone(), || {
-        let count = zond_engine::scanner::get_host_count();
+    SpinnerGuard::with_status(span.clone(), move || {
+        let count = store.len();
         let count_str = count.to_string().green().bold();
         let label = if count == 1 { "host" } else { "hosts" };
         format!("Scanned {} {} so far...", count_str, label)
