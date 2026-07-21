@@ -1,13 +1,13 @@
 [package]
 name = "zond-cli"
-version = "0.6.1"
+version = "0.6.2"
 license = "MPL-2.0"
 edition = "2024"
 repository = "https://github.com/zond-rs/zond-cli"
 description = "Command-Line Interface (CLI) for the Zond Engine"
 
 [dependencies]
-zond-engine = { path = "../zond-engine", version = "0.6.0" }
+zond-engine = { version = "0.6.1" }
 
 clap = { version = "4.5.45", features = ["derive"] }
 anyhow = "1.0.99"
