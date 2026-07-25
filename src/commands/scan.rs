@@ -38,7 +38,7 @@ pub async fn scan(
     let _input_guard = input::start_listener(session.handle.clone());
     let _guard: SpinnerGuard = run_spinner(session.store.clone());
 
-    scan_task.await??;
+    scan_task.await?;
     let mut hosts: Vec<Host> = session.store.iter().map(|kv| kv.value().clone()).collect();
 
     if hosts.is_empty() {

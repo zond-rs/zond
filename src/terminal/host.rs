@@ -96,34 +96,40 @@ fn print_host_head(idx: usize, primary_ip: &IpAddr, host: &Host) {
     );
 }
 
-/// Computes a formatted string representing the Round Trip Time (RTT) variance.
+/// Computes a formatted string representing the host's median Round Trip Time (RTT).
 ///
-/// Evaluates the minimum, maximum, and average RTT to determine the most accurate
-/// representation. Depending on the spread tolerance, this will return an exact
-/// duration, an approximate average, or a bounded range.
+/// The median is a single, outlier-resistant summary of typical latency. The
+/// value is rendered with three significant figures and a fixed-width numeric
+/// field (e.g. `2.34ms`, `27.1ms`, ` 108ms`) so the `ms` units line up across
+/// every host row.
 ///
 /// # Arguments
 ///
 /// * `host` - The host model containing recorded RTT measurements.
 fn rtt_to_string(host: &Host) -> String {
-    let (Some(min_rtt), Some(max_rtt), Some(avg_rtt)) =
-        (host.min_rtt(), host.max_rtt(), host.average_rtt())
-    else {
+    let Some(median) = host.median_rtt() else {
         return String::new();
     };
 
-    if min_rtt == max_rtt {
-        return format!("⌛ {}ms", min_rtt.as_millis());
-    }
+    format!("⌛ {}", format_rtt(median))
+}
 
-    let spread = max_rtt.saturating_sub(min_rtt);
-    let tolerance = min_rtt.mul_f64(0.05).max(Duration::from_millis(2));
+/// Formats a duration as milliseconds with three significant figures in a
+/// fixed four-character field, so the trailing `ms` aligns column-to-column.
+///
+/// Examples: `2.34ms`, `27.1ms`, ` 108ms`, `1234ms`.
+fn format_rtt(rtt: Duration) -> String {
+    let ms = rtt.as_secs_f64() * 1000.0;
 
-    if tolerance > spread {
-        return format!("⌛ ~{}ms", avg_rtt.as_millis());
-    }
+    let value = if ms < 10.0 {
+        format!("{ms:.2}")
+    } else if ms < 100.0 {
+        format!("{ms:.1}")
+    } else {
+        format!("{ms:.0}")
+    };
 
-    format!("⌛ {}ms - {}ms", min_rtt.as_millis(), max_rtt.as_millis())
+    format!("{value:>4}ms")
 }
 
 fn print_services(ports: &[Port]) {

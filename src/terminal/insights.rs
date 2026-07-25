@@ -11,8 +11,7 @@ use rand::{RngExt, rng};
 const SCANNER_TIPS: &[&str] = &[
     "Press 'q' to stop and print results",
     "Running with root enables faster raw socket scanning",
-    "Ranges (e.g. 5-11ms) show min/max RTT latency",
-    "Timings with ~ are averages of consistent RTT results",
+    "RTT timings show the median latency across probes",
     "High RTT (500ms+) on local scans suggests mobile/IoT",
     "The '--redact' flag is your friend for output sharing",
 ];

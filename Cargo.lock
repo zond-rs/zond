@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "zond-cli"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2600,9 +2600,9 @@ dependencies = [
 
 [[package]]
 name = "zond-engine"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e5d63cb0531e74cb95ada55784cfb68155d2fc5f8780ec0951e07c850b6c152"
+checksum = "e6e5c08ffb94a55d646b5cdeae6f53bbb5b21292f888ba4a781c38e898aeadd5"
 dependencies = [
  "anyhow",
  "async-trait",
