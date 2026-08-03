@@ -76,6 +76,10 @@ pub struct CommandLine {
     #[arg(long = "redact", global = true)]
     pub redact: bool,
 
+    /// Expand each service with full fingerprint details (vendor, CPE, confidence)
+    #[arg(short = 'D', long = "detailed", global = true)]
+    pub detailed: bool,
+
     /// Increase logging detail (-v: debug logs, -vv: full packets)
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
     pub verbosity: u8,
@@ -119,6 +123,7 @@ impl From<&CommandLine> for ZondConfig {
             redact: cmd.redact,
             quiet: cmd.quiet,
             disable_input: false,
+            send_mode: Default::default(),
         }
     }
 }

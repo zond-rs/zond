@@ -26,6 +26,7 @@
 //!     non-zero `ExitCode`.
 
 mod commands;
+mod config;
 mod terminal;
 
 use std::process::ExitCode;
@@ -34,6 +35,7 @@ use zond_engine::error;
 
 use crate::{
     commands::{CommandLine, Commands, discover, info, listen, scan},
+    config::DisplayConfig,
     terminal::{print::Print, spinner},
 };
 
@@ -42,7 +44,7 @@ async fn main() -> ExitCode {
     let commands = CommandLine::parse_args();
     spinner::init_logging(commands.verbosity);
     let cfg = ZondConfig::from(&commands);
-    let _ = Print::init(&cfg);
+    let _ = Print::init(&DisplayConfig::from(&commands));
 
     Print::banner();
 

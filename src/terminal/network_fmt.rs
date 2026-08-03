@@ -19,7 +19,7 @@ pub fn print_interface(interface: &NetworkInterface, idx: usize) {
             mac_addr.to_string().color(colors::MAC_ADDR),
         ));
     }
-    print::as_tree(print_map);
+    print::as_tree(print_map, false);
 }
 
 fn to_print_map_net(ip_net: &[IpNetwork]) -> Vec<(String, ColoredString)> {

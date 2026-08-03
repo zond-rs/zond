@@ -23,7 +23,7 @@ use zond_engine::core::parse;
 pub async fn scan(
     targets: &[String],
     global_ports: PortSet,
-    _cfg: &ZondConfig,
+    cfg: &ZondConfig,
 ) -> anyhow::Result<()> {
     Print::header("starting scanner");
 
@@ -34,7 +34,7 @@ pub async fn scan(
     )?;
     let start_time = Instant::now();
 
-    let (session, scan_task) = zond_engine::scanner::scan(target_map).await?;
+    let (session, scan_task) = zond_engine::scanner::scan(target_map, cfg).await?;
     let _input_guard = input::start_listener(session.handle.clone());
     let _guard: SpinnerGuard = run_spinner(session.store.clone());
 
@@ -51,7 +51,7 @@ pub async fn scan(
     hosts.sort_by_key(|host| *host.ips().iter().next().unwrap_or(&host.primary_ip()));
 
     Print::hosts(&hosts)?;
-    Print::discovery_summary(hosts.len(), start_time.elapsed());
+    Print::scan_summary(&hosts, start_time.elapsed());
 
     Ok(())
 }

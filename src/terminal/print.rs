@@ -8,10 +8,11 @@ use std::{sync::OnceLock, time::Duration};
 
 use anyhow::bail;
 use colored::*;
-use zond_engine::core::config::ZondConfig;
 use zond_engine::core::models::host::Host;
+use zond_engine::core::models::port::PortState;
 use zond_engine::success;
 
+use crate::config::DisplayConfig;
 use crate::terminal::{banner, colors, host::PrintableHost};
 
 /// Central logging macro for terminal output.
@@ -47,15 +48,17 @@ pub struct Print {
     pub(crate) no_banner: bool,
     pub(crate) q_level: u8,
     pub(crate) redact: bool,
+    pub(crate) detailed: bool,
 }
 
 impl Print {
-    /// Constructs a new `Print` instance from the global application configuration.
-    fn new(cfg: &ZondConfig) -> Self {
+    /// Constructs a new `Print` instance from the CLI presentation configuration.
+    fn new(cfg: &DisplayConfig) -> Self {
         Self {
             no_banner: cfg.no_banner,
             q_level: cfg.quiet,
             redact: cfg.redact,
+            detailed: cfg.detailed,
         }
     }
 
@@ -63,7 +66,7 @@ impl Print {
     ///
     /// # Errors
     /// Returns an error if the terminal state has already been initialized.
-    pub fn init(cfg: &ZondConfig) -> anyhow::Result<()> {
+    pub fn init(cfg: &DisplayConfig) -> anyhow::Result<()> {
         let term = Self::new(cfg);
         if PRINT.set(term).is_err() {
             bail!("terminal has already been initialized")
@@ -149,6 +152,58 @@ impl Print {
         }
     }
 
+    /// Prints the completion summary for a port scan.
+    ///
+    /// Unlike [`discovery_summary`](Self::discovery_summary), which answers "how
+    /// many hosts are alive", a scan answers "what state are the ports in". It
+    /// mirrors discovery's frame — a `═` rule, a single centered stat line, and
+    /// the closing `═` rule (printed by [`end_of_program`](Self::end_of_program))
+    /// — but the stat line carries the hosts covered and the aggregate port
+    /// outcome: open, filtered, and closed totals across every host, plus elapsed
+    /// time. Closed is de-emphasized (it is the uninteresting majority) but kept,
+    /// since its count is what makes "filtered" meaningful by contrast.
+    pub fn scan_summary(hosts: &[Host], total_time: Duration) {
+        let p = Self::get();
+
+        let (mut open, mut filtered, mut closed) = (0usize, 0usize, 0usize);
+        for host in hosts {
+            for port in host.ports() {
+                match port.state() {
+                    PortState::Open => open += 1,
+                    PortState::Filtered | PortState::OpenFiltered => filtered += 1,
+                    PortState::Closed => closed += 1,
+                    _ => {}
+                }
+            }
+        }
+
+        let host_word = if hosts.len() == 1 { "host" } else { "hosts" };
+        // A dim vertical bar, echoing the tree glyphs, keeps the stats grouped
+        // without the throwaway feel of a bullet list.
+        let sep = format!(" {} ", "│".bright_black());
+
+        let hosts_c = format!("{} {host_word}", hosts.len())
+            .bold()
+            .color(colors::PRIMARY);
+        let open_c = format!("{open} open").bold().green();
+        let filtered_c = format!("{filtered} filtered").bold().cyan();
+        let closed_c = format!("{closed} closed").bold().bright_black();
+        let time_c = format!("{:.2}s", total_time.as_secs_f64()).bold().yellow();
+
+        let stats = format!("{hosts_c}{sep}{open_c}{sep}{filtered_c}{sep}{closed_c}{sep}{time_c}");
+
+        match p.q_level {
+            0 => {
+                divider();
+                centerln(&stats);
+            }
+            _ => {
+                zprint!();
+                success!("{stats}")
+            }
+        }
+    }
+
     /// Prints the fallback output when zero hosts are detected during a scan.
     pub fn no_results() {
         let p = Self::get();
@@ -185,12 +240,18 @@ pub fn tree_head(idx: usize, name: &str) {
     );
 }
 
-/// Iterates through a collection of details and prints them as a visual tree structure.
-pub fn as_tree(details: Vec<Detail>) {
+/// Iterates through a collection of details and prints them as a visual tree
+/// structure.
+///
+/// `continues` tells the tree whether another node follows it at the same level
+/// (e.g. a host's `Services` subtree after its identity rows). When it does, even
+/// the final detail uses a `├─` connector so the branch keeps flowing into what
+/// comes next instead of closing early with a stray `└─`.
+pub fn as_tree(details: Vec<Detail>, continues: bool) {
     let padding_width: usize = "Hostname".len();
 
     for (i, (key, value)) in details.iter().enumerate() {
-        let last: bool = i + 1 == details.len();
+        let last: bool = i + 1 == details.len() && !continues;
         let branch: ColoredString = if !last { "├─" } else { "└─" }.bright_black();
 
         let dots_count: usize = padding_width.saturating_sub(key.len());

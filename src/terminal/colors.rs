@@ -33,6 +33,14 @@ pub const ACCENT: Color = Color::TrueColor {
     b: 0,
 };
 
+// Port identifiers (e.g. `22/tcp`). A soft lavender, deliberately distinct from
+// the gold `PRIMARY` used for the host's IPv4 so a port never reads as an address.
+pub const PORT: Color = Color::TrueColor {
+    r: 199,
+    g: 146,
+    b: 234,
+}; // Soft Lavender
+
 // Networking: IPv4 (Cooler Yellow Tones)
 pub const IPV4_ADDR: Color = Color::TrueColor {
     r: 170,
