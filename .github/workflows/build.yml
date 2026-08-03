@@ -40,6 +40,10 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install libpcap (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
       - name: Run Tests
         run: cargo test
 
