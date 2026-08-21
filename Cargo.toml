@@ -1,0 +1,75 @@
+[package]
+# The crate is `zond-cli`; the binary it installs is `zond`. `zond` on crates.io
+# is an unrelated crate somebody else owns, so the package cannot have that name
+# — but nothing about what a user types changes, because the name that reaches
+# their PATH is the `[[bin]]` one below.
+name = "zond-cli"
+# The engine's line, so that `zond --version` and the engine it wraps are one
+# number a person can compare. Not the same field as the dependency requirement
+# below, which is what actually decides which engine is built against.
+version = "0.12.0"
+edition = "2024"
+# The engine's minimum, because this crate cannot compile on a toolchain that
+# cannot compile what it wraps. Raising it here without raising it there would
+# be a promise about a dependency this crate does not control.
+rust-version = "1.93"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/zond-rs/zond"
+# Neither is code, and both would otherwise ride along in every published
+# tarball. The engine excludes the same two.
+exclude = ["audit/", ".github/"]
+description = "The official command-line interface to the Zond network scanner."
+keywords = ["network", "scanner", "portscan", "discovery", "security"]
+categories = ["command-line-utilities", "network-programming"]
+readme = "README.md"
+
+# What a user types, and deliberately not the package name. `cargo install
+# zond-cli` puts `zond` on the PATH.
+[[bin]]
+name = "zond"
+path = "src/main.rs"
+
+
+[dependencies]
+zond-engine = { version = "0.12.0", path = "../zond-engine", features = ["import-settings"] }
+
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+# Only the runtime and the signal handler. The engine brings the rest of tokio
+# with it; naming `full` here would say this crate needs it, and it does not.
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+# No `fmt`, no `ansi`, no `env-filter`. The engine's diagnostics carry a
+# `verbosity` field that decides whether a line is shown at all, and no
+# off-the-shelf formatter knows that convention — so `diagnostics` writes its
+# own layer and needs only the registry to hang it on.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
+thiserror = "2.0"
+# This crate's own settings document. The engine reads its file with the same
+# crate; parsing two files with two TOML implementations would mean two answers
+# about what a comment or an escape means.
+toml = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+
+# Reading a single keypress means taking the terminal out of line-buffered mode,
+# which is a `tcsetattr` call. `rustix` wraps it safely, so this crate keeps
+# `unsafe_code = "forbid"`; the alternative was raw `libc` and an exception to
+# that rule. Unix only, because the termios call is: on anything else the key
+# watcher is compiled out and Ctrl-C remains the way to stop a scan.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["termios", "stdio"] }
+
+[lints.rust]
+unreachable_pub = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Every public error type here is `#[non_exhaustive]`-shaped prose already, and
+# the module docs carry the failure modes. Demanding an `# Errors` heading on
+# each function repeats them without adding anything.
+missing_errors_doc = "allow"
+# Protocol names are words. `ICMPv6`, `ARP` and `DNS` in a sentence are the
+# nouns this program is about, not identifiers, and backticking them turns
+# ordinary prose into a wall of code spans.
+doc_markdown = "allow"

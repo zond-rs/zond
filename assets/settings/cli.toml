@@ -1,0 +1,34 @@
+# zond command-line settings
+#
+# Every key below is commented out, so this file as written changes nothing.
+#
+# This file is about how zond *shows* you a scan. What a scan puts on the wire —
+# retries, rates, techniques, whether DNS is used — lives next door in
+# `engine.toml`.
+#
+# Layering, each overriding the one before:
+#
+#   built-in defaults  ->  /etc/zond/cli.toml  ->  this file  ->  command-line flags
+#
+# A layer speaks only about the keys it mentions, so a flag you did not pass
+# cannot cancel a setting you did write.
+
+
+# How a run is drawn.
+#
+#   pipe      Tab-separated records for a program: every field, no padding, no
+#             heading, and a round-trip time that stays in milliseconds. The
+#             only mode whose output is a stable interface.
+#
+#   minimal   A tagged block per host, for reading. Shows what a sweep learned
+#             and nothing it did not. The default.
+#
+#   standard  Not built yet. More detail, still without colour.
+#
+#   fancy     Not built yet. Colour and decoration.
+#
+# Naming one that is not built is refused rather than quietly served as
+# something else. Records go to standard output and commentary to standard
+# error in every mode.
+#
+# presentation = "minimal"

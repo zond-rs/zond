@@ -1,0 +1,10 @@
+/target/
+**/*.rs.bk
+*.swp
+.idea/
+.DS_Store
+
+# Internal working notes: the engineering audit and its progress. Written for
+# whoever is working on this crate, not for whoever installs it. The engine
+# keeps its own the same way.
+/audit/

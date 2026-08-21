@@ -1,0 +1,130 @@
+# Test, lint and format, on the platforms this binary claims to support.
+#
+# Windows is not in the matrix, for the same reason it is not in the engine's:
+# the crate says it is unsupported and it is, and a permanently red job teaches
+# everyone to ignore a failing one.
+#
+# There is no release job yet. When there is, it belongs here rather than in the
+# engine — a library's release is `cargo publish`, and this is the repository
+# that actually produces a binary somebody downloads.
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      # The engine is a path dependency while the two repositories move
+      # together, so a checkout of this one alone does not build.
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zond-cli
+
+      # The suite scans loopback and nothing else, so it needs no network and no
+      # privileges. Anything that needed either would be a test about the runner
+      # rather than about this program.
+      - name: Run tests
+        working-directory: zond-cli
+        run: cargo test
+
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zond-cli
+
+      - name: Check formatting
+        working-directory: zond-cli
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: zond-cli
+        run: cargo clippy --all-targets -- -D warnings
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+
+      # Pinned to the exact version `Cargo.toml` declares. Without this the
+      # `rust-version` field is an assertion nobody checks, and the README badge
+      # advertising it is a promise to strangers made on no evidence.
+      - name: Install the declared minimum toolchain
+        uses: dtolnay/rust-toolchain@1.93.0
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zond-cli
+
+      - name: Build on the declared minimum
+        working-directory: zond-cli
+        run: cargo build
