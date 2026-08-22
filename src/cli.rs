@@ -234,6 +234,7 @@ Examples:
   sudo zond s 192.168.0.150 -p-            every port there is
   sudo zond s 192.168.0.150 -p 8000-       every port from 8000 up
   sudo zond s 10.0.0.0/24 --exclude 10.0.0.7 -p 22
+  sudo zond s 192.168.0.150 -p 443 --traceroute
 
 Given no port flag, a scan probes the thousand TCP ports most likely to be
 listening, ranked by the engine rather than taken as a range. That is a
@@ -389,6 +390,22 @@ pub(crate) struct EngineArgs {
     #[arg(long, conflicts_with = "service_detection")]
     pub no_service_detection: bool,
 
+    /// Measure the route to each host that answered.
+    ///
+    /// Runs last, after the ports are known, because what reaches a host decides
+    /// what its trace is made of: a host with an open TCP port is traced with
+    /// SYNs to that port, which crosses filters no ping survives, and any other
+    /// host with ICMP echoes. `zond scan` therefore traces better than
+    /// `zond discover` does.
+    ///
+    /// Only hosts that answered are traced. A path is measured backwards from
+    /// its far end and the far end's distance is read out of a reply, so a host
+    /// that answered nothing has no path to measure.
+    ///
+    /// Needs root, like every other probe built by hand here.
+    #[arg(long)]
+    pub traceroute: bool,
+
     /// Use a named profile from the engine's settings file.
     ///
     /// Profiles are defined in `engine.toml` and layer on top of its defaults.
@@ -441,6 +458,9 @@ impl EngineArgs {
         }
         if self.no_dampen {
             config.retry.dampen_silent_hosts = false;
+        }
+        if self.traceroute {
+            config.traceroute = true;
         }
         if let Some(effort) = self.effort {
             config.retry.effort = effort;

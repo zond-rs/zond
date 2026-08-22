@@ -177,8 +177,11 @@ fn write_host(
     }
 
     // Last, and one line each: a host with forty open ports is a list, and a
-    // list comma-joined into one value runs off the screen.
+    // list comma-joined into one value runs off the screen. A path is a list for
+    // the same reason, and goes above the ports because it is about how this
+    // host was reached rather than what was found on it.
     tagged_list(out, "also", &reader.other_addresses(host))?;
+    tagged_list(out, "path", &field::path(reader, host))?;
     tagged_list(out, "port", &field::ports(host, silence_means_something))?;
 
     Ok(())
@@ -252,6 +255,7 @@ mod tests {
     use std::time::Duration;
     use zond_engine::export::Redaction;
     use zond_engine::model::host::OsFingerprint;
+    use zond_engine::model::host::path::Hop;
     use zond_engine::model::host::status::{StatusProtocol, StatusReason};
     use zond_engine::model::ip::scoped::Zone;
     use zond_engine::{HostStatus, Port, PortState, Protocol, Service};
@@ -285,6 +289,17 @@ mod tests {
         host.add_reason(StatusReason::new(StatusProtocol::Ndp, "advertisement"));
         host.record_mac("00:00:5e:00:53:01".parse().expect("a valid address"));
         host.set_hostname(Some("router.example".to_owned()));
+        // A measured hop and a silent one. The path is the only tagged value
+        // built from a number, so it is the one that can begin with padding and
+        // fall out of the value column — which is exactly what it did until this
+        // host grew one, with the alignment test passing over a line it never
+        // rendered.
+        host.record_hop(Hop::answered(
+            1,
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254)),
+            Some(Duration::from_micros(900)),
+        ));
+        host.record_hop(Hop::silent(2));
         host
     }
 
@@ -338,7 +353,9 @@ mod tests {
              \x20 mac:  00:00:5e:00:53:01 (Icann, Iana Department)\n\
              \x20 rtt:  1.42ms\n\
              \x20 via:  arp, ndp\n\
-             \x20 also: fe80::1%en0\n"
+             \x20 also: fe80::1%en0\n\
+             \x20 path: 1. 192.0.2.254 (0.90ms)\n\
+             \x20       2. *\n"
         );
     }
 
@@ -375,9 +392,15 @@ mod tests {
         host.add_ip("2001:db8::1".parse().expect("a valid address"));
 
         let text = block(&host);
+        // Up to the next tag, so the lines this counts are the address list and
+        // not everything that happens to follow it.
         let also: Vec<&str> = text
             .lines()
             .skip_while(|line| !line.contains("also:"))
+            .take_while(|line| {
+                line.contains("also:") || line.starts_with(&" ".repeat(VALUE_COLUMN))
+            })
+            .take(2)
             .collect();
 
         assert_eq!(also.len(), 2, "{text}");

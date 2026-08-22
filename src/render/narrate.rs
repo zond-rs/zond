@@ -172,6 +172,22 @@ impl Narrator {
 
         // The result most likely to be read as a broken tool rather than an
         // answer: nothing scanned, and no reason given for it.
+        //
+        // Two reasons an address goes unscanned, and they are said separately
+        // because the advice differs. A host that was asked and stayed silent
+        // may well be up behind a firewall, and `--assume-up` reaches it. A host
+        // there is no route to was never asked, and nothing about scanning on
+        // trust creates a route — offering it there is advice that cannot work,
+        // sent to somebody already wondering why their target is missing.
+        let unroutable = field::unroutable(report);
+        if unroutable > 0 {
+            self.say(&format!(
+                "note: {unroutable} {} had no route from this host and {} never probed.",
+                plural(unroutable, "address"),
+                if unroutable == 1 { "was" } else { "were" },
+            ))?;
+        }
+
         let skipped = field::skipped_as_down(report);
         if skipped > 0 {
             self.say(&format!(

@@ -127,6 +127,48 @@ TCP connect attempts against a few common ports — but it finds fewer hosts, an
 the hosts it misses look exactly like hosts that are not there. Zond says which
 of the two ran rather than leaving you to guess.
 
+## Measuring the route to a host
+
+`--traceroute` records the routers between you and each host that answered.
+
+```
+$ sudo zond s 198.51.100.9 -p 443 --traceroute
+
+* 198.51.100.9
+  rtt:  14.2ms
+  port: 443/tcp open (https nginx 1.24)
+  path:  1. 192.168.0.1 (0.4ms)
+         2. * 
+         3. 198.51.100.1 (12.8ms)
+```
+
+**A router is made to name itself by giving it something to throw away.** One
+forwarding a packet need not say so; one whose hop limit reached zero is required
+to. So a probe built to expire a chosen number of hops out makes exactly that
+router announce itself.
+
+**The probe matches the scan**, which is why this belongs on `zond scan` more
+than on `zond discover`. A host with an open TCP port is traced with SYNs to that
+port and everything else with pings — and a SYN to :443 crosses filters that
+discard every ping, so a trace run before the ports were known would stop at the
+first firewall. It works under `discover` too; it just has less to work with.
+
+A `*` is a router that would not identify itself, shown at its own distance
+rather than left out — dropping it would renumber every hop past it. A hop marked
+`inferred` was taken from another host's trace through the same router: scanning
+a whole network measures the shared part of the path once, and says where it did.
+
+Only hosts that answered are traced. A path is measured backwards from its far
+end, and the far end's distance is read out of a reply it sent, so there is
+nothing to measure from otherwise. Needs root, and says so rather than reporting
+an empty path.
+
+Paths reach the JSON export as `path` on each host, and the nmap-XML export as
+`<trace>` and `<distance>` — so anything that already draws topology from nmap
+XML draws this too. They are **not** in `--pipe` output: that format is one
+fixed-width record per host and a path is a variable-length list, which is also
+why nmap's own grepable output has no traces in it.
+
 ## Keeping out of somewhere
 
 `--exclude` names addresses the run may not touch, in the same grammar targets

@@ -352,6 +352,114 @@ const NO_SERVICE: &str = "???";
 /// bury the open ports that are the actual result.
 const MAX_LISTED_FILTERED: usize = 12;
 
+/// One line per router on the way to this host, nearest first.
+///
+/// Empty when no trace ran, which is every scan that did not ask for one.
+///
+/// A router that would not identify itself is shown as `*` at its own distance
+/// rather than left out. Dropping it would renumber every router past it, and a
+/// path that silently closes its gaps reads as a shorter path than the one
+/// measured — which is the one way this output could mislead somebody drawing a
+/// topology from it.
+///
+/// A hop taken from another host's trace says so. It is a claim about a router
+/// this host's own probes never met.
+pub(crate) fn path(reader: Reader, host: &Host) -> Vec<String> {
+    let hops = host.path().hops();
+
+    // Wide enough for the furthest distance and no wider, so the addresses line
+    // up under each other without a column of blanks on the ordinary path that
+    // never reaches ten. Left-aligned, because a value that begins with padding
+    // begins one column right of every other tag's — see
+    // `every_tag_lines_its_value_up_with_the_others`.
+    let width = hops
+        .last()
+        .map_or(1, |hop| hop.distance().to_string().len())
+        + 1;
+
+    hops.iter()
+        .map(|hop| {
+            let address = match hop.address() {
+                // Masked like any other address under redaction, and without a
+                // zone: a router is not this host, so this host's interface says
+                // nothing about where the router's address is valid.
+                Some(IpAddr::V6(v6)) if reader.redaction.is_active() => mask(&v6),
+                Some(address) => address.to_string(),
+                None => "*".to_string(),
+            };
+
+            let mut detail = Vec::new();
+            if let Some(rtt) = hop.rtt() {
+                detail.push(format_rtt(rtt));
+            }
+            if hop.inferred() {
+                detail.push("inferred".to_string());
+            }
+
+            let step = format!("{:<width$}", format!("{}.", hop.distance()));
+
+            if detail.is_empty() {
+                format!("{step} {address}")
+            } else {
+                format!("{step} {address} ({})", detail.join(", "))
+            }
+        })
+        .collect()
+}
+
+/// A path renders its distances wide enough to align and no wider.
+///
+/// Two properties, and the second is the one that broke. The addresses have to
+/// line up under each other, which means the distance column is as wide as the
+/// furthest hop. And the value may not *begin* with padding, or the whole tag
+/// starts one column right of every other one — `path` is the only tagged value
+/// built from a number, so it is the only one that can.
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use zond_engine::model::host::path::Hop;
+
+    fn traced(distances: &[u8]) -> Host {
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        for &distance in distances {
+            host.record_hop(Hop::answered(
+                distance,
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, distance)),
+                None,
+            ));
+        }
+        host
+    }
+
+    #[test]
+    fn a_path_never_begins_a_value_with_padding() {
+        for distances in [&[1u8, 2][..], &[1, 9, 12][..], &[7][..]] {
+            for line in path(Reader::default(), &traced(distances)) {
+                assert!(
+                    !line.starts_with(' '),
+                    "a value that starts with a space starts in the wrong column: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn addresses_line_up_however_far_the_path_reaches() {
+        let lines = path(Reader::default(), &traced(&[1, 9, 12]));
+
+        let columns: Vec<usize> = lines
+            .iter()
+            .map(|line| line.find("10.0.0.").expect("an address"))
+            .collect();
+
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "addresses start in different columns: {lines:?}"
+        );
+    }
+}
+
 /// Everything except plainly closed, which is counted instead of enumerated.
 fn notable(state: PortState) -> bool {
     state != PortState::Closed
@@ -679,6 +787,11 @@ pub(crate) fn addresses_scanned(report: &ScanReport) -> u128 {
 /// How many addresses the run was asked about but never port-scanned.
 ///
 /// Zero unless a liveness phase ran and turned something away.
+///
+/// **Counts only the addresses that were probed and stayed silent.** An address
+/// this host has no route to was never asked anything, so it is subtracted out
+/// here and reported by [`unroutable`] instead: the two are different findings
+/// and only one of them can be answered by scanning on trust.
 pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
     let [liveness, ports, ..] = report.phases() else {
         return 0;
@@ -688,6 +801,22 @@ pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
         .targets()
         .addresses()
         .saturating_sub(ports.targets().addresses())
+        .saturating_sub(unroutable(report))
+}
+
+/// How many addresses this host had no route to.
+///
+/// Counted across every phase and de-duplicated, since the liveness phase and
+/// the port scan can each meet the same unreachable address.
+pub(crate) fn unroutable(report: &ScanReport) -> u128 {
+    let mut seen: Vec<IpAddr> = report
+        .phases()
+        .iter()
+        .flat_map(|phase| phase.unroutable().iter().copied())
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen.len() as u128
 }
 
 /// What the run was for.
