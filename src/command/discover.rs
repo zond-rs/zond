@@ -33,7 +33,15 @@ pub(crate) async fn run(
     let mut config = command::engine_settings(args.engine.profile.as_deref())?.config;
     args.engine.apply_to(&mut config);
 
-    let targets = target::resolve(&args.targets, !config.no_dns).await?;
+    // Exclusions travel with the targets: same grammar, same DNS policy, one
+    // module deciding what either half of a scope means.
+    let targets = target::resolve(
+        &args.targets,
+        &args.engine.exclude,
+        &config.exclusions,
+        !config.no_dns,
+    )
+    .await?;
 
     let redaction = command::redaction(&config);
     renderer.started(Phase::Discovery { targets: &targets }, redaction)?;

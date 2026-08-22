@@ -68,6 +68,18 @@ impl Verbosity {
         !self.quiet
     }
 
+    /// Whether a record should carry the working behind it.
+    ///
+    /// The distinction is between a *finding* and what it was read off. "Linux
+    /// 6.x" is the finding and is always shown; the stack shape and the series
+    /// readings behind it are the working, and a person only wants those when
+    /// they are checking the answer rather than using it — which is what asking
+    /// for detail means.
+    #[must_use]
+    pub(crate) fn explains(self) -> bool {
+        !self.quiet && self.detail >= 1
+    }
+
     /// Whether an event at `level` carrying `verbosity` should be shown.
     ///
     /// An error is always shown. Silence about a failure is the one thing a

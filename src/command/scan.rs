@@ -30,13 +30,20 @@ use crate::exit::Outcome;
 use crate::render::{Phase, Renderer};
 use crate::target;
 
-/// The ports probed when neither the command line nor the settings file says.
+/// How many of the engine's ranked TCP ports are probed when neither the
+/// command line nor the settings file says.
 ///
-/// The well-known range: everything a service is conventionally registered
-/// under. A starting point rather than a recommendation — a thousand probes per
-/// host is cheap enough to be a sensible default and narrow enough that anybody
-/// who cares will say what they actually want.
-const DEFAULT_PORTS: &str = "1-1024";
+/// A thousand probes per host is cheap enough to be a sensible default and
+/// narrow enough that anybody who cares will say what they actually want. What
+/// changed is *which* thousand: this was the well-known range, `1-1024`, and
+/// that range is both incomplete and wasteful. Most of what a machine listens on
+/// in 2026 is above it — a home server answering on 3001, 5432 and 7778 was
+/// reported as running half the services it runs — while much of what is inside
+/// it belongs to protocols nobody has deployed this century.
+///
+/// The same thousand probes, spent on the thousand ports most likely to answer.
+/// See `zond_engine::model::port::catalog` for the ranking and its provenance.
+const DEFAULT_TOP_PORTS: usize = 1000;
 
 /// Runs a port scan.
 pub(crate) async fn run(args: &ScanArgs, renderer: &mut dyn Renderer) -> Result<Outcome, Error> {
@@ -45,7 +52,14 @@ pub(crate) async fn run(args: &ScanArgs, renderer: &mut dyn Renderer) -> Result<
     args.apply_to(&mut config);
 
     let ports = ports(args, settings.ports);
-    let targets = target::resolve_ports(&args.targets, ports, !config.no_dns).await?;
+    let targets = target::resolve_ports(
+        &args.targets,
+        &args.engine.exclude,
+        &config.exclusions,
+        ports,
+        !config.no_dns,
+    )
+    .await?;
     targets.apply_to(&mut config);
 
     let redaction = command::redaction(&config);
@@ -56,12 +70,18 @@ pub(crate) async fn run(args: &ScanArgs, renderer: &mut dyn Renderer) -> Result<
     command::drive(session, task, renderer).await
 }
 
-/// The ports to probe: the flag, then the settings file, then the well-known
-/// range.
+/// The ports to probe: `--ports`, then `--top-ports`, then the settings file,
+/// then the engine's ranked default.
+///
+/// `--top-ports` outranks the settings file deliberately. A flag typed on the
+/// command line is a decision about this run, and a default written in a
+/// configuration file is a decision about every other one.
 fn ports(args: &ScanArgs, configured: Option<PortSet>) -> PortSet {
-    args.ports.clone().or(configured).unwrap_or_else(|| {
-        DEFAULT_PORTS
-            .parse()
-            .expect("the built-in default is a port specification")
-    })
+    if let Some(ports) = args.ports.clone() {
+        return ports;
+    }
+    if let Some(count) = args.top_ports {
+        return PortSet::top_tcp(count);
+    }
+    configured.unwrap_or_else(|| PortSet::top_tcp(DEFAULT_TOP_PORTS))
 }

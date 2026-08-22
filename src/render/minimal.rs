@@ -84,6 +84,10 @@ pub(crate) struct MinimalRenderer {
     records: Box<dyn Write>,
     narrator: Narrator,
     reader: field::Reader,
+    /// Kept as well as handed to the narrator, because it decides something on
+    /// the *record* stream too: whether a block shows the working behind its
+    /// operating-system finding.
+    verbosity: Verbosity,
 }
 
 impl MinimalRenderer {
@@ -110,12 +114,27 @@ impl MinimalRenderer {
             records,
             narrator: Narrator::new(narration, verbosity),
             reader: field::Reader::default(),
+            verbosity,
         }
     }
 }
 
 /// Writes one host's block.
-fn write_host(out: &mut dyn Write, reader: field::Reader, host: &Host) -> io::Result<()> {
+///
+/// `verbosity` decides only whether the working behind the operating-system
+/// finding is shown; everything else in the block is unconditional.
+///
+/// `silence_means_something` is what the *run* established rather than what this
+/// host did: false when the scan was outrun and its unanswered ports are ports
+/// it could not reach rather than ports something filtered. See
+/// [`field::silence_means_something`].
+fn write_host(
+    out: &mut dyn Write,
+    reader: field::Reader,
+    host: &Host,
+    verbosity: Verbosity,
+    silence_means_something: bool,
+) -> io::Result<()> {
     // The address and the name are one fact — which machine this is — so they
     // share the line that opens the block rather than the name sitting among
     // the things that were learned about it.
@@ -137,8 +156,18 @@ fn write_host(out: &mut dyn Write, reader: field::Reader, host: &Host) -> io::Re
         tag(out, "mac", &line)?;
     }
 
+    // `read` sits directly under `os` because it is that line's working: the
+    // shape of each reply the verdict was drawn from, and what a series of them
+    // turned out to be. Only under detail — a person using the finding wants the
+    // finding, and a person checking it wants this.
+    let working = verbosity
+        .explains()
+        .then(|| field::os_evidence(host))
+        .flatten();
+
     for (name, value) in [
         ("os", field::os(host)),
+        ("read", working),
         ("rtt", field::rtt_human(host)),
         ("via", field::via(host)),
     ] {
@@ -150,7 +179,7 @@ fn write_host(out: &mut dyn Write, reader: field::Reader, host: &Host) -> io::Re
     // Last, and one line each: a host with forty open ports is a list, and a
     // list comma-joined into one value runs off the screen.
     tagged_list(out, "also", &reader.other_addresses(host))?;
-    tagged_list(out, "port", &field::ports(host))?;
+    tagged_list(out, "port", &field::ports(host, silence_means_something))?;
 
     Ok(())
 }
@@ -189,6 +218,7 @@ impl Renderer for MinimalRenderer {
 
     fn finished(&mut self, report: &ScanReport) -> io::Result<()> {
         let hosts = field::sorted_hosts(report);
+        let trustworthy = field::silence_means_something(report);
 
         for (index, host) in hosts.iter().enumerate() {
             // The separator belongs to the listing, so it goes on the record
@@ -197,7 +227,7 @@ impl Renderer for MinimalRenderer {
             if index > 0 || self.narrator.narrates() {
                 writeln!(self.records)?;
             }
-            write_host(&mut self.records, self.reader, host)?;
+            write_host(&mut self.records, self.reader, host, self.verbosity, trustworthy)?;
         }
 
         self.records.flush()?;
@@ -221,6 +251,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
     use zond_engine::export::Redaction;
+    use zond_engine::model::host::OsFingerprint;
     use zond_engine::model::host::status::{StatusProtocol, StatusReason};
     use zond_engine::model::ip::scoped::Zone;
     use zond_engine::{HostStatus, Port, PortState, Protocol, Service};
@@ -229,9 +260,19 @@ mod tests {
         rendered(field::Reader::default(), host)
     }
 
+    /// The block a plain run writes: no detail asked for, so no working shown.
     fn rendered(reader: field::Reader, host: &Host) -> String {
+        with_verbosity(reader, host, Verbosity::default())
+    }
+
+    /// The block a run asked for detail writes.
+    fn explained(host: &Host) -> String {
+        with_verbosity(field::Reader::default(), host, Verbosity::new(1, false))
+    }
+
+    fn with_verbosity(reader: field::Reader, host: &Host, verbosity: Verbosity) -> String {
         let mut out = Vec::new();
-        write_host(&mut out, reader, host).expect("a vector cannot fail");
+        write_host(&mut out, reader, host, verbosity, true).expect("a vector cannot fail");
         String::from_utf8(out).expect("the renderer writes text")
     }
 
@@ -245,6 +286,48 @@ mod tests {
         host.record_mac("00:00:5e:00:53:01".parse().expect("a valid address"));
         host.set_hostname(Some("router.example".to_owned()));
         host
+    }
+
+    /// The working behind an operating-system finding is shown only when a
+    /// person asked for detail.
+    ///
+    /// It is what the finding was read off — the shape of each reply, and what a
+    /// series of them turned out to be — and it is the readout somebody
+    /// authoring a rule needs in front of them. It is also noise to somebody
+    /// using the answer, which is why it is not unconditional.
+    #[test]
+    fn the_working_behind_an_os_finding_appears_only_under_detail() {
+        let mut host = furnished();
+        host.set_os(
+            OsFingerprint::new("Linux", 65)
+                .with_family("Linux")
+                .with_generation("6.x")
+                .with_evidence("syn-ack hops>=64 opts=M,S,T,N,W id=zero isn=hashed ts=ticking"),
+        );
+
+        let plain = block(&host);
+        assert!(
+            plain.contains("Linux 6.x"),
+            "the finding is always shown: {plain}"
+        );
+        assert!(
+            !plain.contains("isn=hashed"),
+            "but not its working, unasked: {plain}"
+        );
+
+        let detailed = explained(&host);
+        assert!(
+            detailed.contains("isn=hashed"),
+            "asking for detail shows what the finding rests on: {detailed}"
+        );
+    }
+
+    /// A host nothing was concluded about gains no empty line for it. Detail
+    /// asks for more of what there is, not for placeholders.
+    #[test]
+    fn a_host_with_no_os_finding_gains_no_working_line() {
+        let detailed = explained(&furnished());
+        assert!(!detailed.contains("read:"), "{detailed}");
     }
 
     #[test]
@@ -316,7 +399,7 @@ mod tests {
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
 
         let text = block(&host);
-        assert!(text.contains("  port: 22/tcp open (ssh OpenSSH)"), "{text}");
+        assert!(text.contains("  port: 22/tcp  open  ssh OpenSSH"), "{text}");
         assert!(text.contains("\n        [1 closed port omitted]"), "{text}");
     }
 

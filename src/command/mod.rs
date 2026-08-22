@@ -22,7 +22,11 @@
 pub(crate) mod discover;
 pub(crate) mod scan;
 
+use std::collections::HashSet;
+use std::net::IpAddr;
+
 use zond_engine::export::Redaction;
+use zond_engine::model::host::Host;
 use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ZondConfig};
 
 use crate::error::Error;
@@ -74,6 +78,17 @@ async fn drive(
     // Gates the message and the escalation only. What the run amounted to is
     // read from the handle afterwards.
     let mut announced = false;
+    // Addresses already announced, so the same host is not fetched again for
+    // every remaining port of it.
+    //
+    // A port scan changes a host once per port and fires an event each time, and
+    // the renderer announces an address once — so all but the first of those
+    // events end in a discard. Answering them with `HostStore::get` cloned the
+    // host's whole port map to reach that discard, once per port, which is
+    // quadratic in the ports of one host and does not show at all until the
+    // count is large: ten thousand ports on one address spent under a fifth of a
+    // second scanning and three seconds cloning what it found.
+    let mut seen: HashSet<IpAddr> = HashSet::new();
     loop {
         tokio::select! {
             event = events.recv() => {
@@ -81,10 +96,17 @@ async fn drive(
                 // A `ScannerFailed` is already on its way to the terminal as a
                 // `tracing` event, and is in the report the summary is drawn
                 // from. Rendering it here would say it a third time.
+                //
+                // Liveness is read through the borrowing accessor rather than a
+                // clone, because an address that is not alive yet may become so
+                // later and cannot be written off — so this runs on every event
+                // of every address, alive or not, and has to cost nothing.
                 if let ScanEvent::HostUpdated(ip) = event
+                    && !seen.contains(&ip)
+                    && hosts.read(&ip, Host::is_alive).unwrap_or(false)
                     && let Some(host) = hosts.get(&ip)
-                    && host.is_alive()
                 {
+                    seen.insert(ip);
                     renderer.host_found(&host)?;
                 }
             }

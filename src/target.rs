@@ -23,6 +23,22 @@
 //!   the engine cannot hold for us.
 //! - **How much one run may sweep.** See [`MAX_IPV4_ADDRESSES`].
 //!
+//! ## Exclusions are resolved here too
+//!
+//! `--exclude` takes the same grammar as a target, so it is parsed by the same
+//! module: one place decides what `10.0.0.0/24`, `lan` and `%en0` mean, and the
+//! two halves of a scope cannot come out meaning different things. It also
+//! shares the DNS policy, since resolving a name to exclude sends exactly the
+//! query resolving a name to scan does.
+//!
+//! **What is measured here is the scan after the exclusions, and what is handed
+//! to the engine is the scan before them.** The size guards and the header line
+//! are about how long a run will take and how much it covers, which is the
+//! narrowed number; the engine is given the full set and its own policy so that
+//! it performs the subtraction itself and its report says what the subtraction
+//! cost. Narrowing here as well would leave every report this program produces
+//! claiming a policy withheld nothing.
+//!
 //! The engine refuses what *cannot be done* — a range no strategy can walk.
 //! This module refuses what is merely *unreasonable*, which is a judgement about
 //! a person's time, and it holds that judgement to IPv4: a privileged sweep of
@@ -44,7 +60,7 @@ use zond_engine::model::parse::ip::{Keyword, ResolverFn, ZoneResolverFn, names_k
 use zond_engine::model::parse::target::{self as engine_parse, TargetContext, TargetParseError};
 use zond_engine::resolve;
 use zond_engine::system::interface;
-use zond_engine::{IpSet, PortSet, Resolver, TargetMap, ZondConfig};
+use zond_engine::{Exclusions, IpSet, PortSet, Resolver, TargetMap, ZondConfig};
 
 /// The most IPv4 addresses one run will accept: a `/12` exactly.
 ///
@@ -94,6 +110,20 @@ pub(crate) enum TargetError {
         limit: u128,
     },
 
+    /// The exclusions cover every address the targets name, leaving nothing.
+    ///
+    /// Reported rather than run, because a scan of no addresses is not a
+    /// finding and the shape of the mistake is usually a typo in the exclusion
+    /// rather than a scope that genuinely excludes itself.
+    #[error(
+        "every address {expression} names is excluded, so there is nothing to \
+         scan. Check --exclude, and `exclude` in engine.toml."
+    )]
+    EverythingExcluded {
+        /// The target expressions as they were written.
+        expression: String,
+    },
+
     /// The expression is well formed and names more probes than one port scan
     /// will spend. See [`MAX_PROBES`].
     #[error(
@@ -119,6 +149,7 @@ pub(crate) enum TargetError {
 struct Asked {
     expressions: Vec<String>,
     segment_sweep: bool,
+    exclusions: Exclusions,
 }
 
 impl Asked {
@@ -127,18 +158,23 @@ impl Asked {
     /// What the port scan uses, because nothing resolved it on the way — where
     /// a sweep is handed the answer by [`resolve::for_discovery`] and passes it
     /// to [`new`](Self::new) rather than deriving it twice.
-    fn from_expressions<S: AsRef<str>>(expressions: &[S]) -> Self {
-        Self::new(expressions, names_keyword(expressions, Keyword::Lan))
+    fn from_expressions<S: AsRef<str>>(expressions: &[S], exclusions: Exclusions) -> Self {
+        Self::new(
+            expressions,
+            names_keyword(expressions, Keyword::Lan),
+            exclusions,
+        )
     }
 
     /// The expressions as written, trimmed, with what they imply.
-    fn new<S: AsRef<str>>(expressions: &[S], segment_sweep: bool) -> Self {
+    fn new<S: AsRef<str>>(expressions: &[S], segment_sweep: bool, exclusions: Exclusions) -> Self {
         Self {
             expressions: expressions
                 .iter()
                 .map(|expression| expression.as_ref().trim().to_owned())
                 .collect(),
             segment_sweep,
+            exclusions,
         }
     }
 
@@ -152,6 +188,15 @@ impl Asked {
     /// is one place rather than two so that it cannot be half-heard.
     fn apply_to(&self, cfg: &mut ZondConfig) {
         cfg.segment_sweep = self.segment_sweep;
+
+        // Added rather than assigned, which is the opposite of the line above
+        // and deliberate. `segment_sweep` is what the target expression means,
+        // so targets naming no network have to turn it back off; an exclusion
+        // is a thing somebody forbade, and a layer that could cancel one is a
+        // layer that can put a forbidden range back into a scan. The engine
+        // makes the same argument at `Exclusions::extend`, where a settings
+        // file must not be able to drop the range above it.
+        cfg.exclusions.extend(&self.exclusions);
     }
 }
 
@@ -169,19 +214,39 @@ impl fmt::Display for Asked {
 pub(crate) struct Targets {
     asked: Asked,
     ips: IpSet,
+    remaining: u128,
 }
 
 impl Targets {
     /// Takes the addresses, for handing to the engine.
+    ///
+    /// The full set, before exclusions. The engine is given the policy too and
+    /// applies it itself; see the module documentation for why it is not
+    /// applied twice.
     #[must_use]
     pub(crate) fn into_ips(self) -> IpSet {
         self.ips
     }
 
-    /// How many addresses this covers.
+    /// How many addresses this run will actually walk.
+    ///
+    /// After exclusions, which is what a header line saying how much ground is
+    /// about to be covered has to mean.
     #[must_use]
     pub(crate) fn len(&self) -> u128 {
-        self.ips.len()
+        self.remaining
+    }
+
+    /// What the exclusion policy keeps out of this run, if anything.
+    #[must_use]
+    pub(crate) fn exclusions(&self) -> &Exclusions {
+        &self.asked.exclusions
+    }
+
+    /// How many addresses the exclusions take out of what was named.
+    #[must_use]
+    pub(crate) fn excluded(&self) -> u128 {
+        self.ips.len().saturating_sub(self.remaining)
     }
 
     /// Writes what these targets imply into `cfg`.
@@ -202,23 +267,43 @@ impl fmt::Display for Targets {
 /// becomes the addresses it stands for; without it, a hostname is refused rather
 /// than quietly dropped, because a scan that covers less than its input said it
 /// covers is a wrong answer that looks like a right one.
-pub(crate) async fn resolve<S: AsRef<str>>(
+pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
     expressions: &[S],
+    exclude: &[E],
+    inherited: &Exclusions,
     resolve_names: bool,
 ) -> Result<Targets, TargetError> {
     // Constructing one reads the host's resolver configuration, which a run
-    // forbidden from sending DNS should not touch at all.
+    // forbidden from sending DNS should not touch at all. Shared by both halves
+    // of the grammar: a name to keep out costs the same query as a name to scan.
     let resolver = resolve_names.then(Resolver::from_system);
 
     let discovery = resolve::for_discovery(expressions, resolver.as_ref())
         .await
         .map_err(name_needs_dns)?;
+    let exclusions = inherit(inherited, exclude, resolver.as_ref()).await?;
 
     // The engine worked out whether a network was named; this does not ask the
     // question a second time and risk a second answer.
-    let asked = Asked::new(expressions, discovery.segment_sweep());
+    let asked = Asked::new(expressions, discovery.segment_sweep(), exclusions);
 
-    let requested = discovery.ips().v4_len();
+    let ips = discovery.into_ips();
+
+    // A measurement, on a copy, and then discarded. What the guard and the
+    // header both want is the ground this run will actually cover, and the
+    // engine wants the set as it was named — so the subtraction is performed
+    // here to be counted and there to be enforced.
+    let mut walked = ips.clone();
+    asked.exclusions.withhold(&mut walked);
+    let remaining = walked.len();
+
+    if remaining == 0 && !ips.is_empty() {
+        return Err(TargetError::EverythingExcluded {
+            expression: asked.to_string(),
+        });
+    }
+
+    let requested = walked.v4_len();
     if requested > MAX_IPV4_ADDRESSES {
         return Err(TargetError::TooLarge {
             expression: asked.to_string(),
@@ -229,8 +314,36 @@ pub(crate) async fn resolve<S: AsRef<str>>(
 
     Ok(Targets {
         asked,
-        ips: discovery.into_ips(),
+        ips,
+        remaining,
     })
+}
+
+/// The whole exclusion policy in force: what the settings files already
+/// forbade, plus what this command line adds.
+///
+/// **Both layers, not just the flag.** The counts this module produces are what
+/// the run will cover and what the size guards are checked against, and the
+/// ranges it holds are what the header prints for somebody to check against a
+/// scope document. A policy assembled from the flag alone would under-report
+/// both — a scan whose header omitted a range that was nonetheless in force,
+/// which is the one kind of wrong this feature exists to prevent. The engine
+/// applies the union either way, so the discrepancy would be silent.
+///
+/// Unions rather than replaces, for the reason
+/// [`Exclusions::extend`](zond_engine::Exclusions::extend) gives.
+async fn inherit<E: AsRef<str>>(
+    inherited: &Exclusions,
+    exclude: &[E],
+    resolver: Option<&Resolver>,
+) -> Result<Exclusions, TargetError> {
+    let mut exclusions = inherited.clone();
+    exclusions.extend(
+        &resolve::for_exclusion(exclude, resolver)
+            .await
+            .map_err(name_needs_dns)?,
+    );
+    Ok(exclusions)
 }
 
 /// Restates the engine's "no host lookup was supplied" as the flag that caused
@@ -260,25 +373,45 @@ pub(crate) const MAX_PROBES: u128 = 1 << 22;
 pub(crate) struct ScanTargets {
     asked: Asked,
     map: TargetMap,
+    probes: u128,
+    hosts: u128,
 }
 
 impl ScanTargets {
     /// The map to hand the engine.
+    ///
+    /// Before exclusions, for the reason [`Targets::into_ips`] gives.
     #[must_use]
     pub(crate) fn into_map(self) -> TargetMap {
         self.map
     }
 
-    /// How many probes this comes to: addresses times ports, across every unit.
+    /// How many probes this run will actually spend: addresses times ports,
+    /// across every unit, once the exclusions are out of it.
     #[must_use]
     pub(crate) fn probes(&self) -> u128 {
-        self.map.gross_targets().unwrap_or(u128::MAX)
+        self.probes
     }
 
-    /// How many addresses this covers.
+    /// How many addresses this run will actually cover.
     #[must_use]
     pub(crate) fn hosts(&self) -> u128 {
-        self.map.gross_ips().unwrap_or(u128::MAX)
+        self.hosts
+    }
+
+    /// What the exclusion policy keeps out of this run, if anything.
+    #[must_use]
+    pub(crate) fn exclusions(&self) -> &Exclusions {
+        &self.asked.exclusions
+    }
+
+    /// How many addresses the exclusions take out of what was named.
+    #[must_use]
+    pub(crate) fn excluded(&self) -> u128 {
+        self.map
+            .gross_ips()
+            .unwrap_or(u128::MAX)
+            .saturating_sub(self.hosts)
     }
 
     /// Writes what these targets imply into `cfg`.
@@ -314,15 +447,18 @@ fn host_context() -> TargetContext<'static> {
 ///
 /// `ports` is the *default*: an expression naming its own — `10.0.0.1:8080`, or
 /// `[2001:db8::1]:443` — keeps them, and everything else gets these.
-pub(crate) async fn resolve_ports<S: AsRef<str>>(
+pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     expressions: &[S],
+    exclude: &[E],
+    inherited: &Exclusions,
     ports: PortSet,
     resolve_names: bool,
 ) -> Result<ScanTargets, TargetError> {
     let context = host_context();
+    let resolver = resolve_names.then(Resolver::from_system);
 
-    let map = match resolve_names.then(Resolver::from_system) {
-        Some(resolver) => resolve::to_target_map(expressions, ports, &context, &resolver)
+    let map = match &resolver {
+        Some(resolver) => resolve::to_target_map(expressions, ports, &context, resolver)
             .await
             .map_err(name_needs_dns)?,
         None => {
@@ -330,11 +466,27 @@ pub(crate) async fn resolve_ports<S: AsRef<str>>(
         }
     };
 
+    let exclusions = inherit(inherited, exclude, resolver.as_ref()).await?;
+
+    // Measured on a copy and discarded, exactly as the sweep does it: a probe
+    // count is what the run will cost, and a run does not pay for a target it
+    // has been forbidden to send.
+    let mut walked = map.clone();
+    exclusions.withhold_targets(&mut walked);
+
     // The same question the engine answers for a sweep, asked the same way.
     let targets = ScanTargets {
-        asked: Asked::from_expressions(expressions),
+        asked: Asked::from_expressions(expressions, exclusions),
+        probes: walked.gross_targets().unwrap_or(u128::MAX),
+        hosts: walked.gross_ips().unwrap_or(u128::MAX),
         map,
     };
+
+    if targets.hosts == 0 && !targets.map.is_empty() {
+        return Err(TargetError::EverythingExcluded {
+            expression: targets.to_string(),
+        });
+    }
 
     let requested = targets.probes();
     if requested > MAX_PROBES {
@@ -366,7 +518,18 @@ mod tests {
     /// network and without an interface table. What `lan` means is the engine's
     /// to test.
     async fn offline<S: AsRef<str>>(expressions: &[S]) -> Result<Targets, TargetError> {
-        resolve(expressions, false).await
+        resolve(expressions, NOTHING, &Exclusions::none(), false).await
+    }
+
+    /// An empty exclusion list, spelled so the element type is settled.
+    const NOTHING: &[&str] = &[];
+
+    /// The same, with a policy.
+    async fn offline_excluding(
+        expressions: &[&str],
+        exclude: &[&str],
+    ) -> Result<Targets, TargetError> {
+        resolve(expressions, exclude, &Exclusions::none(), false).await
     }
 
     #[tokio::test]
@@ -423,16 +586,21 @@ mod tests {
     /// the settling for it.
     #[test]
     fn both_phases_write_the_same_settings() {
+        let excluded: IpSet = "10.0.5.0/24".parse().expect("a valid range");
+
         for sweep in [false, true] {
-            let asked = Asked::new(&["lan"], sweep);
+            let asked = Asked::new(&["lan"], sweep, Exclusions::new(excluded.clone()));
 
             let discovery = Targets {
                 asked: asked.clone(),
                 ips: IpSet::new(),
+                remaining: 0,
             };
             let port_scan = ScanTargets {
                 asked,
                 map: TargetMap::default(),
+                probes: 0,
+                hosts: 0,
             };
 
             let mut from_discovery = ZondConfig::default();
@@ -442,20 +610,151 @@ mod tests {
 
             assert_eq!(from_discovery.segment_sweep, sweep);
             assert_eq!(from_port_scan.segment_sweep, sweep);
+
+            let forbidden = IpAddr::V4(Ipv4Addr::new(10, 0, 5, 7));
+            assert!(from_discovery.exclusions.excludes(&forbidden));
+            assert!(from_port_scan.exclusions.excludes(&forbidden));
         }
+    }
+
+    /// What is measured is the run after the exclusions; what is handed over is
+    /// the run before them.
+    ///
+    /// Both halves matter and neither implies the other. The count is what the
+    /// header prints and what the size guard is checked against, so it has to be
+    /// the ground actually covered. The set is what the engine receives, so that
+    /// the engine performs the subtraction itself and its report can say what
+    /// the policy cost — narrowing here as well would leave every report this
+    /// program writes claiming a policy withheld nothing.
+    #[tokio::test]
+    async fn a_run_is_counted_after_exclusions_and_handed_over_before_them() {
+        let targets = offline_excluding(&["192.168.0.0/24"], &["192.168.0.128/25"])
+            .await
+            .expect("well-formed");
+
+        assert_eq!(targets.len(), 128, "half the block is withheld");
+        assert_eq!(targets.excluded(), 128);
+
+        let ips = targets.into_ips();
+        assert_eq!(ips.len(), 256, "the engine is given what was named");
+        assert!(ips.contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 0, 200))));
+    }
+
+    /// An exclusion is written the way a target is, and several may be given.
+    #[tokio::test]
+    async fn exclusions_take_the_same_grammar_as_targets() {
+        let targets = offline_excluding(
+            &["10.0.0.0/24"],
+            &["10.0.0.1", "10.0.0.16-31", "10.0.0.128/25"],
+        )
+        .await
+        .expect("well-formed");
+
+        assert_eq!(targets.len(), 256 - 1 - 16 - 128);
+
+        let policy = targets.exclusions();
+        for forbidden in ["10.0.0.1", "10.0.0.20", "10.0.0.200"] {
+            assert!(
+                policy.excludes(&forbidden.parse().expect("literal")),
+                "{forbidden} was excluded"
+            );
+        }
+        assert!(!policy.excludes(&"10.0.0.2".parse().expect("literal")));
+    }
+
+    /// The size guard is about how long a run takes, so it is checked against
+    /// what the run will walk.
+    ///
+    /// A `/8` is refused, and a `/8` with all but a `/12` of it excluded is not
+    /// — because the second one is a `/12` of probing however it was written.
+    /// Checking the guard before the subtraction would refuse a run whose cost
+    /// is within the limit, which is the guard answering a question nobody
+    /// asked.
+    #[tokio::test]
+    async fn the_size_guard_counts_what_will_actually_be_swept() {
+        assert!(matches!(
+            offline(&["10.0.0.0/8"]).await,
+            Err(TargetError::TooLarge { .. })
+        ));
+
+        // Everything above 10.15.255.255 excluded, leaving exactly a /12.
+        let narrowed = offline_excluding(&["10.0.0.0/8"], &["10.16.0.0-10.255.255.255"])
+            .await
+            .expect("what is left is within the limit");
+        assert_eq!(narrowed.len(), MAX_IPV4_ADDRESSES);
+    }
+
+    /// Excluding everything is a mistake, not a scan of nothing.
+    ///
+    /// The likely cause is a typo in the exclusion rather than a scope that
+    /// genuinely excludes itself, and a run that swept zero addresses and
+    /// reported no hosts would look exactly like a network with nothing on it.
+    #[tokio::test]
+    async fn a_policy_that_covers_every_target_is_refused() {
+        let refused = offline_excluding(&["192.168.0.0/24"], &["192.168.0.0/16"]).await;
+
+        let Err(error @ TargetError::EverythingExcluded { .. }) = refused else {
+            panic!("a run with nothing left to scan is an error");
+        };
+        let message = error.to_string();
+        assert!(message.contains("192.168.0.0/24"), "got {message:?}");
+        assert!(message.contains("--exclude"), "got {message:?}");
+    }
+
+    /// A run forbidden from sending DNS may not resolve a name to exclude
+    /// either, and is told which flag is responsible.
+    ///
+    /// Resolving a name to keep out sends exactly the query resolving a name to
+    /// scan does, so the policy has to cover both halves of the grammar. Dropped
+    /// quietly it would be worse here than for a target: an unresolved exclusion
+    /// does not narrow a scan, it widens one.
+    #[tokio::test]
+    async fn a_hostname_to_exclude_is_refused_when_dns_is_forbidden() {
+        let refused = offline_excluding(&["10.0.0.0/24"], &["db.internal"]).await;
+
+        let Err(error @ TargetError::NameNeedsDns { .. }) = refused else {
+            panic!("a name cannot be resolved with DNS forbidden");
+        };
+        assert!(error.to_string().contains("db.internal"));
+    }
+
+    /// A port scan is counted the same way, in probes rather than addresses.
+    #[tokio::test]
+    async fn a_port_scan_spends_no_probes_on_an_excluded_address() {
+        let targets = resolve_ports(
+            &["10.0.0.0/24"],
+            &["10.0.0.128/25"],
+            &Exclusions::none(),
+            "22,80".parse().expect("a valid port set"),
+            false,
+        )
+        .await
+        .expect("well-formed");
+
+        assert_eq!(targets.hosts(), 128);
+        assert_eq!(targets.probes(), 256, "128 addresses on two ports");
+        assert_eq!(targets.excluded(), 128);
+        assert_eq!(
+            targets.into_map().gross_ips().expect("small"),
+            256,
+            "the engine is given what was named"
+        );
     }
 
     /// The derivation a port scan does for itself, since nothing resolved it on
     /// the way. Needs no interface table: it reads the words, not the network.
     #[test]
     fn a_port_scan_reads_the_sweep_out_of_the_expressions() {
-        assert!(Asked::from_expressions(&["lan"]).segment_sweep);
-        assert!(Asked::from_expressions(&["LAN"]).segment_sweep, "case");
+        assert!(Asked::from_expressions(&["lan"], Exclusions::none()).segment_sweep);
         assert!(
-            Asked::from_expressions(&["10.0.0.1,lan"]).segment_sweep,
+            Asked::from_expressions(&["LAN"], Exclusions::none()).segment_sweep,
+            "case"
+        );
+        assert!(
+            Asked::from_expressions(&["10.0.0.1,lan"], Exclusions::none()).segment_sweep,
             "a comma-separated list is still a list of targets"
         );
-        assert!(!Asked::from_expressions(&["10.0.0.0/24"]).segment_sweep);
+        assert!(!Asked::from_expressions(&["10.0.0.0/24"], Exclusions::none()).segment_sweep);
     }
 
     /// A setting a lower layer wrote must not survive targets that say otherwise:
@@ -468,7 +767,7 @@ mod tests {
             ..ZondConfig::default()
         };
 
-        Asked::new(&["10.0.0.1"], false).apply_to(&mut config);
+        Asked::new(&["10.0.0.1"], false, Exclusions::none()).apply_to(&mut config);
         assert!(!config.segment_sweep);
     }
 

@@ -235,6 +235,26 @@ fn protocol_name(protocol: &StatusProtocol) -> String {
     }
 }
 
+/// What the operating-system finding was read off.
+///
+/// The stack shape of each reply that contributed, and — where the host was
+/// asked more than once — what its series of replies turned out to be:
+/// `id=` the IP identifier policy, `isn=` the sequence generator, `ts=` the
+/// timestamp clock. Those three are the features a rule naming a *release*
+/// rather than a family predicates on, and they are only readable across
+/// several replies, so they appear only after an active scan.
+///
+/// Distinct from [`evidence`], which says what proved the host *alive*. Both
+/// are evidence; they are evidence for different claims.
+///
+/// Carries no address or name — only stack features — so it is not subject to
+/// redaction the way [`Reader`]'s fields are.
+pub(crate) fn os_evidence(host: &Host) -> Option<String> {
+    host.os()
+        .and_then(|os| os.evidence())
+        .map(ToOwned::to_owned)
+}
+
 /// Who made the hardware, from the address it was seen at.
 pub(crate) fn vendor(host: &Host) -> Option<&str> {
     host.vendor()
@@ -325,6 +345,13 @@ const NO_SERVICE: &str = "???";
 
 /// Whether a port's verdict is worth a line of its own.
 ///
+/// The most filtered ports listed one per line before the rest are counted.
+///
+/// Enough that an ordinary firewall policy — a handful of refused services —
+/// still reads in full, and few enough that a host refusing everything does not
+/// bury the open ports that are the actual result.
+const MAX_LISTED_FILTERED: usize = 12;
+
 /// Everything except plainly closed, which is counted instead of enumerated.
 fn notable(state: PortState) -> bool {
     state != PortState::Closed
@@ -333,7 +360,7 @@ fn notable(state: PortState) -> bool {
 /// One line per port worth showing, ending with a count of what was left out.
 ///
 /// Open first, then by number. Empty when nothing was probed.
-pub(crate) fn ports(host: &Host) -> Vec<String> {
+pub(crate) fn ports(host: &Host, silence_means_something: bool) -> Vec<String> {
     let mut shown: Vec<&Port> = host.ports().filter(|port| notable(port.state())).collect();
     let closed = host.ports().filter(|port| !notable(port.state())).count();
 
@@ -343,23 +370,102 @@ pub(crate) fn ports(host: &Host) -> Vec<String> {
 
     shown.sort_by_key(|port| (port.state() != PortState::Open, port.number()));
 
-    let mut lines: Vec<String> = shown
+    // A wall of filtered ports says one thing, not six hundred of them.
+    //
+    // Three filtered ports on a host is a firewall policy worth reading line by
+    // line. Six hundred is a different fact entirely — the host is refusing the
+    // whole range, or the scan lost its replies — and printing them individually
+    // buries the two open ports that are the actual result. Measured, on a
+    // consumer router probed too fast: nine hundred lines of `filtered`, with
+    // `80/tcp` among them.
+    //
+    // The first few are kept rather than none, because *which* ports were
+    // filtered still matters when the list starts at 22 and 23.
+    // A scan that could not tell filtered from lost has no filtered ports to
+    // report, only ports it failed to reach. Listing them anyway is what turned
+    // a saturated radio into two hundred and forty claims about somebody's
+    // firewall — see `silence_means_something`.
+    let unreachable = if silence_means_something {
+        0
+    } else {
+        let before = shown.len();
+        shown.retain(|port| port.state() != PortState::Filtered);
+        before - shown.len()
+    };
+
+    let filtered_over_limit = shown
+        .iter()
+        .filter(|port| port.state() == PortState::Filtered)
+        .count()
+        .saturating_sub(MAX_LISTED_FILTERED);
+
+    if filtered_over_limit > 0 {
+        let mut kept = 0usize;
+        shown.retain(|port| {
+            if port.state() != PortState::Filtered {
+                return true;
+            }
+            kept += 1;
+            kept <= MAX_LISTED_FILTERED
+        });
+    }
+
+    // Laid out in columns, which is the whole reason this builds the parts before
+    // formatting any of them: a port number is one to five digits and a state is
+    // four to twelve characters, so a line assembled left to right puts every
+    // state at a different place and the eye has to search each row instead of
+    // running down one. The widths come from what is actually being shown rather
+    // than from a guess, so a host with only low ports does not pay for the
+    // five-digit case.
+    let columns: Vec<(String, String, Option<String>)> = shown
         .iter()
         .map(|port| {
-            let mut line = format!(
-                "{}/{} {}",
-                port.number(),
-                protocol(port.protocol()),
-                state(port.state())
-            );
-            if let Some(service) = describe(port) {
-                line.push_str(" (");
-                line.push_str(&service);
-                line.push(')');
-            }
-            line
+            (
+                format!("{}/{}", port.number(), protocol(port.protocol())),
+                state(port.state()),
+                describe(port),
+            )
         })
         .collect();
+
+    let widest_port = columns
+        .iter()
+        .map(|(port, ..)| port.len())
+        .max()
+        .unwrap_or(0);
+    let widest_state = columns
+        .iter()
+        .map(|(_, state, _)| state.len())
+        .max()
+        .unwrap_or(0);
+
+    let mut lines: Vec<String> = columns
+        .iter()
+        .map(|(port, state, service)| {
+            let line = format!(
+                "{port:<widest_port$}  {state:<widest_state$}  {}",
+                service.as_deref().unwrap_or_default()
+            );
+            // A port with no service would otherwise carry the padding it was
+            // never going to fill.
+            line.trim_end().to_owned()
+        })
+        .collect();
+
+    if filtered_over_limit > 0 {
+        lines.push(format!(
+            "[{filtered_over_limit} more filtered {} omitted]",
+            plural(filtered_over_limit as u128, "port")
+        ));
+    }
+
+    if unreachable > 0 {
+        lines.push(format!(
+            "[{unreachable} {} the scan could not reach; it was outrun, so these are \
+             not firewall verdicts]",
+            plural(unreachable as u128, "port")
+        ));
+    }
 
     if closed > 0 {
         lines.push(format!(
@@ -459,6 +565,51 @@ fn state(state: PortState) -> String {
     }
 }
 
+/// The share of a run's probes that may go unanswered before a scan which
+/// already paced itself to its floor has stopped being able to tell filtered
+/// from lost.
+const UNREACHED_SHARE: f64 = 0.10;
+
+/// Whether this report's silence is a finding.
+///
+/// A port reported `filtered` is a positive claim: something dropped a probe
+/// that a live host would have answered. That claim rests entirely on the scan
+/// having *asked properly*, and a scan whose own pacing was cut back as far as
+/// it goes and which still left most of its probes unanswered did not — it ran
+/// out of link before it ran out of ports.
+///
+/// Measured, and the reason this exists: a full-range scan from a wireless
+/// laptop reported forty-two thousand ports filtered on a host with no firewall
+/// at all. The scanner knew — it printed a warning saying so directly above the
+/// list — and then printed the list anyway. A warning that contradicts the rows
+/// under it is not a warning, it is a footnote nobody reads.
+///
+/// Both halves are needed. A window at its floor with everything answered is a
+/// polite scan that worked; a high unanswered share with the window never cut is
+/// a genuinely quiet host, which is a finding. Only the two together mean the
+/// scan could not ask.
+pub(crate) fn silence_means_something(report: &ScanReport) -> bool {
+    !report.phases().iter().any(|phase| {
+        phase.probe_stats().iter().any(|stats| {
+            let outrun = stats.window().is_some_and(|window| window.at_floor);
+            let targets = stats.targets();
+            let unanswered = targets.saturating_sub(u128::from(stats.hosts_found()));
+            let share = if targets == 0 {
+                0.0
+            } else {
+                unanswered as f64 / targets as f64
+            };
+            outrun && share >= UNREACHED_SHARE
+        })
+    })
+}
+
+/// The longest supplementary detail worth putting in a port table.
+///
+/// Wide enough for a product name — the longest thing this is *for* — and
+/// narrow enough that a row stays one line at any sensible terminal width.
+const EXTRAINFO_WIDTH: usize = 24;
+
 /// What is listening, where fingerprinting worked it out.
 fn describe(port: &Port) -> Option<String> {
     let service = port.service()?;
@@ -467,13 +618,37 @@ fn describe(port: &Port) -> Option<String> {
     }
 
     let mut described = service.name().to_owned();
-    if let Some(product) = service.product() {
+    if let Some(product) = service.product()
+        // A product that merely repeats the service name says nothing twice:
+        // `http http` is what an HTTP server nothing identified more precisely
+        // renders as, and the second word is noise in every such row. A tunnelled
+        // service names both halves — `ssl/http` — so the repeat has to be looked
+        // for in each of them, or `ssl/http http` gets through.
+        && !described
+            .split('/')
+            .any(|part| part.eq_ignore_ascii_case(product))
+    {
         described.push(' ');
         described.push_str(product);
     }
     if let Some(version) = service.version() {
         described.push(' ');
         described.push_str(version);
+    }
+    // What is running *on* the server, as distinct from the server: the
+    // application a title or a vendor-prefixed header named, or the technology
+    // an `X-Powered-By` did. Parenthesised because it qualifies the product
+    // rather than replacing it — `Kestrel (Jellyfin)` is two true statements
+    // about one port, and the second is the one somebody was looking for.
+    // Only when it is short enough to be a name. Some of what analyzers put here
+    // is a list rather than a label — an SSH host-key algorithm set runs to
+    // seventy characters — and a port table is a column of rows somebody scans
+    // down, not a place to read a list. The full value is in the report either
+    // way; this is the rendering, not the record.
+    if let Some(extra) = service.extrainfo().filter(|extra| extra.len() <= EXTRAINFO_WIDTH) {
+        described.push_str(" (");
+        described.push_str(extra);
+        described.push(')');
     }
 
     Some(described)
@@ -548,6 +723,7 @@ pub(crate) fn summary(report: &ScanReport) -> ScanSummary {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::render::test_support::host;
     use std::net::Ipv4Addr;
@@ -586,6 +762,46 @@ mod tests {
 
     /// Which masker an address gets is decided by two bit tests, and getting
     /// either wrong leaks the thing redaction exists to hide.
+    /// A scan that could not tell filtered from lost has no filtered ports to
+    /// report, only ports it never reached.
+    ///
+    /// The failure this exists to prevent: a full-range scan from a wireless
+    /// laptop printed a warning saying it had been outrun, and then printed
+    /// forty-two thousand `filtered` rows underneath it — positive claims about
+    /// a firewall on a host that has none. A warning contradicted by the rows
+    /// below it is a footnote nobody reads.
+    #[test]
+    fn a_scan_that_was_outrun_reports_no_filtered_ports() {
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        host.set_status(HostStatus::Up);
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        for number in 100..140u16 {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Filtered));
+        }
+
+        let trusted = ports(&host, true);
+        assert!(
+            trusted.iter().any(|line| line.contains("filtered")),
+            "a scan that could ask reports what it found: {trusted:?}"
+        );
+
+        let outrun = ports(&host, false);
+        assert!(
+            outrun.iter().all(|line| !line.contains("filtered")),
+            "and one that could not makes no claim at all: {outrun:?}"
+        );
+        assert!(
+            outrun
+                .iter()
+                .any(|line| line.contains("40 ports the scan could not reach")),
+            "but says how many it could not reach: {outrun:?}"
+        );
+        assert!(
+            outrun.iter().any(|line| line.starts_with("22/tcp")),
+            "the open port is a finding either way: {outrun:?}"
+        );
+    }
+
     #[test]
     fn an_ipv6_address_is_masked_by_what_kind_of_address_it_is() {
         // fe80::/10. The OUI half of a EUI-64 identifier survives; the device
@@ -780,14 +996,63 @@ mod tests {
     #[test]
     fn ports_are_listed_open_first_with_the_closed_ones_counted() {
         assert_eq!(
-            ports(&scanned()),
+            ports(&scanned(), true),
             vec![
-                "22/tcp open (ssh OpenSSH 9.6)",
-                "53/udp open",
-                "443/tcp open",
-                "21/tcp filtered",
+                // Columns, so the eye runs down the states rather than hunting
+                // each one at whatever offset its port number left it at.
+                "22/tcp   open      ssh OpenSSH 9.6",
+                "53/udp   open",
+                "443/tcp  open",
+                "21/tcp   filtered",
                 "[1 closed port omitted]",
             ]
+        );
+    }
+
+    /// A wall of filtered ports is one fact, not six hundred of them.
+    ///
+    /// Measured, on a consumer router probed faster than it would answer: nine
+    /// hundred lines of `filtered`, with `80/tcp` buried among them. The first
+    /// few still print — *which* ports a firewall refuses matters when the list
+    /// starts at 22 — and the rest are counted.
+    #[test]
+    fn a_flood_of_filtered_ports_is_counted_rather_than_listed() {
+        let mut host = host(1);
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        for port in 1..=40u16 {
+            host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Filtered));
+        }
+
+        let lines = ports(&host, true);
+
+        // The open port, twelve filtered, and the rollup.
+        assert_eq!(lines.len(), 1 + MAX_LISTED_FILTERED + 1);
+        assert!(lines[0].starts_with("80/tcp"), "open first: {lines:?}");
+        assert!(
+            lines[1].starts_with("1001/tcp"),
+            "and the lowest filtered ones are the ones kept: {lines:?}"
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("[28 more filtered ports omitted]")
+        );
+    }
+
+    /// A firewall policy small enough to read is still printed in full: the
+    /// rollup exists for the case that buries a result, not for every host with
+    /// a closed service.
+    #[test]
+    fn a_handful_of_filtered_ports_is_listed_in_full() {
+        let mut host = host(1);
+        for port in [22u16, 23, 111] {
+            host.add_port(Port::new(port, Protocol::Tcp, PortState::Filtered));
+        }
+
+        let lines = ports(&host, true);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines.iter().all(|line| !line.contains("omitted")),
+            "{lines:?}"
         );
     }
 
@@ -798,7 +1063,7 @@ mod tests {
         let mut host = host(1);
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
 
-        assert_eq!(ports(&host), vec!["[1 closed port omitted]"]);
+        assert_eq!(ports(&host, true), vec!["[1 closed port omitted]"]);
     }
 
     #[test]
@@ -808,12 +1073,12 @@ mod tests {
             host.add_port(Port::new(number, Protocol::Tcp, PortState::Closed));
         }
 
-        assert_eq!(ports(&host), vec!["[2 closed ports omitted]"]);
+        assert_eq!(ports(&host, true), vec!["[2 closed ports omitted]"]);
     }
 
     #[test]
     fn a_host_that_was_never_port_scanned_has_no_port_lines() {
-        assert!(ports(&host(1)).is_empty());
+        assert!(ports(&host(1), true).is_empty());
         assert_eq!(closed_ports(&host(1)), None);
     }
 
@@ -838,7 +1103,7 @@ mod tests {
                 .with_service(Service::new(NO_SERVICE, 0)),
         );
 
-        assert_eq!(ports(&host), vec!["9999/tcp open"]);
+        assert_eq!(ports(&host, true), vec!["9999/tcp  open"]);
         assert_eq!(packed_ports(&host).as_deref(), Some("9999/tcp/open/-"));
     }
 

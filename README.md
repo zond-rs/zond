@@ -127,6 +127,57 @@ TCP connect attempts against a few common ports — but it finds fewer hosts, an
 the hosts it misses look exactly like hosts that are not there. Zond says which
 of the two ran rather than leaving you to guess.
 
+## Keeping out of somewhere
+
+`--exclude` names addresses the run may not touch, in the same grammar targets
+are written in. Repeat it, or write a comma-separated list.
+
+```bash
+sudo zond d 10.0.0.0/16 --exclude 10.0.5.0/24,10.0.9.7
+```
+
+```
+discovering 65279 addresses (10.0.0.0/16)
+excluding 10.0.5.0-10.0.5.255, 10.0.9.7 (257 addresses withheld)
+```
+
+The ranges are printed so you can check them against the scope document you
+copied them from, and the count is what tells you they actually met the targets —
+an exclusion with a typo in it withholds nothing and says so.
+
+Nothing is addressed to an excluded host and nothing about one is reported, *including
+a neighbour a segment sweep would otherwise learn about from an ARP reply or this
+host's neighbour table.* That second half is why this is a guarantee rather than a
+filter on the target list: a sweep does not confine itself to the addresses it was
+given.
+
+**What it cannot promise is that an excluded machine never receives a packet.** An
+ARP request goes to the broadcast address and the IPv6 all-nodes echo to `ff02::1`,
+and every machine on the link sees them. The reply is dropped and nothing is
+recorded, but the probe was sent. If that distinction matters, do not sweep the
+segment that machine is on.
+
+Excluding every address you named is a usage error rather than a scan of nothing,
+because the usual cause is a typo in the exclusion and a run that found no hosts
+looks exactly like a network with nothing on it.
+
+A standing policy belongs in the settings file instead:
+
+```toml
+[defaults]
+exclude = ["10.0.5.0/24", "192.168.1.10-20"]
+```
+
+`exclude` is the one key in that file that **accumulates** across layers rather
+than being overridden — a range in `/etc/zond/engine.toml` stays excluded when
+your own file names another, and both stay excluded when `--exclude` adds a
+third. Every other setting is replaced by the layer above it; this one cannot be,
+because a layer that could cancel an exclusion is a layer that can put a
+forbidden range back into a scan. The file takes addresses, ranges and CIDR
+blocks only: `lan` and hostnames mean something different on every machine that
+reads it, so they belong on the command line where they are resolved at the
+moment they are used.
+
 ### `lan` is not the same as the range it expands to
 
 `lan` names a *network*, and sweeping a network sends the ICMPv6 all-nodes echo

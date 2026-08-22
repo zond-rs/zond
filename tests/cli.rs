@@ -144,6 +144,70 @@ fn a_hostname_is_refused_when_dns_is_forbidden() {
     assert!(stderr(&run).contains("--no-dns"), "{}", stderr(&run));
 }
 
+/// The flag reaches the scan, and the run says what it will not touch.
+///
+/// TEST-NET-1 answers nothing either way, so what is asserted is the accounting
+/// rather than a finding: four addresses named, two of them withheld, and the
+/// header reporting the two that are left. That is the whole path — clap to the
+/// target grammar to the engine's policy to the line a person reads — and no
+/// unit test covers all of it.
+#[test]
+fn an_excluded_range_is_named_and_left_out_of_the_count() {
+    let run = zond("exclude", &["d", "192.0.2.1-4", "--exclude", "192.0.2.3-4"]);
+    assert_eq!(status(&run), 0, "{}", stderr(&run));
+
+    let said = stderr(&run);
+    assert!(said.contains("discovering 2 addresses"), "{said}");
+    assert!(said.contains("excluding 192.0.2.3-192.0.2.4"), "{said}");
+    assert!(said.contains("2 addresses withheld"), "{said}");
+}
+
+/// A run with nothing left to scan is a usage error, not a sweep of nothing.
+///
+/// The likely cause is a typo in the exclusion, and a run that reported no hosts
+/// would look exactly like a network with nothing on it.
+#[test]
+fn excluding_every_target_is_a_usage_error() {
+    let run = zond(
+        "exclude-all",
+        &["d", "192.0.2.0/24", "--exclude", "192.0.2.0/24"],
+    );
+    assert_eq!(status(&run), 2, "{}", stderr(&run));
+    assert!(stderr(&run).contains("--exclude"), "{}", stderr(&run));
+}
+
+/// A settings file's exclusions and the flag's are both in force.
+///
+/// The one key in that document that accumulates rather than being overridden:
+/// a range an administrator wrote into the file must not be droppable by
+/// somebody passing an exclusion of their own on the command line. Asserted
+/// through the front door because the layering runs across three modules and
+/// two crates.
+#[test]
+fn a_files_exclusions_survive_a_flag_that_adds_its_own() {
+    let directory = config_home("exclude-layers");
+    std::fs::create_dir_all(directory.join("zond")).expect("a writable directory");
+    std::fs::write(
+        directory.join("zond/engine.toml"),
+        "[defaults]\nexclude = [\"192.0.2.1\"]\n",
+    )
+    .expect("a writable file");
+
+    let run = zond_in(&directory, &["d", "192.0.2.1-4", "--exclude", "192.0.2.4"]);
+    assert_eq!(status(&run), 0, "{}", stderr(&run));
+
+    let said = stderr(&run);
+    assert!(said.contains("discovering 2 addresses"), "{said}");
+    assert!(
+        said.contains("192.0.2.1"),
+        "the file's range is in force: {said}"
+    );
+    assert!(
+        said.contains("192.0.2.4"),
+        "the flag's range is too: {said}"
+    );
+}
+
 /// The first run leaves the user with two files to edit, in one directory.
 #[test]
 fn a_first_run_provisions_both_settings_files() {
@@ -319,6 +383,28 @@ fn the_ports_flag_decides_how_many_probes_are_spent() {
         "{}",
         stderr(&many)
     );
+}
+
+/// The spelling everybody arrives with, in all three of its forms.
+///
+/// `-p-` has to survive the argument parser as much as the port grammar: clap
+/// reads a leading dash as the start of another flag unless told otherwise, and
+/// a scanner that refused the one port specification its users already know
+/// would be wrong in the most visible possible place.
+#[test]
+fn a_range_may_leave_off_either_end_on_the_command_line() {
+    for (spec, probes) in [
+        ("-p-", "65535 probes"),
+        ("-p-1024", "1024 probes"),
+        ("-p65000-", "536 probes"),
+    ] {
+        let run = zond("scan-open-range", &["s", "127.0.0.1", spec, "--no-service-detection"]);
+        assert!(
+            stderr(&run).contains(probes),
+            "`{spec}` should scan {probes}: {}",
+            stderr(&run)
+        );
+    }
 }
 
 /// Addresses times ports, refused before anything is sent.

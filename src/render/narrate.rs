@@ -22,7 +22,7 @@ use std::net::IpAddr;
 
 use zond_engine::export::Redaction;
 use zond_engine::scanner::report::ScanKind;
-use zond_engine::{Host, ScanReport};
+use zond_engine::{Exclusions, Host, ScanReport};
 
 use crate::diagnostics::Verbosity;
 use crate::render::field::plural;
@@ -71,29 +71,43 @@ impl Narrator {
     }
 
     /// What is about to happen, and how much of it.
+    ///
+    /// The counts are what the run will cover, so they are the ones left after
+    /// any exclusion policy. What that policy removed is said on a line of its
+    /// own rather than folded into them: the number a person checks against a
+    /// scope document is a number, and the thing they check is a range.
     pub(crate) fn started(&mut self, phase: Phase<'_>, redaction: Redaction) -> io::Result<()> {
         self.redact(redaction);
 
-        let line = match phase {
+        let (line, excluded) = match phase {
             Phase::Discovery { targets } => {
                 let count = targets.len();
-                format!(
-                    "discovering {count} {} ({targets})",
-                    plural(count, "address")
+                (
+                    format!(
+                        "discovering {count} {} ({targets})",
+                        plural(count, "address")
+                    ),
+                    withheld(targets.exclusions(), targets.excluded()),
                 )
             }
             Phase::PortScan { targets } => {
                 let hosts = targets.hosts();
                 let probes = targets.probes();
-                format!(
-                    "scanning {probes} {} across {hosts} {} ({targets})",
-                    plural(probes, "probe"),
-                    plural(hosts, "host"),
+                (
+                    format!(
+                        "scanning {probes} {} across {hosts} {} ({targets})",
+                        plural(probes, "probe"),
+                        plural(hosts, "host"),
+                    ),
+                    withheld(targets.exclusions(), targets.excluded()),
                 )
             }
         };
 
         self.say(&line)?;
+        if let Some(excluded) = excluded {
+            self.say(&excluded)?;
+        }
         self.out.flush()
     }
 
@@ -190,6 +204,40 @@ impl Narrator {
 // ║    ██║   ███████╗███████║   ██║   ███████║ ║
 // ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
 // ╚════════════════════════════════════════════╝
+
+/// The line that says what a run was forbidden to touch, or `None` when nothing
+/// was.
+///
+/// Silent under no policy, because "0 addresses excluded" on every run of every
+/// scan trains a reader to skip the line on the one run where it matters.
+///
+/// The ranges come first and the count second. A person reads this to check a
+/// scope document, and what they are checking is which ranges were named; the
+/// count is what tells them the ranges actually met the targets, which is the
+/// mistake a typo in an exclusion produces.
+fn withheld(exclusions: &Exclusions, addresses: u128) -> Option<String> {
+    if exclusions.is_empty() {
+        return None;
+    }
+
+    let ranges: Vec<String> = exclusions
+        .ranges()
+        .iter()
+        .map(|range| {
+            if range.start_addr() == range.end_addr() {
+                range.start_addr().to_string()
+            } else {
+                format!("{}-{}", range.start_addr(), range.end_addr())
+            }
+        })
+        .collect();
+
+    Some(format!(
+        "excluding {} ({addresses} {} withheld)",
+        ranges.join(", "),
+        plural(addresses, "address"),
+    ))
+}
 
 #[cfg(test)]
 mod tests {
