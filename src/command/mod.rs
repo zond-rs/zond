@@ -27,7 +27,13 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use zond_engine::export::Redaction;
+
+use crate::export::Destination;
+use zond_engine::journal::manifest::Plan;
+use zond_engine::journal::paths;
+use zond_engine::journal::store::Journal;
 use zond_engine::model::host::Host;
+use zond_engine::system::privilege;
 use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ZondConfig};
 
 use crate::error::Error;
@@ -61,6 +67,44 @@ fn redaction(config: &ZondConfig) -> Redaction {
     }
 }
 
+/// Starts a record for this run, or says why it could not and carries on.
+///
+/// Both subcommands record by default, so this is where either of them asks
+/// for a journal. `summary` is the line a listing shows and nothing decides
+/// anything from it.
+///
+/// A run that cannot be recorded is still a run worth having. Every way this
+/// fails — no home directory, a state directory that will not take a write, an
+/// id that could not be claimed — is reported and returns `None`, and the
+/// caller scans anyway.
+fn record(plan: &Plan, summary: String) -> Option<Journal> {
+    let Some(root) = paths::root() else {
+        tracing::warn!("not recording this scan: this environment names no home");
+        return None;
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        tracing::warn!(
+            "not recording this scan: {} is not writable ({e})",
+            root.display()
+        );
+        return None;
+    }
+
+    match Journal::create(&root, plan, privilege::is_elevated(), summary) {
+        Ok(journal) => {
+            // To stderr: where a scan is writing is commentary on the run, and
+            // somebody piping its results should still be told.
+            tracing::info!("recording this scan as {}", journal.manifest().id);
+            Some(journal)
+        }
+        Err(e) => {
+            tracing::warn!("not recording this scan: {e}");
+            None
+        }
+    }
+}
+
 /// Runs a scan the engine has already been asked for, and reports it.
 ///
 /// Watches the run happen so a person sees hosts as they are found rather than
@@ -69,6 +113,8 @@ fn redaction(config: &ZondConfig) -> Redaction {
 async fn drive(
     session: ScanSession,
     task: ScanTask,
+    destinations: &[Destination],
+    redaction: Redaction,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
     // Taken apart because holding the whole session would borrow it twice in
@@ -122,13 +168,18 @@ async fn drive(
     }
 
     let report = task.join().await?;
+
+    // The terminal first. A file that could not be written must not take the
+    // findings with it, and by here they are already in hand.
     renderer.finished(&report)?;
+    let written = crate::export::write_all(destinations, &report, redaction);
 
     // From the handle, not from whether the branch above ran. `select!` picks
     // at random between ready branches, and an abort closes the event stream —
     // so the loop can break before the request that caused it is ever read, and
     // the run would call itself complete having been cut short.
-    Ok(outcome(&report, handle.should_stop()))
+    let outcome = outcome(&report, handle.should_stop());
+    Ok(if written { outcome } else { Outcome::Partial })
 }
 
 /// What the run amounted to.

@@ -12,27 +12,72 @@
 //!
 //! The engine does the scanning and [`drive`](super::drive) does the watching.
 //! What this module contributes is deciding what the user asked about.
+//!
+//! A sweep is recorded like a port scan, and continued the same way: an address
+//! that answered, or that was asked as many times as it is going to be, is one
+//! a later sitting does not repeat. `zond journal` lists what is on record and
+//! `zond journal report` prints any of it back.
 
-use zond_engine::discover;
+use zond_engine::journal::manifest::Plan;
+use zond_engine::journal::paths;
+use zond_engine::journal::store::{self, Journal};
+use zond_engine::model::ip::set::IpSet;
+use zond_engine::{ZondConfig, discover, discover_with_journal};
 
 use crate::cli::DiscoverArgs;
 use crate::command;
 use crate::error::Error;
 use crate::exit::Outcome;
+use crate::export::Destination;
 use crate::render::{Phase, Renderer};
-use crate::target;
+use crate::target::{self, Targets};
 
 /// Runs a discovery sweep.
 pub(crate) async fn run(
     args: &DiscoverArgs,
+    recording: bool,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
+    // Before anything is sent: a misspelt extension is a mistake made in the
+    // first second of a run that may take hours, and the end of one is the
+    // worst moment to be told.
+    let destinations = Destination::resolve(
+        &args.export.output,
+        &args.export.output_as,
+        args.export.output_all.as_deref(),
+    )?;
+
     // Before the targets: whether a hostname may be looked up at all depends
     // on the `no_dns` these layers settle on, which a file may set as well as a
     // flag.
     let mut config = command::engine_settings(args.engine.profile.as_deref())?.config;
     args.engine.apply_to(&mut config);
 
+    // A resume needs no targets: the plan comes from the record, which is what
+    // ran rather than what somebody types the second time.
+    let (targets, journal) = match args.resume.as_deref() {
+        Some(id) => continued(id, &mut config).await?,
+        None => started(args, recording, &mut config).await?,
+    };
+
+    let redaction = command::redaction(&config);
+    renderer.started(Phase::Discovery { targets: &targets }, redaction)?;
+
+    let ips = targets.into_ips();
+    let (session, task) = match journal {
+        Some(journal) => discover_with_journal(ips, &config, journal).await?,
+        None => discover(ips, &config).await?,
+    };
+
+    command::drive(session, task, &destinations, redaction, renderer).await
+}
+
+/// A sweep of what the command line asked for.
+async fn started(
+    args: &DiscoverArgs,
+    recording: bool,
+    config: &mut ZondConfig,
+) -> Result<(Targets, Option<Journal>), Error> {
     // Exclusions travel with the targets: same grammar, same DNS policy, one
     // module deciding what either half of a scope means.
     let targets = target::resolve(
@@ -43,12 +88,80 @@ pub(crate) async fn run(
     )
     .await?;
 
-    let redaction = command::redaction(&config);
-    renderer.started(Phase::Discovery { targets: &targets }, redaction)?;
+    // After `apply_to`, because whether this is a segment sweep is part of what
+    // gets recorded, and `lan` is one of the things that decides it. Before the
+    // sweep is announced, so that where it is being written appears above the
+    // results rather than in the middle of them.
+    targets.apply_to(config);
+    let journal = recording
+        .then(|| {
+            command::record(
+                &Plan::discovery(targets.ips(), &config.exclusions, config.segment_sweep),
+                summarise(targets.ips()),
+            )
+        })
+        .flatten();
 
-    targets.apply_to(&mut config);
+    Ok((targets, journal))
+}
 
-    let (session, task) = discover(targets.into_ips(), &config).await?;
+/// A sweep continuing one already on record.
+///
+/// The plan is the recorded one, so there is nothing to type but the id. What
+/// the engine is handed back is the whole of it: the addresses this sitting has
+/// to ask about are worked out from the record's own cursor, which is the only
+/// thing that knows what the earlier sittings earned.
+async fn continued(id: &str, config: &mut ZondConfig) -> Result<(Targets, Option<Journal>), Error> {
+    let id = &command::journal::newest_if_latest(id)?;
+    let directory = paths::scan(id).ok_or(Error::NoJournalDirectory)?;
+    if !directory.is_dir() {
+        let known = paths::root()
+            .and_then(|root| store::list(&root).ok())
+            .map_or(0, |entries| entries.len());
+        return Err(Error::NoSuchJournal {
+            id: id.to_owned(),
+            known,
+        });
+    }
 
-    command::drive(session, task, renderer).await
+    let (journal, checkpoint, recorded) =
+        Journal::reopen(&directory, zond_engine::system::privilege::is_elevated())?;
+
+    let Some(addresses) = recorded.addresses().cloned() else {
+        return Err(Error::WrongPhase {
+            id: id.to_owned(),
+            held: "a port scan",
+            remedy: "zond scan --resume",
+        });
+    };
+
+    // The record's own answer, not this run's: whether the first sitting swept
+    // the segment beyond its addresses is part of what is being continued.
+    config.segment_sweep = journal.manifest().sweep;
+
+    let total = journal.manifest().total_targets;
+    let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
+    tracing::info!("continuing {id}: {settled} of {total} addresses already settled");
+
+    let remaining = total.saturating_sub(settled);
+    Ok((
+        Targets::resumed(addresses, remaining, id.to_owned()),
+        Some(journal),
+    ))
+}
+
+/// How a sweep is described in a listing.
+///
+/// Short enough for a column and specific enough to recognise: where it started
+/// and how much ground it covered. Nothing decides anything from this text.
+fn summarise(addresses: &IpSet) -> String {
+    let first = addresses
+        .iter()
+        .next()
+        .map_or_else(|| String::from("nothing"), |ip| ip.to_string());
+
+    match addresses.len() {
+        0 | 1 => first,
+        n => format!("{first} and {} more", n - 1),
+    }
 }

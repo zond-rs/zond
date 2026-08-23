@@ -218,6 +218,29 @@ pub(crate) struct Targets {
 }
 
 impl Targets {
+    /// The addresses a resumed sweep has left, from the plan its record held.
+    ///
+    /// `remaining` rather than the plan's own size: a sweep with four hundred
+    /// addresses left should not announce sixty-five thousand. `label` is what
+    /// the header line shows, since there are no expressions — nobody typed
+    /// anything but an id.
+    ///
+    /// The exclusions are empty because the record's plan already has them
+    /// applied; saying so again would report a policy withholding what it
+    /// withheld a sitting ago.
+    #[must_use]
+    pub(crate) fn resumed(ips: IpSet, remaining: u128, label: String) -> Self {
+        Self {
+            asked: Asked {
+                expressions: vec![label],
+                segment_sweep: false,
+                exclusions: Exclusions::none(),
+            },
+            ips,
+            remaining,
+        }
+    }
+
     /// Takes the addresses, for handing to the engine.
     ///
     /// The full set, before exclusions. The engine is given the policy too and
@@ -226,6 +249,15 @@ impl Targets {
     #[must_use]
     pub(crate) fn into_ips(self) -> IpSet {
         self.ips
+    }
+
+    /// The same addresses, borrowed.
+    ///
+    /// For what has to read the plan before the sweep takes it — a journal
+    /// recording what this run was pointed at.
+    #[must_use]
+    pub(crate) fn ips(&self) -> &IpSet {
+        &self.ips
     }
 
     /// How many addresses this run will actually walk.

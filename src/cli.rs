@@ -73,6 +73,75 @@ pub(crate) struct JournalArgs {
     /// What to do with them. Lists them when nothing is said.
     #[command(subcommand)]
     pub what: Option<JournalCommand>,
+
+    /// How much of the listing to show at once.
+    #[command(flatten)]
+    pub page: PageArgs,
+}
+
+/// Where a run writes its report, besides the terminal.
+///
+/// Repeatable, so one run can leave a JSON document for a pipeline and an HTML
+/// page for the person who asked for the scan. See [`export`](crate::export)
+/// for how a destination becomes a format, and [`nmap`](crate::nmap) for the
+/// spellings borrowed from there.
+#[derive(Debug, Args, Default)]
+pub(crate) struct ExportArgs {
+    /// Write the report to FILE, in the format its extension names.
+    ///
+    /// `report.json`, `report.jsonl`, `report.csv`, `report.html` and
+    /// `report.xml` — the last being nmap's XML, for the tools that already
+    /// ingest it. Give the flag more than once for more than one file.
+    ///
+    /// An extension naming no format is refused rather than guessed at.
+    #[arg(long, short = 'o', value_name = "FILE", action = ArgAction::Append)]
+    pub output: Vec<std::path::PathBuf>,
+
+    /// Write the report to FILE in the format you name: `--output-as json=out`.
+    ///
+    /// For a destination whose extension would say the wrong thing, or nothing
+    /// at all. Repeatable, like `--output`.
+    #[arg(long = "output-as", value_name = "FORMAT=FILE", action = ArgAction::Append)]
+    pub output_as: Vec<crate::export::FormatAndPath>,
+
+    /// Write every format this build can produce, each named after BASE.
+    ///
+    /// `--output-all engagement` leaves `engagement.json`, `engagement.csv`,
+    /// and one of each of the rest.
+    #[arg(long = "output-all", value_name = "BASE")]
+    pub output_all: Option<std::path::PathBuf>,
+}
+
+/// How much of a listing to show at once.
+///
+/// **Not global.** They belong to listing, and the sibling subcommands already
+/// spell two of these letters differently: `prune -n` is a dry run, and
+/// `prune --all` deletes every record where here it shows them. A flag that
+/// meant "show everything" on one subcommand and "delete everything" on the
+/// next is not a convenience.
+///
+/// So the set is attached in the two places a listing happens — `zond journal`,
+/// which lists when nothing else is asked, and `zond journal list`.
+#[derive(Debug, Args, Default)]
+pub(crate) struct PageArgs {
+    /// How many records to list at once.
+    ///
+    /// Ten by default, newest first, which is the handful anybody is usually
+    /// looking for. `page_size` in `cli.toml` changes that for every run, and
+    /// 0 means no limit.
+    #[arg(long, short = 'n', value_name = "COUNT", conflicts_with = "all")]
+    pub limit: Option<usize>,
+
+    /// Which page of them, counting from one.
+    ///
+    /// Pages are as long as `--limit`, so `--page 3` is the third ten unless
+    /// you said otherwise.
+    #[arg(long, value_name = "N", conflicts_with = "all")]
+    pub page: Option<usize>,
+
+    /// List every record, however many there are.
+    #[arg(long, short = 'a')]
+    pub all: bool,
 }
 
 /// What `zond journal` was asked to do.
@@ -80,13 +149,36 @@ pub(crate) struct JournalArgs {
 pub(crate) enum JournalCommand {
     /// List every scan this machine has a record of, newest first.
     #[command(visible_alias = "ls")]
-    List,
+    List(PageArgs),
 
     /// Show one scan in full.
     Show {
         /// Which one, as `zond journal` lists it.
         #[arg(value_name = "ID")]
         id: String,
+    },
+
+    /// Print what one scan found, the way it was printed when it ran.
+    ///
+    /// The same output `zond discover` and `zond scan` end with, from the
+    /// record instead of from the network. Nothing is probed and nothing is
+    /// contacted, so a scan can be read back long after the terminal it ran in
+    /// is gone — and a scan still running prints what it has written down so
+    /// far, which is a little behind what it has found.
+    ///
+    /// `zond journal show` is the record's own details: where it is, how far it
+    /// got, what is holding it.
+    Report {
+        /// Which one, as `zond journal` lists it, or `latest`.
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// Where to write it, besides the terminal.
+        ///
+        /// The same spellings a scan takes, so a record can be exported long
+        /// after the run that made it: `zond journal report latest -o out.json`.
+        #[command(flatten)]
+        export: ExportArgs,
     },
 
     /// Delete records: the ones named, or the ones no longer worth keeping.
@@ -156,12 +248,45 @@ pub(crate) struct DiscoverArgs {
     /// What to scan: an address, a range, a CIDR block, a hostname, or `lan`.
     ///
     /// Several may be given, and each may itself be a comma-separated list.
-    #[arg(value_name = "TARGET", required = true, num_args = 1..)]
+    ///
+    /// Not needed with `--resume`, which sweeps what the recorded run was
+    /// sweeping.
+    #[arg(value_name = "TARGET", required_unless_present = "resume", num_args = 1..)]
     pub targets: Vec<String>,
+
+    /// Do not write down how far this sweep gets.
+    ///
+    /// Every sweep is recorded by default, because the moment you want to
+    /// continue one is after it was cut short — and a flag you had to pass
+    /// beforehand is one you did not. `zond journal` lists what is on record,
+    /// `zond journal report` prints one back, and `zond journal prune` clears
+    /// them out.
+    ///
+    /// A record holds the addresses you swept and what answered. It is written
+    /// under your own home, readable only by you. This turns that off for one
+    /// run; `journal = false` in `cli.toml` turns it off for all of them.
+    #[arg(long, conflicts_with = "resume")]
+    pub no_journal: bool,
+
+    /// Continue the sweep with this id, asking only about what it did not settle.
+    ///
+    /// The addresses come from the record, so there is nothing to type but the
+    /// id. An address that answered, or that was asked as many times as it was
+    /// going to be, is not asked again; one whose probes were cut off mid-way is.
+    ///
+    /// `zond journal` lists what can be continued. A record's scope is fixed,
+    /// so `--exclude` cannot be added to one: withholding an address the record
+    /// counted would renumber every address after it.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["targets", "exclude"])]
+    pub resume: Option<String>,
 
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
     pub engine: EngineArgs,
+
+    /// Where to write the report, besides the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
 }
 
 /// Arguments to `zond scan`.
@@ -238,8 +363,10 @@ pub(crate) struct ScanArgs {
     /// record means nothing against a different plan, so a mismatch is refused
     /// rather than quietly scanning something else.
     ///
-    /// `zond journal` lists what can be continued.
-    #[arg(long, value_name = "ID")]
+    /// `zond journal` lists what can be continued. A record's scope is fixed,
+    /// so `--exclude` cannot be added to one: withholding an address the record
+    /// counted would renumber every target after it.
+    #[arg(long, value_name = "ID", conflicts_with = "exclude")]
     pub resume: Option<String>,
 
     /// Scan every target without checking first that anything is there.
@@ -267,6 +394,10 @@ pub(crate) struct ScanArgs {
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
     pub engine: EngineArgs,
+
+    /// Where to write the report, besides the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
 }
 
 impl ScanArgs {
@@ -310,6 +441,24 @@ Stopping a run:
   needs a terminal; in a pipe or a script, Ctrl-C is the one that works.
 ";
 
+/// The output-format help both scanning subcommands carry.
+///
+/// Shared rather than written twice: they take the same flags, and two copies
+/// of a format list is two lists to keep in step.
+const OUTPUT_FORMS: &str = "
+Writing the report to a file:
+  -o report.json          the extension names the format
+  -o report.html -o r.csv  more than one file, one flag each
+  --output-as json=out     when the extension would say the wrong thing
+  --output-all engagement  every format, each under its own extension
+
+Formats: json, jsonl, csv, html, and xml — the last being nmap's, for the
+tools that already ingest it. Nmap's own spellings work too: -oX, -oJ, -oC,
+-oH, -oL and -oA. A file is written as well as the terminal output, never
+instead of it, and a destination that names no format is refused before the
+scan starts rather than after it.
+";
+
 /// What is shown under `zond discover --help`, below the flags.
 ///
 /// Assembled rather than written twice: the two subcommands share a target
@@ -326,7 +475,9 @@ Examples:
   sudo zond d 2001:db8::1,2001:db8::2
   sudo zond d one.one.one.one
   sudo zond d 10.0.0.0/16 --exclude 10.0.5.0/24
+  sudo zond d lan -o hosts.json
 ",
+        OUTPUT_FORMS,
         STOPPING,
         "
 Discovery uses raw sockets when it can. Without root it falls back to TCP
@@ -349,6 +500,7 @@ Examples:
   sudo zond s 192.168.0.150 -p 8000-       every port from 8000 up
   sudo zond s 10.0.0.0/24 --exclude 10.0.0.7 -p 22
   sudo zond s 192.168.0.150 -p 443 --traceroute
+  sudo zond s 10.0.0.0/24 -p 22,443 -oA engagement
 
 Given no port flag, a scan probes the thousand TCP ports most likely to be
 listening, ranked by the engine rather than taken as a range. That is a
@@ -358,6 +510,7 @@ it, and much of what is below it has not been deployed this century.
 A scan checks each target is there before probing its ports, and skips the ones
 that answer nothing. --assume-up scans them anyway.
 ",
+        OUTPUT_FORMS,
         STOPPING,
         "
 Port scanning uses raw SYN probes when it can. Without root every port is tested

@@ -102,6 +102,12 @@ impl Narrator {
                     withheld(targets.exclusions(), targets.excluded()),
                 )
             }
+            // No exclusion line: what a record holds is what the scan covered,
+            // and whatever it was kept out of was kept out at the time.
+            Phase::Recorded { id, started_at } => (
+                format!("reading {id}, a scan from {}", field::timestamp(started_at)),
+                None,
+            ),
         };
 
         self.say(&line)?;
@@ -154,9 +160,15 @@ impl Narrator {
         // After the count rather than before the scan: both notes say the count
         // is an undercount, which matters when somebody is looking at it. The
         // engine already announced the privilege level; this adds the remedy.
-        if !field::was_privileged(report) {
-            self.say(match field::kind(report) {
-                Some(ScanKind::PortScan) => {
+        //
+        // A report with no phase at all measured nothing and has no privilege
+        // level to advise about — a record read back from a scan that stopped
+        // before it wrote one, rather than a scan that ran unprivileged.
+        if let Some(kind) = field::kind(report)
+            && !field::was_privileged(report)
+        {
+            self.say(match kind {
+                ScanKind::PortScan => {
                     "note: ran without raw sockets, so every port was tested by \
                      completing a connection. Run with sudo for SYN scanning, \
                      which is faster, less visible, and the only way to ask a \

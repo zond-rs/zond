@@ -37,7 +37,9 @@ mod command;
 mod diagnostics;
 mod error;
 mod exit;
+mod export;
 mod input;
+mod nmap;
 mod render;
 mod settings;
 mod target;
@@ -52,9 +54,19 @@ use crate::exit::Outcome;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Nmap's output spellings first: `-oX f` cannot be expressed as an argument,
+    // so it is turned into one before the parser sees it. See `nmap`.
+    let arguments = match nmap::rewrite(std::env::args_os()) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            error.report();
+            return error.code().into();
+        }
+    };
+
     // Exits the process itself on a usage error: the one exit path that does
     // not come through the code below.
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(arguments);
 
     match run(cli).await {
         Ok(outcome) => outcome.code(),
@@ -93,18 +105,21 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     // whichever subcommand they typed.
     if let Command::Journal(args) = &cli.command {
         render::validate(presentation)?;
-        return command::journal::run(args, presentation);
+        return command::journal::run(args, presentation, verbosity);
     }
 
     let mut renderer = render::renderer(presentation, verbosity)?;
 
+    // On unless the run or the settings file says otherwise: somebody wants to
+    // continue or re-read a scan after it is over, not before.
+    let recording = |declined: bool| !declined && settings.journal().unwrap_or(true);
+
     match &cli.command {
-        Command::Discover(args) => command::discover::run(args, renderer.as_mut()).await,
+        Command::Discover(args) => {
+            command::discover::run(args, recording(args.no_journal), renderer.as_mut()).await
+        }
         Command::Scan(args) => {
-            // On unless the run or the settings file says otherwise: somebody
-            // wants to continue a scan after it was cut short, not before.
-            let recording = !args.no_journal && settings.journal().unwrap_or(true);
-            command::scan::run(args, recording, renderer.as_mut()).await
+            command::scan::run(args, recording(args.no_journal), renderer.as_mut()).await
         }
         Command::Journal(_) => unreachable!("handled above"),
     }

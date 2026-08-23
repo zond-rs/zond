@@ -80,6 +80,78 @@ pub(crate) enum Error {
         known: usize,
     },
 
+    /// The record named holds the other phase of a scan.
+    ///
+    /// A sweep counts addresses and a port scan counts address-and-port pairs,
+    /// so continuing one as the other would skip targets nothing ever probed.
+    /// The engine refuses it; this is the same refusal with the command that
+    /// would have worked.
+    #[error("{id} records {held}, so continue it with `{remedy} {id}`")]
+    WrongPhase {
+        /// The record that was named.
+        id: String,
+        /// What it holds, as a phrase that reads after "records".
+        held: &'static str,
+        /// The command that continues that phase.
+        remedy: &'static str,
+    },
+
+    /// A destination's extension names no format this build can write.
+    #[error(
+        "{} names no format this build can write. Give it one of: {known} — or \
+         say which with --output-as FORMAT=FILE.",
+        path.display()
+    )]
+    UnknownExportFormat {
+        /// The destination as it was given.
+        path: std::path::PathBuf,
+        /// The formats that would have worked.
+        known: String,
+    },
+
+    /// `--output-as` was given something that is not `FORMAT=FILE`.
+    #[error("--output-as takes FORMAT=FILE, as in `json=report.out`, not '{written}' ({known})")]
+    MalformedOutputAs {
+        /// What was written.
+        written: String,
+        /// The formats that would have worked.
+        known: String,
+    },
+
+    /// `--output-as` named a format this build cannot write.
+    #[error("'{named}' is not a format this build can write. It knows: {known}")]
+    UnknownFormatName {
+        /// The name that was given.
+        named: String,
+        /// The formats that would have worked.
+        known: String,
+    },
+
+    /// One of nmap's output spellings names a format that is not built yet.
+    ///
+    /// Refused by name rather than left to fail as an unknown flag: "not built
+    /// yet" and "no such thing" send a person to different places.
+    #[error("{spelling} is one of nmap's formats that zond does not write yet. It writes: {known}")]
+    FormatNotBuilt {
+        /// The spelling that was given.
+        spelling: String,
+        /// The formats that would have worked.
+        known: String,
+    },
+
+    /// A page was asked for that the listing does not have.
+    ///
+    /// Refused rather than answered with nothing: an empty listing reads as
+    /// "no scans on record", which is a different and more alarming thing than
+    /// "you asked for the ninth page of two".
+    #[error("there is no page {asked}: the listing ends at page {pages}")]
+    NoSuchPage {
+        /// The page that was asked for.
+        asked: usize,
+        /// How many there are.
+        pages: usize,
+    },
+
     /// A shortened id names more than one scan.
     ///
     /// Refused rather than resolved to the first match: the wrong scan deleted
@@ -115,6 +187,12 @@ impl Error {
             | Error::Settings(_)
             | Error::Presentation(_)
             | Error::NoSuchJournal { .. }
+            | Error::NoSuchPage { .. }
+            | Error::UnknownExportFormat { .. }
+            | Error::MalformedOutputAs { .. }
+            | Error::UnknownFormatName { .. }
+            | Error::FormatNotBuilt { .. }
+            | Error::WrongPhase { .. }
             | Error::AmbiguousJournal { .. }
             // A plan that does not match, or a scan already running: both are
             // the caller asking for something that cannot be done, not a fault.

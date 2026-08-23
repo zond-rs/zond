@@ -221,6 +221,7 @@ pub(crate) enum SettingsError {
 pub(crate) struct Settings {
     presentation: Option<Presentation>,
     journal: Option<bool>,
+    page_size: Option<usize>,
 }
 
 impl Settings {
@@ -236,6 +237,14 @@ impl Settings {
         self.journal
     }
 
+    /// How many records a listing shows at once, if these settings say.
+    ///
+    /// Zero is read as "no limit", which is what somebody writing `0` means.
+    #[must_use]
+    pub(crate) fn page_size(self) -> Option<usize> {
+        self.page_size
+    }
+
     /// Lays `other` over this, key by key.
     fn overlay(&mut self, other: Settings) {
         if let Some(presentation) = other.presentation {
@@ -243,6 +252,9 @@ impl Settings {
         }
         if let Some(journal) = other.journal {
             self.journal = Some(journal);
+        }
+        if let Some(page_size) = other.page_size {
+            self.page_size = Some(page_size);
         }
     }
 }
@@ -254,6 +266,7 @@ impl Settings {
 struct Document {
     presentation: Option<String>,
     journal: Option<bool>,
+    page_size: Option<usize>,
     #[serde(flatten)]
     unknown: BTreeMap<String, toml::Value>,
 }
@@ -288,6 +301,7 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
         Settings {
             presentation,
             journal: document.journal,
+            page_size: document.page_size,
         },
         warnings,
     ))
@@ -632,6 +646,7 @@ mod tests {
         let mut settings = Settings {
             presentation: Some(Presentation::Fancy),
             journal: Some(false),
+            page_size: Some(3),
         };
 
         settings.overlay(Settings::default());
@@ -641,10 +656,12 @@ mod tests {
             "a file that said nothing must not reset anything"
         );
         assert_eq!(settings.journal(), Some(false), "nor any other key");
+        assert_eq!(settings.page_size(), Some(3), "nor any other");
 
         settings.overlay(Settings {
             presentation: Some(Presentation::Minimal),
             journal: None,
+            page_size: None,
         });
         assert_eq!(settings.presentation(), Some(Presentation::Minimal));
         assert_eq!(

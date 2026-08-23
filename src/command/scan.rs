@@ -21,6 +21,7 @@
 //! That is the caller's trade to make. `zond discover` answers which hosts are
 //! there, and its output feeds straight back in.
 
+use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
 use zond_engine::journal::store::{self, Journal};
 use zond_engine::model::target::TargetMap;
@@ -32,6 +33,7 @@ use crate::cli::ScanArgs;
 use crate::command;
 use crate::error::Error;
 use crate::exit::Outcome;
+use crate::export::Destination;
 use crate::render::{Phase, Renderer};
 use crate::target::{self, ScanTargets};
 
@@ -56,6 +58,15 @@ pub(crate) async fn run(
     recording: bool,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
+    // Before anything is sent: a misspelt extension is a mistake made in the
+    // first second of a run that may take hours, and the end of one is the
+    // worst moment to be told.
+    let destinations = Destination::resolve(
+        &args.export.output,
+        &args.export.output_as,
+        args.export.output_all.as_deref(),
+    )?;
+
     let settings = command::engine_settings(args.engine.profile.as_deref())?;
     let mut config = settings.config;
     args.apply_to(&mut config);
@@ -77,7 +88,7 @@ pub(crate) async fn run(
         None => scan(plan, &config).await?,
     };
 
-    command::drive(session, task, renderer).await
+    command::drive(session, task, &destinations, redaction, renderer).await
 }
 
 /// A scan of what the command line asked for.
@@ -102,7 +113,12 @@ async fn started(
     // refusing reads as a scan that went wrong rather than one that never
     // started.
     let journal = recording
-        .then(|| start(targets.map(), config, privilege::is_elevated()))
+        .then(|| {
+            command::record(
+                &Plan::port_scan(targets.map(), &config.exclusions, config.tcp_technique),
+                summarise(targets.map()),
+            )
+        })
         .flatten();
 
     Ok((targets, journal))
@@ -118,6 +134,7 @@ async fn continued(
     args: &ScanArgs,
     config: &ZondConfig,
 ) -> Result<(ScanTargets, Option<Journal>), Error> {
+    let id = &command::journal::newest_if_latest(id)?;
     let directory = paths::scan(id).ok_or(Error::NoJournalDirectory)?;
     if !directory.is_dir() {
         let known = paths::root()
@@ -129,7 +146,15 @@ async fn continued(
         });
     }
 
-    let (journal, checkpoint, plan) = Journal::reopen(&directory, privilege::is_elevated())?;
+    let (journal, checkpoint, recorded) = Journal::reopen(&directory, privilege::is_elevated())?;
+
+    let Some(plan) = recorded.targets().cloned() else {
+        return Err(Error::WrongPhase {
+            id: id.to_owned(),
+            held: "a sweep",
+            remedy: "zond discover --resume",
+        });
+    };
 
     if !args.targets.is_empty() {
         let ports = ports(args, ports_from_settings(args)?);
@@ -143,8 +168,11 @@ async fn continued(
         .await?;
 
         journal.manifest().covers(
-            named.map(),
-            journal.manifest().technique(),
+            &Plan::port_scan(
+                named.map(),
+                &config.exclusions,
+                journal.manifest().technique(),
+            ),
             privilege::is_elevated(),
         )?;
     }
@@ -163,41 +191,6 @@ async fn continued(
 /// The ports a settings file asks for, where the command line says nothing.
 fn ports_from_settings(args: &ScanArgs) -> Result<Option<PortSet>, Error> {
     Ok(command::engine_settings(args.engine.profile.as_deref())?.ports)
-}
-
-/// Starts a record for this scan, or says why it could not and carries on.
-fn start(plan: &TargetMap, config: &ZondConfig, privileged: bool) -> Option<Journal> {
-    let Some(root) = paths::root() else {
-        tracing::warn!("not recording this scan: this environment names no home");
-        return None;
-    };
-
-    if let Err(e) = std::fs::create_dir_all(&root) {
-        tracing::warn!(
-            "not recording this scan: {} is not writable ({e})",
-            root.display()
-        );
-        return None;
-    }
-
-    match Journal::create(
-        &root,
-        plan,
-        config.tcp_technique,
-        privileged,
-        summarise(plan),
-    ) {
-        Ok(journal) => {
-            // To stderr: where a scan is writing is commentary on the run, and
-            // somebody piping its results should still be told.
-            tracing::info!("recording this scan as {}", journal.manifest().id);
-            Some(journal)
-        }
-        Err(e) => {
-            tracing::warn!("not recording this scan: {e}");
-            None
-        }
-    }
 }
 
 /// How a plan is described in a listing.

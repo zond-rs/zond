@@ -53,8 +53,8 @@ use crate::target::{ScanTargets, Targets};
 /// What a run is about to do.
 ///
 /// Facts rather than a pre-composed sentence, so the phrasing stays in the
-/// renderer. Two variants because the phases are counted in different units — a
-/// sweep in addresses, a port scan in probes.
+/// renderer. The two scanning variants are separate because the phases are
+/// counted in different units — a sweep in addresses, a port scan in probes.
 #[derive(Clone, Copy)]
 pub(crate) enum Phase<'a> {
     /// Finding which hosts are alive.
@@ -66,6 +66,17 @@ pub(crate) enum Phase<'a> {
     PortScan {
         /// What was asked about, and on which ports.
         targets: &'a ScanTargets,
+    },
+    /// Reading a scan back out of the record it left, rather than running one.
+    ///
+    /// Nothing is probed, so there is no ground about to be covered to
+    /// announce. It is still a phase, because this is where a renderer is told
+    /// the masking policy for what it is about to print.
+    Recorded {
+        /// The record being read, as `zond journal` lists it.
+        id: &'a str,
+        /// When the scan it holds began.
+        started_at: std::time::SystemTime,
     },
 }
 

@@ -47,3 +47,19 @@
 # Set this to false to record nothing, or pass --no-journal for one run.
 #
 # journal = true
+
+
+# How many records `zond journal` lists at once.
+#
+# Ten by default, newest first, since the ones you are usually looking for are
+# the recent ones. `--page 2` steps back through the rest, `-n 25` changes it
+# for one run, and `--all` lists everything.
+#
+# Set this to 0 for no limit at all.
+#
+# Paging is for reading, so `--pipe` lists everything whatever this says: that
+# mode's output is a stable interface, and a program should not have to know
+# about pages to receive every record. Passing `-n` or `--page` still applies
+# there, because then it was asked for.
+#
+# page_size = 10
