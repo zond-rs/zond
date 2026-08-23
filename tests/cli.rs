@@ -35,10 +35,14 @@ fn config_home(test: &str) -> PathBuf {
 }
 
 /// Runs the real binary against a settings directory the test already holds.
+///
+/// The state directory goes to the same place, so a test that journals a scan
+/// writes into its own corner of `target/` rather than the runner's home.
 fn zond_in(directory: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_zond"))
         .args(args)
         .env("XDG_CONFIG_HOME", directory)
+        .env("XDG_STATE_HOME", directory)
         .output()
         .expect("the binary under test should run")
 }
@@ -398,7 +402,10 @@ fn a_range_may_leave_off_either_end_on_the_command_line() {
         ("-p-1024", "1024 probes"),
         ("-p65000-", "536 probes"),
     ] {
-        let run = zond("scan-open-range", &["s", "127.0.0.1", spec, "--no-service-detection"]);
+        let run = zond(
+            "scan-open-range",
+            &["s", "127.0.0.1", spec, "--no-service-detection"],
+        );
         assert!(
             stderr(&run).contains(probes),
             "`{spec}` should scan {probes}: {}",
@@ -552,4 +559,295 @@ fn redaction_masks_what_identifies_a_host() {
     if plain[5] != "-" {
         assert_ne!(redacted[5], plain[5], "the name survived --redact");
     }
+}
+
+/// A scan leaves a record without being asked, and `zond journal` finds it.
+///
+/// This is the whole point of recording by default: the moment somebody wants
+/// to continue a scan is *after* it was cut short, and a flag they had to pass
+/// beforehand is one they did not.
+#[test]
+fn a_scan_is_recorded_without_being_asked() {
+    let home = config_home("journal-list");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    assert_eq!(status(&listed), 0, "{}", stderr(&listed));
+
+    let text = stdout(&listed);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "one scan, one record: {lines:?}");
+
+    let fields: Vec<&str> = lines[0].split('\t').collect();
+    assert_eq!(fields.len(), 5, "the documented field count: {fields:?}");
+    assert_eq!(fields[1], "complete", "the scan ran to the end");
+    assert_eq!(fields[3], "2/2", "both targets settled");
+}
+
+/// `--no-journal` records nothing, for a run somebody would rather not leave a
+/// trace of.
+#[test]
+fn a_scan_can_decline_to_be_recorded() {
+    let home = config_home("journal-declined");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1", "--no-journal"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    assert_eq!(status(&listed), 0, "{}", stderr(&listed));
+    assert!(stdout(&listed).is_empty(), "{}", stdout(&listed));
+}
+
+/// And `journal = false` declines for every run.
+#[test]
+fn a_settings_file_can_decline_for_good() {
+    let home = config_home("journal-declined-standing");
+    std::fs::create_dir_all(home.join("zond")).expect("a settings directory");
+    std::fs::write(home.join("zond").join("cli.toml"), "journal = false\n")
+        .expect("a settings file");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    assert!(stdout(&listed).is_empty(), "{}", stdout(&listed));
+}
+
+/// Resuming a scan whose plan has changed is refused, and says what moved.
+#[test]
+fn resuming_a_different_plan_is_refused() {
+    let home = config_home("journal-mismatch");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    let id = stdout(&listed)
+        .lines()
+        .next()
+        .and_then(|line| line.split('\t').next().map(str::to_owned))
+        .expect("a listed scan");
+
+    // One more port than the record was written against.
+    let resumed = zond_in(&home, &["-q", "s", "::1", "-p", "1,2,3", "--resume", &id]);
+
+    assert_eq!(status(&resumed), 2, "a usage error, not a failed scan");
+    assert!(
+        stderr(&resumed).contains("different plan"),
+        "{}",
+        stderr(&resumed)
+    );
+    assert!(
+        stdout(&resumed).is_empty(),
+        "nothing was scanned, so nothing should be reported"
+    );
+}
+
+/// An id nothing on record matches is a usage error that says how to look.
+#[test]
+fn an_unknown_id_says_where_to_look() {
+    let home = config_home("journal-unknown");
+
+    let shown = zond_in(&home, &["journal", "show", "01NOTAREALID"]);
+
+    assert_eq!(status(&shown), 2);
+    assert!(
+        stderr(&shown).contains("01NOTAREALID"),
+        "{}",
+        stderr(&shown)
+    );
+}
+
+/// A dry run says what would go and leaves it there.
+#[test]
+fn pruning_can_be_rehearsed() {
+    let home = config_home("journal-prune");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let rehearsed = zond_in(&home, &["journal", "prune", "--completed", "--dry-run"]);
+    assert_eq!(status(&rehearsed), 0, "{}", stderr(&rehearsed));
+    assert!(
+        stdout(&rehearsed).contains("would delete"),
+        "{}",
+        stdout(&rehearsed)
+    );
+
+    let still_there = zond_in(&home, &["--pipe", "journal"]);
+    assert_eq!(
+        stdout(&still_there).lines().count(),
+        1,
+        "a rehearsal deleted something"
+    );
+
+    let swept = zond_in(&home, &["journal", "prune", "--completed"]);
+    assert_eq!(status(&swept), 0, "{}", stderr(&swept));
+
+    let gone = zond_in(&home, &["--pipe", "journal"]);
+    assert!(stdout(&gone).is_empty(), "{}", stdout(&gone));
+}
+
+/// A scan is continued by its id alone.
+///
+/// The plan is on record, so there is nothing to type again — and nothing to
+/// mistype. What ran the first time is what continues, rather than whatever
+/// somebody reconstructs from memory.
+#[test]
+fn a_scan_is_continued_by_its_id_alone() {
+    let home = config_home("journal-resume-bare");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    let id = stdout(&listed)
+        .lines()
+        .next()
+        .and_then(|line| line.split('\t').next().map(str::to_owned))
+        .expect("a listed scan");
+
+    // No target, no ports: the id is the whole of it. Not quiet, because what
+    // is being continued is the thing worth saying.
+    let resumed = zond_in(&home, &["s", "--resume", &id]);
+
+    assert_eq!(status(&resumed), 0, "{}", stderr(&resumed));
+    assert!(
+        stderr(&resumed).contains(&id),
+        "the run should say what it is continuing: {}",
+        stderr(&resumed)
+    );
+}
+
+/// Targets named alongside `--resume` are checked, and refused when they
+/// describe something else.
+#[test]
+fn targets_given_with_resume_must_agree_with_the_record() {
+    let home = config_home("journal-resume-checked");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    let id = stdout(&listed)
+        .lines()
+        .next()
+        .and_then(|line| line.split('\t').next().map(str::to_owned))
+        .expect("a listed scan");
+
+    let agreeing = zond_in(&home, &["-q", "s", "::1", "-p", "1,2", "--resume", &id]);
+    assert_eq!(status(&agreeing), 0, "{}", stderr(&agreeing));
+
+    let disagreeing = zond_in(&home, &["-q", "s", "::1", "-p", "1,2,3", "--resume", &id]);
+    assert_eq!(status(&disagreeing), 2, "{}", stderr(&disagreeing));
+    assert!(
+        stderr(&disagreeing).contains("drop the targets"),
+        "the message should say how to proceed: {}",
+        stderr(&disagreeing)
+    );
+}
+
+/// One scan can be deleted by name, shortened to any prefix that names only it.
+#[test]
+fn a_named_scan_can_be_deleted() {
+    let home = config_home("journal-rm");
+
+    for port in ["1", "2"] {
+        let scan = zond_in(&home, &["-q", "s", "::1", "-p", port]);
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    let ids: Vec<String> = stdout(&listed)
+        .lines()
+        .filter_map(|line| line.split('\t').next().map(str::to_owned))
+        .collect();
+    assert_eq!(ids.len(), 2);
+
+    // Shortened to what tells the two apart, which is what a person types.
+    let prefix: String = ids[0].chars().take(12).collect();
+    let removed = zond_in(&home, &["journal", "rm", &prefix]);
+    assert_eq!(status(&removed), 0, "{}", stderr(&removed));
+
+    let left = zond_in(&home, &["--pipe", "journal"]);
+    let text = stdout(&left);
+    let left: Vec<&str> = text.lines().collect();
+    assert_eq!(left.len(), 1, "one should have gone");
+    assert!(left[0].starts_with(&ids[1]), "the wrong one went");
+}
+
+/// A prefix naming more than one scan deletes nothing.
+///
+/// The wrong scan deleted is not something a person gets back, so an ambiguous
+/// name is refused rather than resolved to whichever matched first.
+#[test]
+fn an_ambiguous_name_deletes_nothing() {
+    let home = config_home("journal-ambiguous");
+
+    for port in ["1", "2"] {
+        let scan = zond_in(&home, &["-q", "s", "::1", "-p", port]);
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+
+    // The prefix the two actually share, rather than one assumed: ids begin with
+    // the time they were minted, so what that is changes with the calendar.
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    let text = stdout(&listed);
+    let ids: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split('\t').next())
+        .collect();
+    let shared: String = ids[0]
+        .chars()
+        .zip(ids[1].chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect();
+    assert!(
+        !shared.is_empty(),
+        "two ids minted together should share a prefix"
+    );
+
+    let refused = zond_in(&home, &["journal", "rm", &shared]);
+
+    assert_eq!(status(&refused), 2, "{}", stderr(&refused));
+    assert!(
+        stderr(&refused).contains("more than one"),
+        "{}",
+        stderr(&refused)
+    );
+
+    let left = zond_in(&home, &["--pipe", "journal"]);
+    assert_eq!(stdout(&left).lines().count(), 2, "something was deleted");
+}
+
+/// Naming several, one of them wrong, deletes none of them.
+///
+/// Half a command is worse than none of it when the half that ran cannot be
+/// undone.
+#[test]
+fn a_bad_name_among_good_ones_deletes_nothing() {
+    let home = config_home("journal-rm-partial");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let listed = zond_in(&home, &["--pipe", "journal"]);
+    let id = stdout(&listed)
+        .lines()
+        .next()
+        .and_then(|line| line.split('\t').next().map(str::to_owned))
+        .expect("a listed scan");
+
+    let refused = zond_in(&home, &["journal", "rm", &id, "01NOTAREALID"]);
+    assert_eq!(status(&refused), 2, "{}", stderr(&refused));
+
+    let left = zond_in(&home, &["--pipe", "journal"]);
+    assert_eq!(
+        stdout(&left).lines().count(),
+        1,
+        "the good name was acted on despite the bad one"
+    );
 }

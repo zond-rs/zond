@@ -20,6 +20,7 @@
 //! belong to [`render`](crate::render) and [`exit`](crate::exit).
 
 pub(crate) mod discover;
+pub(crate) mod journal;
 pub(crate) mod scan;
 
 use std::collections::HashSet;

@@ -61,6 +61,92 @@ pub(crate) enum Command {
     /// Find which ports are open on a network's hosts.
     #[command(visible_alias = "s")]
     Scan(ScanArgs),
+
+    /// Look at the scans this machine has a record of.
+    #[command(visible_alias = "j")]
+    Journal(JournalArgs),
+}
+
+/// Arguments to `zond journal`.
+#[derive(Debug, Args)]
+pub(crate) struct JournalArgs {
+    /// What to do with them. Lists them when nothing is said.
+    #[command(subcommand)]
+    pub what: Option<JournalCommand>,
+}
+
+/// What `zond journal` was asked to do.
+#[derive(Debug, Subcommand)]
+pub(crate) enum JournalCommand {
+    /// List every scan this machine has a record of, newest first.
+    #[command(visible_alias = "ls")]
+    List,
+
+    /// Show one scan in full.
+    Show {
+        /// Which one, as `zond journal` lists it.
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+
+    /// Delete records: the ones named, or the ones no longer worth keeping.
+    ///
+    /// A scan that is running is never deleted. Named without any flag, given
+    /// records go whatever their age. With no arguments at all, a finished scan
+    /// is kept for a month and an unfinished one indefinitely, since an
+    /// unfinished scan is the only copy of work you may still mean to continue.
+    #[command(visible_alias = "rm")]
+    Prune {
+        /// Which to delete, as `zond journal` lists them.
+        ///
+        /// An id may be shortened to any prefix that names only one scan.
+        #[arg(value_name = "ID", conflicts_with_all = ["all", "completed", "older_than"])]
+        ids: Vec<String>,
+
+        /// Delete every record, finished or not.
+        #[arg(long, conflicts_with_all = ["completed", "older_than"])]
+        all: bool,
+
+        /// Delete every finished record, whatever its age.
+        #[arg(long, conflicts_with = "older_than")]
+        completed: bool,
+
+        /// Delete finished records older than this, as `30d`, `12h` or `90m`.
+        #[arg(long, value_name = "AGE", value_parser = age)]
+        older_than: Option<std::time::Duration>,
+
+        /// Say what would go without deleting anything.
+        #[arg(long, short = 'n')]
+        dry_run: bool,
+    },
+}
+
+/// Parses an age as a count and a unit: `30d`, `12h`, `90m`, `45s`.
+///
+/// Written out rather than pulled in, on the same reasoning the engine gives for
+/// its own small parsers: a dependency for four suffixes costs more than it
+/// saves. Bare digits are refused, because `--older-than 30` reads as thirty of
+/// something and this would have to guess which.
+fn age(input: &str) -> Result<std::time::Duration, String> {
+    let (count, unit) = input.split_at(
+        input
+            .find(|c: char| !c.is_ascii_digit())
+            .ok_or_else(|| format!("'{input}' has no unit; try '{input}d' for days"))?,
+    );
+
+    let count: u64 = count
+        .parse()
+        .map_err(|_| format!("'{input}' does not start with a number"))?;
+
+    let seconds = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return Err(format!("'{unit}' is not one of s, m, h, d")),
+    };
+
+    Ok(std::time::Duration::from_secs(count * seconds))
 }
 
 /// Arguments to `zond discover`.
@@ -86,7 +172,11 @@ pub(crate) struct ScanArgs {
     ///
     /// A target may carry its own ports — `10.0.0.1:8080`, or
     /// `[2001:db8::1]:443` — and keeps them; `--ports` supplies the rest.
-    #[arg(value_name = "TARGET", required = true, num_args = 1..)]
+    ///
+    /// Not needed with `--resume`, which scans what the recorded scan was
+    /// scanning. Given anyway, they must describe the same scan, or the resume
+    /// is refused rather than continuing something else.
+    #[arg(value_name = "TARGET", required_unless_present = "resume", num_args = 1..)]
     pub targets: Vec<String>,
 
     /// Which ports to probe: `22,80,443`, `1-1024`, `u:53` for UDP.
@@ -127,6 +217,30 @@ pub(crate) struct ScanArgs {
     /// `-p u:53,u:161` when you want them.
     #[arg(long, value_name = "N", conflicts_with = "ports")]
     pub top_ports: Option<usize>,
+
+    /// Do not write down how far this scan gets.
+    ///
+    /// Every scan is recorded by default, because the moment you want to
+    /// continue one is after it was cut short — and a flag you had to pass
+    /// beforehand is one you did not. `zond journal` lists what is on record and
+    /// prunes it.
+    ///
+    /// A record holds the addresses you scanned and what answered. It is written
+    /// under your own home, readable only by you. This turns that off for one
+    /// run; `journal = false` in `cli.toml` turns it off for all of them.
+    #[arg(long, conflicts_with = "resume")]
+    pub no_journal: bool,
+
+    /// Continue the scan with this id, asking only about what it did not settle.
+    ///
+    /// The targets and ports come from the record, so there is nothing to type
+    /// but the id. Naming them anyway is allowed and checked: a position in a
+    /// record means nothing against a different plan, so a mismatch is refused
+    /// rather than quietly scanning something else.
+    ///
+    /// `zond journal` lists what can be continued.
+    #[arg(long, value_name = "ID")]
+    pub resume: Option<String>,
 
     /// Scan every target without checking first that anything is there.
     ///

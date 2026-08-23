@@ -220,6 +220,7 @@ pub(crate) enum SettingsError {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Settings {
     presentation: Option<Presentation>,
+    journal: Option<bool>,
 }
 
 impl Settings {
@@ -229,10 +230,19 @@ impl Settings {
         self.presentation
     }
 
+    /// Whether scans should be recorded, if these settings say.
+    #[must_use]
+    pub(crate) fn journal(self) -> Option<bool> {
+        self.journal
+    }
+
     /// Lays `other` over this, key by key.
     fn overlay(&mut self, other: Settings) {
         if let Some(presentation) = other.presentation {
             self.presentation = Some(presentation);
+        }
+        if let Some(journal) = other.journal {
+            self.journal = Some(journal);
         }
     }
 }
@@ -243,6 +253,7 @@ impl Settings {
 #[derive(Debug, Default, Deserialize)]
 struct Document {
     presentation: Option<String>,
+    journal: Option<bool>,
     #[serde(flatten)]
     unknown: BTreeMap<String, toml::Value>,
 }
@@ -273,7 +284,13 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
         })
         .collect();
 
-    Ok((Settings { presentation }, warnings))
+    Ok((
+        Settings {
+            presentation,
+            journal: document.journal,
+        },
+        warnings,
+    ))
 }
 
 /// Where this crate's settings file would be, for this user.
@@ -614,6 +631,7 @@ mod tests {
     fn a_later_file_overrides_only_what_it_mentions() {
         let mut settings = Settings {
             presentation: Some(Presentation::Fancy),
+            journal: Some(false),
         };
 
         settings.overlay(Settings::default());
@@ -622,11 +640,18 @@ mod tests {
             Some(Presentation::Fancy),
             "a file that said nothing must not reset anything"
         );
+        assert_eq!(settings.journal(), Some(false), "nor any other key");
 
         settings.overlay(Settings {
             presentation: Some(Presentation::Minimal),
+            journal: None,
         });
         assert_eq!(settings.presentation(), Some(Presentation::Minimal));
+        assert_eq!(
+            settings.journal(),
+            Some(false),
+            "a file that mentioned only the presentation left this alone"
+        );
     }
 
     /// If these diverged, a user would edit one of two config directories at

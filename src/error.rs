@@ -50,6 +50,56 @@ pub(crate) enum Error {
     /// A presentation mode was named that is not built yet.
     #[error("{0}")]
     Presentation(#[from] crate::render::Unavailable),
+
+    /// A journal could not be read or written.
+    #[error("{0}")]
+    Journal(#[from] zond_engine::journal::format::JournalError),
+
+    /// A journal could not be opened for this scan: it is being written, or it
+    /// was written against a different plan.
+    #[error("{0}")]
+    JournalOpen(#[from] zond_engine::journal::store::OpenError),
+
+    /// Targets were named alongside `--resume` that describe a different scan.
+    #[error("{0}; drop the targets to continue the scan as it was recorded")]
+    PlanChanged(#[from] zond_engine::journal::manifest::PlanChanged),
+
+    /// A journal was named that this machine has no record of.
+    #[error(
+        "no scan on record with id '{id}'{}",
+        if *known == 0 {
+            String::from("; there are none")
+        } else {
+            format!("; `zond journal` lists the {known} there are")
+        }
+    )]
+    NoSuchJournal {
+        /// What was asked for.
+        id: String,
+        /// How many there are, so the message can say whether to go looking.
+        known: usize,
+    },
+
+    /// A shortened id names more than one scan.
+    ///
+    /// Refused rather than resolved to the first match: the wrong scan deleted
+    /// is not something a person gets back.
+    #[error("'{id}' names more than one scan, among them {first} and {second}")]
+    AmbiguousJournal {
+        /// The prefix that was given.
+        id: String,
+        /// One scan it matches.
+        first: String,
+        /// Another.
+        second: String,
+    },
+
+    /// There is nowhere on this machine to keep scan records.
+    ///
+    /// The environment names no home at all, which happens in a container or a
+    /// daemon with a cleared environment.
+    #[error("no directory to keep scan records in: this environment names no home")]
+    NoJournalDirectory,
 }
 
 impl Error {
@@ -61,8 +111,16 @@ impl Error {
     #[must_use]
     pub(crate) fn code(&self) -> Code {
         match self {
-            Error::Target(_) | Error::Settings(_) | Error::Presentation(_) => Code::Usage,
-            Error::Scan(_) => Code::Failure,
+            Error::Target(_)
+            | Error::Settings(_)
+            | Error::Presentation(_)
+            | Error::NoSuchJournal { .. }
+            | Error::AmbiguousJournal { .. }
+            // A plan that does not match, or a scan already running: both are
+            // the caller asking for something that cannot be done, not a fault.
+            | Error::JournalOpen(_)
+            | Error::PlanChanged(_) => Code::Usage,
+            Error::Scan(_) | Error::Journal(_) | Error::NoJournalDirectory => Code::Failure,
             Error::Io(e) => {
                 if e.kind() == ErrorKind::BrokenPipe {
                     Code::Success

@@ -230,7 +230,13 @@ impl Renderer for MinimalRenderer {
             if index > 0 || self.narrator.narrates() {
                 writeln!(self.records)?;
             }
-            write_host(&mut self.records, self.reader, host, self.verbosity, trustworthy)?;
+            write_host(
+                &mut self.records,
+                self.reader,
+                host,
+                self.verbosity,
+                trustworthy,
+            )?;
         }
 
         self.records.flush()?;

@@ -31,6 +31,9 @@
 pub(crate) mod minimal;
 pub(crate) mod pipe;
 
+// What the scans on this machine look like. Not a `Renderer`: see the module.
+pub(crate) mod journal;
+
 // Plumbing the two share: the field values, and the commentary on stderr.
 pub(crate) mod field;
 pub(crate) mod narrate;
@@ -117,6 +120,17 @@ pub(crate) struct Unavailable {
 /// The renderer to use for this run.
 ///
 /// The one place presentation is chosen.
+/// Whether `presentation` is one this build can produce.
+///
+/// For the commands that render without a [`Renderer`]: the same refusal, so a
+/// mode that is named but not built is reported wherever it is asked for.
+pub(crate) fn validate(presentation: Presentation) -> Result<(), Unavailable> {
+    match presentation {
+        Presentation::Pipe | Presentation::Minimal => Ok(()),
+        Presentation::Standard | Presentation::Fancy => Err(Unavailable { presentation }),
+    }
+}
+
 pub(crate) fn renderer(
     presentation: Presentation,
     verbosity: Verbosity,

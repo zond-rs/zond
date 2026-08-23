@@ -86,11 +86,27 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     }
 
     let presentation = cli.output.presentation(settings.presentation());
+
+    // `journal` reads what is already on disk rather than watching a run, so it
+    // takes the presentation and not a `Renderer`. The mode is still validated
+    // for it, since somebody who asked for one that is not built should hear so
+    // whichever subcommand they typed.
+    if let Command::Journal(args) = &cli.command {
+        render::validate(presentation)?;
+        return command::journal::run(args, presentation);
+    }
+
     let mut renderer = render::renderer(presentation, verbosity)?;
 
     match &cli.command {
         Command::Discover(args) => command::discover::run(args, renderer.as_mut()).await,
-        Command::Scan(args) => command::scan::run(args, renderer.as_mut()).await,
+        Command::Scan(args) => {
+            // On unless the run or the settings file says otherwise: somebody
+            // wants to continue a scan after it was cut short, not before.
+            let recording = !args.no_journal && settings.journal().unwrap_or(true);
+            command::scan::run(args, recording, renderer.as_mut()).await
+        }
+        Command::Journal(_) => unreachable!("handled above"),
     }
 }
 

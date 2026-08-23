@@ -21,14 +21,19 @@
 //! That is the caller's trade to make. `zond discover` answers which hosts are
 //! there, and its output feeds straight back in.
 
-use zond_engine::{PortSet, scan};
+use zond_engine::journal::paths;
+use zond_engine::journal::store::{self, Journal};
+use zond_engine::model::target::TargetMap;
+use zond_engine::scanner::scan_with_journal;
+use zond_engine::system::privilege;
+use zond_engine::{PortSet, ZondConfig, scan};
 
 use crate::cli::ScanArgs;
 use crate::command;
 use crate::error::Error;
 use crate::exit::Outcome;
 use crate::render::{Phase, Renderer};
-use crate::target;
+use crate::target::{self, ScanTargets};
 
 /// How many of the engine's ranked TCP ports are probed when neither the
 /// command line nor the settings file says.
@@ -46,12 +51,42 @@ use crate::target;
 const DEFAULT_TOP_PORTS: usize = 1000;
 
 /// Runs a port scan.
-pub(crate) async fn run(args: &ScanArgs, renderer: &mut dyn Renderer) -> Result<Outcome, Error> {
+pub(crate) async fn run(
+    args: &ScanArgs,
+    recording: bool,
+    renderer: &mut dyn Renderer,
+) -> Result<Outcome, Error> {
     let settings = command::engine_settings(args.engine.profile.as_deref())?;
     let mut config = settings.config;
     args.apply_to(&mut config);
 
-    let ports = ports(args, settings.ports);
+    // A resume needs no targets: the plan comes from the record, which is what
+    // ran rather than what somebody types the second time. Targets given anyway
+    // are checked against it.
+    let (targets, journal) = match args.resume.as_deref() {
+        Some(id) => continued(id, args, &config).await?,
+        None => started(args, recording, &mut config).await?,
+    };
+
+    let redaction = command::redaction(&config);
+    renderer.started(Phase::PortScan { targets: &targets }, redaction)?;
+
+    let plan = targets.into_map();
+    let (session, task) = match journal {
+        Some(journal) => scan_with_journal(plan, &config, journal).await?,
+        None => scan(plan, &config).await?,
+    };
+
+    command::drive(session, task, renderer).await
+}
+
+/// A scan of what the command line asked for.
+async fn started(
+    args: &ScanArgs,
+    recording: bool,
+    config: &mut ZondConfig,
+) -> Result<(ScanTargets, Option<Journal>), Error> {
+    let ports = ports(args, ports_from_settings(args)?);
     let targets = target::resolve_ports(
         &args.targets,
         &args.engine.exclude,
@@ -60,14 +95,134 @@ pub(crate) async fn run(args: &ScanArgs, renderer: &mut dyn Renderer) -> Result<
         !config.no_dns,
     )
     .await?;
-    targets.apply_to(&mut config);
+    targets.apply_to(config);
 
-    let redaction = command::redaction(&config);
-    renderer.started(Phase::PortScan { targets: &targets }, redaction)?;
+    // Before the scan is announced: a journal another scan is writing means
+    // there is nothing to announce, and saying "scanning 4 probes" and then
+    // refusing reads as a scan that went wrong rather than one that never
+    // started.
+    let journal = recording
+        .then(|| start(targets.map(), config, privilege::is_elevated()))
+        .flatten();
 
-    let (session, task) = scan(targets.into_map(), &config).await?;
+    Ok((targets, journal))
+}
 
-    command::drive(session, task, renderer).await
+/// A scan continuing one already on record.
+///
+/// The plan is the recorded one. Targets named on the command line are checked
+/// against it and refused if they describe something else — continuing the wrong
+/// scan quietly would count positions against a plan they were never counted in.
+async fn continued(
+    id: &str,
+    args: &ScanArgs,
+    config: &ZondConfig,
+) -> Result<(ScanTargets, Option<Journal>), Error> {
+    let directory = paths::scan(id).ok_or(Error::NoJournalDirectory)?;
+    if !directory.is_dir() {
+        let known = paths::root()
+            .and_then(|root| store::list(&root).ok())
+            .map_or(0, |entries| entries.len());
+        return Err(Error::NoSuchJournal {
+            id: id.to_owned(),
+            known,
+        });
+    }
+
+    let (journal, checkpoint, plan) = Journal::reopen(&directory, privilege::is_elevated())?;
+
+    if !args.targets.is_empty() {
+        let ports = ports(args, ports_from_settings(args)?);
+        let named = target::resolve_ports(
+            &args.targets,
+            &args.engine.exclude,
+            &config.exclusions,
+            ports,
+            !config.no_dns,
+        )
+        .await?;
+
+        journal.manifest().covers(
+            named.map(),
+            journal.manifest().technique(),
+            privilege::is_elevated(),
+        )?;
+    }
+
+    let total = journal.manifest().total_targets;
+    let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
+    tracing::info!("continuing {id}: {settled} of {total} targets already settled");
+
+    let remaining = total.saturating_sub(settled);
+    Ok((
+        ScanTargets::resumed(plan, remaining, id.to_owned()),
+        Some(journal),
+    ))
+}
+
+/// The ports a settings file asks for, where the command line says nothing.
+fn ports_from_settings(args: &ScanArgs) -> Result<Option<PortSet>, Error> {
+    Ok(command::engine_settings(args.engine.profile.as_deref())?.ports)
+}
+
+/// Starts a record for this scan, or says why it could not and carries on.
+fn start(plan: &TargetMap, config: &ZondConfig, privileged: bool) -> Option<Journal> {
+    let Some(root) = paths::root() else {
+        tracing::warn!("not recording this scan: this environment names no home");
+        return None;
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        tracing::warn!(
+            "not recording this scan: {} is not writable ({e})",
+            root.display()
+        );
+        return None;
+    }
+
+    match Journal::create(
+        &root,
+        plan,
+        config.tcp_technique,
+        privileged,
+        summarise(plan),
+    ) {
+        Ok(journal) => {
+            // To stderr: where a scan is writing is commentary on the run, and
+            // somebody piping its results should still be told.
+            tracing::info!("recording this scan as {}", journal.manifest().id);
+            Some(journal)
+        }
+        Err(e) => {
+            tracing::warn!("not recording this scan: {e}");
+            None
+        }
+    }
+}
+
+/// How a plan is described in a listing.
+///
+/// Short enough for a column and specific enough to recognise: what was scanned
+/// and how much of it. Nothing decides anything from this text.
+fn summarise(plan: &TargetMap) -> String {
+    let addresses = plan.gross_ips().unwrap_or_default();
+    let ports: usize = plan.units.iter().map(|unit| unit.ports().len()).sum();
+
+    let first = plan
+        .units
+        .first()
+        .and_then(|unit| unit.ips().iter().next())
+        .map_or_else(|| String::from("nothing"), |ip| ip.to_string());
+
+    let ports = match ports {
+        1 => String::from("1 port"),
+        n => format!("{n} ports"),
+    };
+
+    match addresses {
+        0 | 1 => format!("{first} on {ports}"),
+        n => format!("{first} and {} more on {ports}", n - 1),
+    }
 }
 
 /// The ports to probe: `--ports`, then `--top-ports`, then the settings file,

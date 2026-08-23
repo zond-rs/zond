@@ -37,6 +37,39 @@ pub(crate) fn unknown() -> String {
     UNKNOWN.to_owned()
 }
 
+/// A timestamp as RFC 3339, through the engine's own renderer.
+///
+/// Borrowed rather than reimplemented so a time reads the same in a listing as
+/// in an exported report.
+pub(crate) fn timestamp(time: std::time::SystemTime) -> String {
+    zond_engine::export::time::rfc3339(time)
+}
+
+/// How long ago `time` was, in the largest unit that still says something.
+///
+/// Relative rather than absolute, because the question a listing answers is
+/// "which of these was the one I just ran", and `4m` answers it where
+/// `2026-08-23T16:42:07Z` makes the reader do arithmetic.
+pub(crate) fn age(time: std::time::SystemTime) -> String {
+    let Ok(elapsed) = std::time::SystemTime::now().duration_since(time) else {
+        // A clock that went backwards, or a record from a machine whose did.
+        return String::from("now");
+    };
+
+    let seconds = elapsed.as_secs();
+    match seconds {
+        0..60 => String::from("now"),
+        60..3600 => format!("{}m", seconds / 60),
+        3600..86_400 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
+/// `text`, or [`UNKNOWN`] where there is none.
+pub(crate) fn or_dash(text: &str) -> &str {
+    if text.is_empty() { UNKNOWN } else { text }
+}
+
 /// Reads a host's fields under a masking policy.
 ///
 /// Carried rather than passed, because it applies to every field that can
@@ -753,7 +786,10 @@ fn describe(port: &Port) -> Option<String> {
     // seventy characters — and a port table is a column of rows somebody scans
     // down, not a place to read a list. The full value is in the report either
     // way; this is the rendering, not the record.
-    if let Some(extra) = service.extrainfo().filter(|extra| extra.len() <= EXTRAINFO_WIDTH) {
+    if let Some(extra) = service
+        .extrainfo()
+        .filter(|extra| extra.len() <= EXTRAINFO_WIDTH)
+    {
         described.push_str(" (");
         described.push_str(extra);
         described.push(')');
@@ -1263,5 +1299,32 @@ mod tests {
 
         let down = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
         assert!(!is_up(&down));
+    }
+
+    /// An age is the largest unit that still says something, so a listing reads
+    /// at a glance rather than by arithmetic.
+    #[test]
+    fn an_age_uses_the_largest_useful_unit() {
+        use std::time::{Duration, SystemTime};
+
+        let ago = |seconds| SystemTime::now() - Duration::from_secs(seconds);
+
+        assert_eq!(age(ago(0)), "now");
+        assert_eq!(age(ago(59)), "now");
+        assert_eq!(age(ago(60)), "1m");
+        assert_eq!(age(ago(3_599)), "59m");
+        assert_eq!(age(ago(3_600)), "1h");
+        assert_eq!(age(ago(86_399)), "23h");
+        assert_eq!(age(ago(86_400)), "1d");
+        assert_eq!(age(ago(90 * 86_400)), "90d");
+    }
+
+    /// A record from a machine whose clock was ahead reads as new, not as a
+    /// negative age or a panic.
+    #[test]
+    fn an_age_from_the_future_reads_as_now() {
+        use std::time::{Duration, SystemTime};
+
+        assert_eq!(age(SystemTime::now() + Duration::from_secs(600)), "now");
     }
 }

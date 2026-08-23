@@ -32,3 +32,18 @@
 # error in every mode.
 #
 # presentation = "minimal"
+
+
+# Whether to record what each scan gets through.
+#
+# On by default. A scan of any size can be cut short by a dropped connection, a
+# closed laptop, or a ^C, and `zond scan --resume <ID>` continues one from where
+# it stopped rather than starting again. `zond journal` lists what is on record.
+#
+# A record holds the addresses you scanned and what answered. It is kept under
+# your own home, readable only by you, and `zond journal prune` clears it out —
+# finished scans go after a month, unfinished ones stay until you say otherwise.
+#
+# Set this to false to record nothing, or pass --no-journal for one run.
+#
+# journal = true

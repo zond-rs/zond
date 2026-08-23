@@ -378,12 +378,43 @@ pub(crate) struct ScanTargets {
 }
 
 impl ScanTargets {
+    /// The targets a resumed scan has left, from the plan its record held.
+    ///
+    /// `remaining` rather than the plan's own size: a run that has sixty
+    /// thousand ports left should not announce sixty-five thousand. `label` is
+    /// what the header line shows, since there are no expressions — nobody typed
+    /// anything but an id.
+    #[must_use]
+    pub(crate) fn resumed(map: TargetMap, remaining: u128, label: String) -> Self {
+        let hosts = map.gross_ips().unwrap_or(u128::MAX);
+
+        Self {
+            asked: Asked {
+                expressions: vec![label],
+                segment_sweep: false,
+                exclusions: Exclusions::none(),
+            },
+            probes: remaining,
+            hosts,
+            map,
+        }
+    }
+
     /// The map to hand the engine.
     ///
     /// Before exclusions, for the reason [`Targets::into_ips`] gives.
     #[must_use]
     pub(crate) fn into_map(self) -> TargetMap {
         self.map
+    }
+
+    /// The same map, borrowed.
+    ///
+    /// For what has to read the plan before the scan takes it — a journal
+    /// checking that this is the plan it was written against.
+    #[must_use]
+    pub(crate) fn map(&self) -> &TargetMap {
+        &self.map
     }
 
     /// How many probes this run will actually spend: addresses times ports,
