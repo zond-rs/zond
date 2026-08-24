@@ -30,6 +30,11 @@
 //! | 5 | `SCOPE` | what was scanned |
 //!
 //! A field with nothing in it is `-`, never empty, so the count never changes.
+//!
+//! **No row number.** `minimal` numbers its rows so a person can refer to one;
+//! a number is a property of the listing rather than of the record, and putting
+//! one in front of these five fields would shift every one of them for every
+//! script already reading them.
 
 use std::io::{self, Write};
 
@@ -81,6 +86,7 @@ const ID_WIDTH: usize = 16;
 /// Writes every journal, newest first.
 pub(crate) fn list(
     entries: &[Entry],
+    first: usize,
     presentation: Presentation,
     out: &mut dyn Write,
 ) -> io::Result<()> {
@@ -99,16 +105,25 @@ pub(crate) fn list(
         return Ok(());
     }
 
+    // Wide enough for the largest number on this page. The numbering runs over
+    // the whole listing rather than restarting each page, so a row's number
+    // says where it is among *all* the records and not merely where it sits on
+    // the screen — which is what makes it worth printing beside a footer that
+    // says which page this is.
+    let last = first + entries.len().saturating_sub(1);
+    let number_width = last.to_string().len();
+
     writeln!(
         out,
-        "{:<ID_WIDTH$}  {:<STATE_WIDTH$}  {:>4}  {:>4}  {}",
-        "ID", "STATE", "DONE", "AGE", "SCOPE"
+        "{:>number_width$}  {:<ID_WIDTH$}  {:<STATE_WIDTH$}  {:>4}  {:>4}  {}",
+        "#", "ID", "STATE", "DONE", "AGE", "SCOPE"
     )?;
 
-    for entry in entries {
+    for (offset, entry) in entries.iter().enumerate() {
         writeln!(
             out,
-            "{:<ID_WIDTH$}  {:<STATE_WIDTH$}  {:>4}  {:>4}  {}",
+            "{:>number_width$}  {:<ID_WIDTH$}  {:<STATE_WIDTH$}  {:>4}  {:>4}  {}",
+            first + offset,
             entry.manifest.id,
             state(entry),
             done(entry),
@@ -127,7 +142,8 @@ pub(crate) fn show(
     out: &mut dyn Write,
 ) -> io::Result<()> {
     if matches!(presentation, Presentation::Pipe) {
-        return list(std::slice::from_ref(entry), presentation, out);
+        // `pipe` writes no number, so the one given here is never used.
+        return list(std::slice::from_ref(entry), 1, presentation, out);
     }
 
     writeln!(out, "* {}", entry.manifest.id)?;
@@ -311,18 +327,61 @@ mod tests {
     fn the_piped_listing_has_no_heading() {
         let entries = [entry("01AAA", 1, 2, LockState::Free)];
 
-        let piped = rendered(|out| list(&entries, Presentation::Pipe, out));
+        let piped = rendered(|out| list(&entries, 1, Presentation::Pipe, out));
         assert_eq!(piped.lines().count(), 1, "{piped}");
         assert!(piped.starts_with("01AAA"), "{piped}");
 
         // And `minimal` does, so a reader knows what the columns are.
-        let readable = rendered(|out| list(&entries, Presentation::Minimal, out));
+        let readable = rendered(|out| list(&entries, 1, Presentation::Minimal, out));
         let mut lines = readable.lines();
         assert!(
-            lines.next().is_some_and(|line| line.starts_with("ID")),
+            lines
+                .next()
+                .is_some_and(|line| line.trim_start().starts_with("# ")),
             "{readable}"
         );
-        assert!(lines.next().is_some_and(|line| line.starts_with("01AAA")));
+        assert!(lines.next().is_some_and(|line| line.contains("01AAA")));
+    }
+
+    /// A row's number places it in the whole listing rather than on the screen.
+    ///
+    /// The second page of ten starts at eleven, which is what makes the number
+    /// worth printing beside a footer that says which page this is — and what
+    /// lets somebody name a record without reading its id back.
+    #[test]
+    fn a_page_numbers_its_rows_from_where_it_starts() {
+        let entries = [
+            entry("01AAA", 1, 2, LockState::Free),
+            entry("01BBB", 1, 2, LockState::Free),
+        ];
+
+        let second_page = rendered(|out| list(&entries, 11, Presentation::Minimal, out));
+        let rows: Vec<&str> = second_page.lines().skip(1).collect();
+
+        assert!(rows[0].starts_with("11  01AAA"), "{second_page}");
+        assert!(rows[1].starts_with("12  01BBB"), "{second_page}");
+
+        // And the column is as wide as the largest number on the page, so a
+        // first page of nine records does not carry a blank column.
+        let first_page = rendered(|out| list(&entries, 1, Presentation::Minimal, out));
+        assert!(
+            first_page
+                .lines()
+                .nth(1)
+                .is_some_and(|row| row.starts_with("1  01AAA")),
+            "{first_page}"
+        );
+    }
+
+    /// `pipe` carries no number: its five fields are a contract that only ever
+    /// grows at the end, and a number in front would shift every one of them.
+    #[test]
+    fn the_piped_listing_carries_no_number() {
+        let entries = [entry("01AAA", 1, 2, LockState::Free)];
+
+        let piped = rendered(|out| list(&entries, 11, Presentation::Pipe, out));
+        assert!(piped.starts_with("01AAA"), "{piped}");
+        assert_eq!(piped.trim_end().split('\t').count(), 5, "{piped}");
     }
 
     /// The `pipe` contract: five fields, every line, whatever the state.
@@ -343,7 +402,7 @@ mod tests {
             sweep("01DDD", 100, 256, LockState::Free),
         ];
 
-        let text = rendered(|out| list(&entries, Presentation::Pipe, out));
+        let text = rendered(|out| list(&entries, 1, Presentation::Pipe, out));
 
         assert_eq!(text.lines().count(), 4);
         for line in text.lines() {
@@ -376,7 +435,7 @@ mod tests {
         let mut unreadable = entry("01EEE", 0, 200, LockState::Free);
         unreadable.checkpoint = None;
 
-        let text = rendered(|out| list(&[unreadable], Presentation::Pipe, out));
+        let text = rendered(|out| list(&[unreadable], 1, Presentation::Pipe, out));
         assert_eq!(text.lines().count(), 1);
         assert_eq!(text.lines().next().expect("a line").split('\t').count(), 5);
     }

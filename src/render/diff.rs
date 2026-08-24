@@ -57,6 +57,7 @@ use std::io::{self, Write};
 use zond_engine::diff::{HostDelta, PortDelta, ScanDiff};
 use zond_engine::export::ExportOptions;
 use zond_engine::export::diff::schema::ChangeDto;
+use zond_engine::scanner::report::ScanKind;
 
 use crate::render::field;
 use crate::settings::Presentation;
@@ -124,6 +125,33 @@ pub(crate) fn comparing(
             out,
             "note: the first scan is the later of the two, so this reads backwards"
         )?;
+    }
+
+    // A sweep and a port scan answer different questions, and comparing them
+    // reports every port one of them looked at as a change. That is what the
+    // records say and it is not what somebody expecting a nightly comparison
+    // meant to ask, so the difference is named before the wall of lines rather
+    // than left to be worked out from them.
+    let (before, after) = (diff.baseline().kinds(), diff.current().kinds());
+    if !before.is_empty() && !after.is_empty() {
+        let scanned_ports = |kinds: &[ScanKind]| kinds.contains(&ScanKind::PortScan);
+
+        // Naming which one looked, rather than listing both phase lists: a port
+        // scan records a discovery phase of its own, so "discovery against
+        // discovery and port scan" is accurate and tells nobody anything.
+        match (scanned_ports(before), scanned_ports(after)) {
+            (false, true) => writeln!(
+                out,
+                "note: only the later scan looked at ports, so most of what follows is \
+                 the earlier one not having looked"
+            )?,
+            (true, false) => writeln!(
+                out,
+                "note: only the earlier scan looked at ports, so most of what follows is \
+                 the later one not having looked"
+            )?,
+            _ => {}
+        }
     }
 
     Ok(())
@@ -981,6 +1009,65 @@ pub(crate) mod tests {
             unconfirmed(3, 1, "host appeared"),
             "3 hosts appeared (2 unconfirmed)"
         );
+    }
+
+    /// Comparing a sweep with a port scan reports every port one of them looked
+    /// at, and nothing in the wall of lines says why. The note is what stops
+    /// that reading as a network that changed.
+    #[test]
+    fn a_comparison_of_two_different_kinds_of_scan_says_so() {
+        use std::time::{Duration, SystemTime};
+        use zond_engine::ZondConfig;
+        use zond_engine::model::exclusion::Exclusions;
+        use zond_engine::model::parse::ip::to_set;
+        use zond_engine::scanner::report::{PhaseParts, ScanPhase, ScanSettings, TargetScope};
+
+        let phase = |kind| {
+            let mut targets = to_set(&["192.0.2.0/24"], None, None).expect("a range");
+            ScanPhase::from_parts(PhaseParts {
+                kind,
+                started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
+                elapsed: Duration::from_secs(1),
+                privileged: true,
+                targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
+                settings: ScanSettings::from(&ZondConfig::default()),
+                failures: Vec::new(),
+                unroutable: Vec::new(),
+                probes: Vec::new(),
+            })
+        };
+
+        let swept = ScanReport::recorded("test", vec![phase(ScanKind::Discovery)], vec![host(1)]);
+        let scanned = ScanReport::recorded(
+            "test",
+            vec![phase(ScanKind::Discovery), phase(ScanKind::PortScan)],
+            vec![host(1)],
+        );
+
+        let mut out = Capture::default();
+        comparing("a", "b", &ScanDiff::between(&swept, &scanned), &mut out)
+            .expect("a capture never fails");
+        assert!(
+            out.text().contains("only the later scan looked at ports"),
+            "{}",
+            out.text()
+        );
+
+        // The other way round names the other one.
+        let mut out = Capture::default();
+        comparing("a", "b", &ScanDiff::between(&scanned, &swept), &mut out)
+            .expect("a capture never fails");
+        assert!(
+            out.text().contains("only the earlier scan looked at ports"),
+            "{}",
+            out.text()
+        );
+
+        // And two of a kind say nothing.
+        let mut out = Capture::default();
+        comparing("a", "b", &ScanDiff::between(&swept, &swept), &mut out)
+            .expect("a capture never fails");
+        assert!(!out.text().contains("note:"), "{}", out.text());
     }
 
     /// A set member that went says so once. "lost 2a02:… , now none" reads as

@@ -93,16 +93,33 @@ fn list(
         return Ok(Outcome::Complete);
     }
 
-    let shown = paginate(page, presentation, entries.len())?;
-    render::list(&entries[shown.clone()], presentation, out)?;
+    let page = paginate(page, presentation, entries.len())?;
+    // Numbered from where this page starts, so a row's number places it in the
+    // whole listing rather than on the screen.
+    render::list(
+        &entries[page.shown.clone()],
+        page.shown.start + 1,
+        presentation,
+        out,
+    )?;
 
     // To stderr, like every other piece of commentary here: what is on standard
     // output is the records, and a note about there being more of them is not
     // one of the records.
-    if shown.len() < entries.len() {
+    if page.shown.len() < entries.len() {
+        // A page you can actually go to rather than the flag's grammar: the
+        // next one where there is one, the previous where this is the last. A
+        // hint that names something which would fail is worse than none.
+        let step = if page.number < page.of {
+            format!("--page {} for the next", page.number + 1)
+        } else {
+            format!("--page {} for the previous", page.number - 1)
+        };
+
         tracing::info!(
-            "showing {} of {} records; --all lists the rest",
-            shown.len(),
+            "\npage {} of {}, {} records; {step}, --all for every one",
+            page.number,
+            page.of,
             entries.len()
         );
     }
@@ -117,11 +134,22 @@ fn list(
 /// `zond journal --pipe` and silently receiving the first ten of forty records
 /// would be worse served by the convenience than helped by it. Asking for a
 /// limit there is still honoured, because then it was asked for.
-fn paginate(
-    page: &PageArgs,
-    presentation: Presentation,
-    total: usize,
-) -> Result<std::ops::Range<usize>, Error> {
+/// Which slice a listing shows, and where that slice sits.
+///
+/// The number and the count travel with the range because the footer needs
+/// them, and working them out again from the arguments would be a second place
+/// that has to agree about what a page is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Page {
+    /// The records to show.
+    shown: std::ops::Range<usize>,
+    /// Which page this is, counting from one.
+    number: usize,
+    /// How many there are.
+    of: usize,
+}
+
+fn paginate(page: &PageArgs, presentation: Presentation, total: usize) -> Result<Page, Error> {
     let size = match (page.all, page.limit, presentation) {
         (true, _, _) => None,
         (_, Some(0), _) => None,
@@ -131,7 +159,11 @@ fn paginate(
     };
 
     let Some(size) = size.filter(|size| *size > 0) else {
-        return Ok(0..total);
+        return Ok(Page {
+            shown: 0..total,
+            number: 1,
+            of: 1,
+        });
     };
 
     // Rounded up, and never zero: a listing with records in it has a first page
@@ -146,7 +178,11 @@ fn paginate(
     }
 
     let from = (number - 1) * size;
-    Ok(from..(from + size).min(total))
+    Ok(Page {
+        shown: from..(from + size).min(total),
+        number,
+        of: pages,
+    })
 }
 
 /// The page size this machine's settings ask for, or the built-in default.
@@ -459,20 +495,47 @@ mod tests {
     }
 
     /// A page is as long as the limit, and the last one is however much is left.
+    /// The footer names which page this is, so a listing says where it sits
+    /// rather than only that there is more.
+    #[test]
+    fn a_page_knows_its_number_and_how_many_there_are() {
+        let minimal = Presentation::Minimal;
+
+        let first = paginate(&asked(Some(10), None, false), minimal, 14).expect("a page");
+        assert_eq!(first.number, 1);
+        assert_eq!(first.of, 2);
+
+        let last = paginate(&asked(Some(10), Some(2), false), minimal, 14).expect("a page");
+        assert_eq!(last.number, 2);
+        assert_eq!(last.of, 2);
+
+        // A listing that fits is one page of one, which is what stops the
+        // footer appearing at all.
+        let whole = paginate(&asked(None, None, true), minimal, 14).expect("a page");
+        assert_eq!((whole.number, whole.of), (1, 1));
+        assert_eq!(whole.shown, 0..14);
+    }
+
     #[test]
     fn a_page_covers_its_share_and_the_last_one_covers_the_remainder() {
         let minimal = Presentation::Minimal;
 
         assert_eq!(
-            paginate(&asked(Some(10), None, false), minimal, 12).expect("a page"),
+            paginate(&asked(Some(10), None, false), minimal, 12)
+                .expect("a page")
+                .shown,
             0..10
         );
         assert_eq!(
-            paginate(&asked(Some(10), Some(2), false), minimal, 12).expect("a page"),
+            paginate(&asked(Some(10), Some(2), false), minimal, 12)
+                .expect("a page")
+                .shown,
             10..12
         );
         assert_eq!(
-            paginate(&asked(Some(4), Some(3), false), minimal, 12).expect("a page"),
+            paginate(&asked(Some(4), Some(3), false), minimal, 12)
+                .expect("a page")
+                .shown,
             8..12
         );
     }
@@ -482,7 +545,9 @@ mod tests {
     fn everything_is_one_page() {
         for args in [asked(None, None, true), asked(Some(0), None, false)] {
             assert_eq!(
-                paginate(&args, Presentation::Minimal, 12).expect("a page"),
+                paginate(&args, Presentation::Minimal, 12)
+                    .expect("a page")
+                    .shown,
                 0..12
             );
         }
@@ -496,16 +561,22 @@ mod tests {
     #[test]
     fn piping_lists_everything_unless_a_limit_was_asked_for() {
         assert_eq!(
-            paginate(&asked(None, None, false), Presentation::Pipe, 40).expect("a page"),
+            paginate(&asked(None, None, false), Presentation::Pipe, 40)
+                .expect("a page")
+                .shown,
             0..40,
             "no default may truncate the stable interface"
         );
         assert_eq!(
-            paginate(&asked(Some(5), None, false), Presentation::Pipe, 40).expect("a page"),
+            paginate(&asked(Some(5), None, false), Presentation::Pipe, 40)
+                .expect("a page")
+                .shown,
             0..5
         );
         assert_eq!(
-            paginate(&asked(None, Some(2), false), Presentation::Pipe, 40).expect("a page"),
+            paginate(&asked(None, Some(2), false), Presentation::Pipe, 40)
+                .expect("a page")
+                .shown,
             10..20,
             "asking for a page is asking for pages"
         );
@@ -536,7 +607,9 @@ mod tests {
     #[test]
     fn a_short_listing_still_has_a_first_page() {
         assert_eq!(
-            paginate(&asked(Some(10), Some(1), false), Presentation::Minimal, 3).expect("a page"),
+            paginate(&asked(Some(10), Some(1), false), Presentation::Minimal, 3)
+                .expect("a page")
+                .shown,
             0..3
         );
     }
