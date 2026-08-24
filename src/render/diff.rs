@@ -463,13 +463,14 @@ fn is_notable(port: &PortDelta) -> bool {
 fn counted_bulk(ports: &[&PortDelta]) -> Vec<String> {
     let mut lines = Vec::new();
 
-    for (matches, phrase) in [
+    for (matches, phrase, when) in [
         (
             ports
                 .iter()
                 .filter(|port| port.presence().is_added())
                 .collect::<Vec<_>>(),
             "newly recorded",
+            "before",
         ),
         (
             ports
@@ -477,6 +478,9 @@ fn counted_bulk(ports: &[&PortDelta]) -> Vec<String> {
                 .filter(|port| port.presence().is_removed())
                 .collect::<Vec<_>>(),
             "no longer reported",
+            // The scan that did not look is the later one here, as it is on the
+            // single-endpoint lines above.
+            "since",
         ),
     ] {
         if matches.is_empty() {
@@ -490,7 +494,7 @@ fn counted_bulk(ports: &[&PortDelta]) -> Vec<String> {
         let counted = counted(matches.len(), "port");
         let caveat = match unconfirmed {
             0 => String::new(),
-            n => format!(" ({n} not looked for before)"),
+            n => format!(" ({n} not looked for {when})"),
         };
 
         lines.push(format!("[{counted} {phrase}, none open{caveat}]"));
@@ -507,7 +511,13 @@ fn port_lines(port: &PortDelta, options: &ExportOptions) -> Vec<String> {
     if port.is_opened() {
         lines.push(format!("{endpoint} opened"));
     } else if port.is_closed() {
-        lines.push(format!("{endpoint} closed"));
+        // "Closed" is a verdict, and only one of these two scans made it. Where
+        // the later one has no record at all the honest line says so: a port
+        // absent from a report is not a port a scan found shut.
+        lines.push(match port.current() {
+            Some(_) => format!("{endpoint} closed"),
+            None => format!("{endpoint} was open, no record now"),
+        });
     }
 
     for change in port.changes() {
@@ -530,10 +540,16 @@ fn port_lines(port: &PortDelta, options: &ExportOptions) -> Vec<String> {
         }
     }
 
-    if !port.presence().is_confirmed() {
-        if let Some(last) = lines.last_mut() {
-            last.push_str(" (not looked for before)");
-        }
+    // Which scan failed to look depends on which one is missing the record, and
+    // saying "before" for both had a port that vanished blaming the wrong scan.
+    if !port.presence().is_confirmed()
+        && let Some(last) = lines.last_mut()
+    {
+        last.push_str(if port.presence().is_added() {
+            " (not looked for before)"
+        } else {
+            " (not looked for since)"
+        });
     }
 
     lines
@@ -566,10 +582,15 @@ fn sentence(change: &ChangeDto) -> String {
         format!("{what} ")
     };
 
+    // A change to one member of a set already says which way it went — "lost
+    // 2a02:…" needs no ", now none" after it, and reads as a mistake with one.
+    let directional = change.kind.ends_with("_gained") || change.kind.ends_with("_lost");
+
     match (before, after) {
         (Some(before), Some(after)) => format!("{lead}{before} -> {after}"),
         (None, Some(after)) if lead.is_empty() => format!("now {after}"),
         (None, Some(after)) => format!("{lead}{after}"),
+        (Some(before), None) if directional => format!("{lead}{before}"),
         (Some(before), None) if lead.is_empty() => format!("no longer {before}"),
         (Some(before), None) => format!("{lead}{before}, now none"),
         (None, None) => what.to_owned(),
@@ -960,6 +981,50 @@ pub(crate) mod tests {
             unconfirmed(3, 1, "host appeared"),
             "3 hosts appeared (2 unconfirmed)"
         );
+    }
+
+    /// A set member that went says so once. "lost 2a02:… , now none" reads as
+    /// a mistake, and a real segment produced exactly that line.
+    #[test]
+    fn a_set_member_that_went_is_not_also_said_to_be_none() {
+        let lost = ChangeDto {
+            kind: "address_lost",
+            before: Some("2a02:908:8c1:b880::b99a".to_string()),
+            after: None,
+        };
+        assert_eq!(sentence(&lost), "lost 2a02:908:8c1:b880::b99a");
+
+        // A field that genuinely emptied still says so.
+        let emptied = ChangeDto {
+            kind: "vendor",
+            before: Some("Arris Group, Inc".to_string()),
+            after: None,
+        };
+        assert_eq!(sentence(&emptied), "vendor Arris Group, Inc, now none");
+    }
+
+    /// Which scan failed to look depends on which one lacks the record.
+    #[test]
+    fn the_caveat_names_the_scan_that_did_not_look() {
+        let mut later = host(1);
+        later.add_port(Port::new(8080, Protocol::Tcp, PortState::Open));
+
+        // A port only the later scan has: the earlier one is the one that
+        // did not look.
+        let appeared = ScanDiff::between(
+            &scoped(vec![host(1)], "192.0.2.0/24"),
+            &scoped(vec![later.clone()], "192.0.2.0/24"),
+        );
+        let (records, _) = drawn(&appeared, Presentation::Minimal);
+        assert!(records.contains("(not looked for before)"), "{records}");
+
+        // And the other way round.
+        let went = ScanDiff::between(
+            &scoped(vec![later], "192.0.2.0/24"),
+            &scoped(vec![host(1)], "192.0.2.0/24"),
+        );
+        let (records, _) = drawn(&went, Presentation::Minimal);
+        assert!(records.contains("(not looked for since)"), "{records}");
     }
 
     /// A fingerprint is an identity, not a value to read: a block shows enough
