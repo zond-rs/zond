@@ -25,6 +25,7 @@ use zond_engine::config::{OsDetection, ScanEffort, SendMode, ServiceDetection};
 use zond_engine::model::technique::TcpScanTechnique;
 
 use crate::diagnostics::Verbosity;
+use crate::settings::Identity;
 use crate::settings::Presentation;
 
 /// The `zond` command line.
@@ -86,11 +87,25 @@ pub(crate) struct DiffArgs {
     #[arg(value_name = "AFTER")]
     pub after: String,
 
+    /// What makes two records the same host.
+    ///
+    /// `any` by default, which follows a machine whose primary address was
+    /// re-picked between scans. `hardware` follows one across a DHCP lease, and
+    /// is what a segment with phones on it wants. `primary` treats the address
+    /// itself as the thing being watched, which is what an external scan of a
+    /// public range means.
+    ///
+    /// [possible values: any, hardware, primary]
+    #[arg(long, value_name = "HOW")]
+    pub identity: Option<Identity>,
+
     /// Write the comparison to FILE instead of printing it.
     ///
-    /// JSON only, and the extension must say so. It is the document a pipeline
-    /// ingests: every change as one fact, with a field on each saying whether
-    /// the other scan was known to have looked.
+    /// The extension decides: `.json` is the document a pipeline ingests, every
+    /// change as one fact with a field on each saying whether the other scan was
+    /// known to have looked. `.html` is one self-contained page for whoever
+    /// reads the nightly mail — no script, no request to anywhere, and it
+    /// prints. Give the flag twice for both.
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: Vec<std::path::PathBuf>,
 }
@@ -102,6 +117,11 @@ Examples:
   zond diff latest 20aa1f3c        two records on this machine
   zond diff baseline.json latest   an archived report against tonight's scan
   zond diff q1.xml q2.xml          two nmap files, neither written by zond
+
+Identity:
+  Two scans of a network with DHCP on it will key the same machine under
+  different addresses. --identity hardware follows it by its hardware address,
+  which does not move when the lease does.
 
 Exit status:
   0  nothing changed
@@ -1011,5 +1031,52 @@ mod tests {
     #[test]
     fn a_target_is_required() {
         assert!(Cli::try_parse_from(["zond", "discover"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod identity_spelling {
+    use super::*;
+
+    #[test]
+    fn every_spelling_parses_however_it_is_typed() {
+        for identity in Identity::ALL {
+            assert_eq!(
+                identity.as_str().parse::<Identity>().expect("its own name"),
+                identity
+            );
+            assert_eq!(
+                identity
+                    .as_str()
+                    .to_uppercase()
+                    .parse::<Identity>()
+                    .expect("shouting is still asking"),
+                identity
+            );
+        }
+    }
+
+    /// A name that is not one is refused with the names that would have worked,
+    /// rather than falling back to the default and comparing under a policy
+    /// nobody asked for.
+    #[test]
+    fn a_name_that_is_not_one_is_refused_with_the_alternatives() {
+        let refused = "mac".parse::<Identity>().expect_err("not a spelling");
+        let message = refused.to_string();
+
+        assert!(message.contains("'mac'"), "{message}");
+        for identity in Identity::ALL {
+            assert!(message.contains(identity.as_str()), "{message}");
+        }
+    }
+
+    #[test]
+    fn the_flag_reaches_the_parsed_arguments() {
+        let cli = Cli::try_parse_from(["zond", "diff", "--identity", "hardware", "a", "b"])
+            .expect("should parse");
+        let Command::Diff(args) = cli.command else {
+            panic!("that is the diff command");
+        };
+        assert_eq!(args.identity, Some(Identity::Hardware));
     }
 }

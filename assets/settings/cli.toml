@@ -34,6 +34,26 @@
 # presentation = "minimal"
 
 
+# What makes two records, in two different scans, the same host.
+#
+# Read only by `zond diff`, and `--identity` overrides it for one run.
+#
+#   any        Two records are the same host when they share any address. The
+#              default, and what follows a machine whose primary address was
+#              re-picked between scans.
+#   hardware   That, and when they share a hardware address. Follows a machine
+#              across a DHCP lease, which is what a segment with phones on it
+#              wants. Not the default because a hardware address is not always
+#              the host's own: under proxy ARP a router lends its address to
+#              everything behind it, and those records then fold into one.
+#   primary    Only when their primary addresses match. The strictest, and the
+#              right reading when the address *is* the asset — an external scan
+#              of a public range, where the machine behind it is nobody's
+#              business.
+#
+# identity = "hardware"
+
+
 # Whether to record what each scan gets through.
 #
 # On by default. A scan of any size can be cut short by a dropped connection, a

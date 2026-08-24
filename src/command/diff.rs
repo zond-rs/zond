@@ -42,9 +42,9 @@ use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use zond_engine::ScanReport;
-use zond_engine::diff::ScanDiff;
+use zond_engine::diff::{DiffOptions, ScanDiff};
 use zond_engine::export::ExportOptions;
-use zond_engine::export::diff::{DiffExporter, JsonDiffExporter};
+use zond_engine::export::diff::{DiffExporter, HtmlDiffExporter, JsonDiffExporter};
 use zond_engine::import::report::{ReportFormat, ReportOptions};
 use zond_engine::journal::store;
 
@@ -53,7 +53,7 @@ use crate::command;
 use crate::error::Error;
 use crate::exit::Outcome;
 use crate::render::diff as render;
-use crate::settings::Presentation;
+use crate::settings::{Identity, Presentation};
 
 /// Compares the two scans named and reports what moved.
 pub(crate) fn run(args: &DiffArgs, presentation: Presentation) -> Result<Outcome, Error> {
@@ -70,7 +70,11 @@ pub(crate) fn run(args: &DiffArgs, presentation: Presentation) -> Result<Outcome
     let redaction = command::redaction(&command::engine_settings(None)?.config);
     let options = ExportOptions::new().with_redaction(redaction);
 
-    let diff = ScanDiff::between(&baseline, &current);
+    let diff = ScanDiff::compare(
+        &baseline,
+        &current,
+        &comparison(args, configured_identity()?),
+    );
 
     let written = if destinations.is_empty() {
         let mut records = io::stdout().lock();
@@ -90,6 +94,18 @@ pub(crate) fn run(args: &DiffArgs, presentation: Presentation) -> Result<Outcome
     } else {
         Outcome::Partial
     })
+}
+
+/// What this comparison was asked to assume.
+///
+/// The one thing about a comparison a caller has to decide is what makes two
+/// records the same host; everything else the engine settles. Separated from
+/// [`run`] so the flag's effect can be asserted without a file on disk.
+fn comparison(args: &DiffArgs, configured: Option<Identity>) -> DiffOptions {
+    // The flag wins, then the file, then the built-in default — the same order
+    // every other setting layers in.
+    let identity = args.identity.or(configured).unwrap_or_default();
+    DiffOptions::new().with_identity(identity.into())
 }
 
 /// What a comparison ends as.
@@ -112,6 +128,16 @@ fn outcome(diff: &ScanDiff) -> Outcome {
     } else {
         Outcome::Complete
     }
+}
+
+/// What this machine's settings say makes two records the same host.
+///
+/// Read here rather than in `main`, as the journal listing reads its page size:
+/// no other command has an opinion about it, and threading one through every
+/// command for the sake of one would cost more than it saves.
+fn configured_identity() -> Result<Option<Identity>, Error> {
+    let (settings, _) = crate::settings::resolve()?;
+    Ok(settings.identity())
 }
 
 /// One side of the comparison: a file if that is what it names, and a record on
@@ -151,19 +177,40 @@ fn from_file(path: &Path) -> Result<ScanReport, Error> {
 }
 
 /// Every file this comparison was told to write.
-fn destinations(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Error> {
-    for path in paths {
-        let json = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
+/// A format a comparison can be written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffFormat {
+    /// One JSON document, for whatever ingests it.
+    Json,
+    /// One self-contained page, for whoever reads it.
+    Html,
+}
 
-        if !json {
-            return Err(Error::UnknownDiffFormat { path: path.clone() });
+impl DiffFormat {
+    /// The format a path's extension names, if it names one this build writes.
+    fn from_path(path: &Path) -> Option<Self> {
+        match path
+            .extension()
+            .and_then(|extension| extension.to_str())?
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "json" => Some(DiffFormat::Json),
+            "html" | "htm" => Some(DiffFormat::Html),
+            _ => None,
         }
     }
+}
 
-    Ok(paths.to_vec())
+fn destinations(paths: &[PathBuf]) -> Result<Vec<(PathBuf, DiffFormat)>, Error> {
+    paths
+        .iter()
+        .map(|path| {
+            DiffFormat::from_path(path)
+                .map(|format| (path.clone(), format))
+                .ok_or_else(|| Error::UnknownDiffFormat { path: path.clone() })
+        })
+        .collect()
 }
 
 /// Writes the comparison to each destination, and reports whether every one
@@ -172,12 +219,15 @@ fn destinations(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Error> {
 /// A failure is logged rather than returned, on the same reasoning the report
 /// exporter gives: the comparison is already made, and a file that could not be
 /// written does not unmake it.
-fn write_all(destinations: &[PathBuf], diff: &ScanDiff, options: &ExportOptions) -> bool {
-    let exporter = JsonDiffExporter::new(options.clone());
+fn write_all(
+    destinations: &[(PathBuf, DiffFormat)],
+    diff: &ScanDiff,
+    options: &ExportOptions,
+) -> bool {
     let mut all_written = true;
 
-    for path in destinations {
-        match write_one(&exporter, path, diff) {
+    for (path, format) in destinations {
+        match write_one(*format, path, diff, options) {
             // To stderr: where a comparison went is commentary, and somebody
             // piping its records should still be told.
             Ok(()) => tracing::info!("wrote {}", path.display()),
@@ -196,14 +246,19 @@ fn write_all(destinations: &[PathBuf], diff: &ScanDiff, options: &ExportOptions)
 /// The flush is the point: a `BufWriter` dropped without one swallows the error
 /// from the last write, which is exactly the write that fills a disk.
 fn write_one(
-    exporter: &JsonDiffExporter,
+    format: DiffFormat,
     path: &Path,
     diff: &ScanDiff,
+    options: &ExportOptions,
 ) -> Result<(), zond_engine::export::ExportError> {
     let file = std::fs::File::create(path)?;
     let mut writer = std::io::BufWriter::new(file);
 
-    exporter.export(diff, &mut writer)?;
+    match format {
+        DiffFormat::Json => JsonDiffExporter::new(options.clone()).export(diff, &mut writer)?,
+        DiffFormat::Html => HtmlDiffExporter::new(options.clone()).export(diff, &mut writer)?,
+    }
+
     writer.flush()?;
     Ok(())
 }
@@ -295,22 +350,121 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn a_destination_that_is_not_json_is_refused_by_name() {
+    fn a_destination_naming_no_format_is_refused_by_name() {
         let error = destinations(&[PathBuf::from("changes.csv")]).expect_err("refused");
         assert!(error.to_string().contains("changes.csv"), "{error}");
     }
 
+    /// The extension decides, however it was typed. One run can leave the
+    /// document a pipeline reads and the page a person does.
     #[test]
-    fn json_is_accepted_however_it_is_spelled() {
-        assert!(destinations(&[PathBuf::from("changes.JSON")]).is_ok());
-        assert!(destinations(&[PathBuf::from("a.json"), PathBuf::from("b.json")]).is_ok());
+    fn the_extension_decides_the_format() {
+        let written = destinations(&[
+            PathBuf::from("changes.JSON"),
+            PathBuf::from("changes.html"),
+            PathBuf::from("changes.htm"),
+        ])
+        .expect("all three name a format");
+
+        let formats: Vec<DiffFormat> = written.into_iter().map(|(_, format)| format).collect();
+        assert_eq!(
+            formats,
+            [DiffFormat::Json, DiffFormat::Html, DiffFormat::Html]
+        );
     }
 
     #[test]
     fn naming_nothing_is_how_a_comparison_reaches_the_terminal() {
+        assert!(destinations(&[]).expect("no destinations").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod identity {
+    use zond_engine::diff::HostIdentity;
+    use zond_engine::model::mac::MacAddr;
+
+    use super::*;
+    use crate::render::diff::tests::scoped;
+    use crate::render::test_support::host;
+
+    fn asked(identity: Option<Identity>) -> DiffArgs {
+        DiffArgs {
+            before: "a".to_string(),
+            after: "b".to_string(),
+            identity,
+            output: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_flag_names_the_engines_policy() {
         assert_eq!(
-            destinations(&[]).expect("no destinations"),
-            Vec::<PathBuf>::new()
+            comparison(&asked(None), None).identity(),
+            HostIdentity::AnyAddress
         );
+        assert_eq!(
+            comparison(&asked(Some(Identity::Hardware)), None).identity(),
+            HostIdentity::Hardware
+        );
+        assert_eq!(
+            comparison(&asked(Some(Identity::Primary)), None).identity(),
+            HostIdentity::PrimaryAddress
+        );
+    }
+
+    /// The flag wins over the file, and the file over the default — the order
+    /// every other setting layers in.
+    #[test]
+    fn the_flag_wins_over_the_file_and_the_file_over_the_default() {
+        assert_eq!(
+            comparison(&asked(None), None).identity(),
+            HostIdentity::AnyAddress,
+            "nothing said, so the built-in default"
+        );
+        assert_eq!(
+            comparison(&asked(None), Some(Identity::Hardware)).identity(),
+            HostIdentity::Hardware,
+            "the file, where the command line said nothing"
+        );
+        assert_eq!(
+            comparison(&asked(Some(Identity::Primary)), Some(Identity::Hardware)).identity(),
+            HostIdentity::PrimaryAddress,
+            "the flag, over a file that said otherwise"
+        );
+    }
+
+    /// The flag has to reach the comparison, not merely parse.
+    ///
+    /// A machine whose lease moved shares no address between the two scans, so
+    /// only the hardware policy can follow it — under the default it reads as
+    /// one host gone and another arrived, which is what a DHCP segment produces
+    /// every night.
+    #[test]
+    fn hardware_follows_a_machine_whose_lease_moved() {
+        let mac = MacAddr::new(0x2c, 0xcf, 0x67, 0xf2, 0x51, 0xe3);
+
+        let mut before = host(10);
+        before.record_mac(mac);
+        let mut after = host(60);
+        after.record_mac(mac);
+
+        let (before, after) = (
+            scoped(vec![before], "192.0.2.0/24"),
+            scoped(vec![after], "192.0.2.0/24"),
+        );
+
+        let default = ScanDiff::compare(&before, &after, &comparison(&asked(None), None));
+        assert_eq!(default.summary().hosts_added.total, 1);
+        assert_eq!(default.summary().hosts_removed.total, 1);
+
+        let followed = ScanDiff::compare(
+            &before,
+            &after,
+            &comparison(&asked(Some(Identity::Hardware)), None),
+        );
+        assert_eq!(followed.summary().hosts_added.total, 0);
+        assert_eq!(followed.summary().hosts_removed.total, 0);
+        assert_eq!(followed.summary().hosts_changed, 1);
     }
 }

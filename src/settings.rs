@@ -45,6 +45,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use zond_engine::diff::HostIdentity;
 
 use serde::Deserialize;
 
@@ -151,6 +152,73 @@ impl FromStr for Presentation {
     }
 }
 
+/// What makes two records, in two different scans, the same host.
+///
+/// A thin mirror of the engine's own [`HostIdentity`], because a value the
+/// command line parses needs a `FromStr` this crate is allowed to write. The
+/// meanings are the engine's and are documented there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Identity {
+    /// Two records are the same host when they share any address.
+    #[default]
+    Any,
+    /// That, and when they share a hardware address.
+    Hardware,
+    /// Only when their primary addresses match.
+    Primary,
+}
+
+impl Identity {
+    /// Every spelling, in the order the help lists them.
+    pub(crate) const ALL: [Identity; 3] = [Identity::Any, Identity::Hardware, Identity::Primary];
+
+    /// What this is called on the command line.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Identity::Any => "any",
+            Identity::Hardware => "hardware",
+            Identity::Primary => "primary",
+        }
+    }
+}
+
+impl From<Identity> for HostIdentity {
+    fn from(identity: Identity) -> Self {
+        match identity {
+            Identity::Any => HostIdentity::AnyAddress,
+            Identity::Hardware => HostIdentity::Hardware,
+            Identity::Primary => HostIdentity::PrimaryAddress,
+        }
+    }
+}
+
+/// The error [`Identity::from_str`] returns.
+///
+/// Carries the names that would have worked, so whoever prints it can print it
+/// verbatim — the same shape [`UnknownPresentation`] takes.
+#[derive(Debug, thiserror::Error)]
+#[error("unknown identity '{written}': expected one of {}", expected.join(", "))]
+pub(crate) struct UnknownIdentity {
+    /// What was written.
+    pub written: String,
+    /// The names that would have worked.
+    pub expected: Vec<&'static str>,
+}
+
+impl std::str::FromStr for Identity {
+    type Err = UnknownIdentity;
+
+    fn from_str(written: &str) -> Result<Self, Self::Err> {
+        Identity::ALL
+            .into_iter()
+            .find(|identity| written.eq_ignore_ascii_case(identity.as_str()))
+            .ok_or_else(|| UnknownIdentity {
+                written: written.to_owned(),
+                expected: Identity::ALL.map(Identity::as_str).to_vec(),
+            })
+    }
+}
+
 /// How many journals this machine keeps.
 ///
 /// The journal directory grows by one record per scan and nothing about a scan
@@ -249,6 +317,9 @@ pub(crate) enum UnusableValue {
     /// `journal_entry_limit` was neither a count nor `unlimited`.
     #[error(transparent)]
     EntryLimit(#[from] UnknownEntryLimit),
+    /// `identity` named something that is not a policy.
+    #[error(transparent)]
+    Identity(#[from] UnknownIdentity),
 }
 
 /// Something a settings file said that this program could not use.
@@ -320,6 +391,7 @@ pub(crate) enum SettingsError {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Settings {
     presentation: Option<Presentation>,
+    identity: Option<Identity>,
     journal: Option<bool>,
     journal_entry_limit: Option<EntryLimit>,
     page_size: Option<usize>,
@@ -330,6 +402,16 @@ impl Settings {
     #[must_use]
     pub(crate) fn presentation(self) -> Option<Presentation> {
         self.presentation
+    }
+
+    /// What these settings say makes two records the same host, if they say.
+    ///
+    /// Read only by `zond diff`. A machine whose segment runs DHCP wants
+    /// `hardware` on every comparison it ever makes, and saying so once in a
+    /// file is the difference between that and remembering a flag nightly.
+    #[must_use]
+    pub(crate) fn identity(self) -> Option<Identity> {
+        self.identity
     }
 
     /// Whether scans should be recorded, if these settings say.
@@ -360,6 +442,9 @@ impl Settings {
         if let Some(presentation) = other.presentation {
             self.presentation = Some(presentation);
         }
+        if let Some(identity) = other.identity {
+            self.identity = Some(identity);
+        }
         if let Some(journal) = other.journal {
             self.journal = Some(journal);
         }
@@ -378,6 +463,7 @@ impl Settings {
 #[derive(Debug, Default, Deserialize)]
 struct Document {
     presentation: Option<String>,
+    identity: Option<String>,
     journal: Option<bool>,
     // Left as it was written, because this key takes a count or a word and the
     // message for anything else should be able to quote what was there.
@@ -406,6 +492,13 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
         .transpose()
         .map_err(|source| bad_value(source.into()))?;
 
+    let identity = document
+        .identity
+        .as_deref()
+        .map(Identity::from_str)
+        .transpose()
+        .map_err(|source| bad_value(source.into()))?;
+
     let journal_entry_limit = document
         .journal_entry_limit
         .as_ref()
@@ -425,6 +518,7 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
     Ok((
         Settings {
             presentation,
+            identity,
             journal: document.journal,
             journal_entry_limit,
             page_size: document.page_size,
@@ -704,6 +798,50 @@ mod tests {
     }
 
     #[test]
+    fn an_identity_is_read_from_the_document() {
+        let (settings, warnings) = parse(
+            "identity = \"hardware\"\n",
+            std::path::Path::new("cli.toml"),
+        )
+        .expect("a usable document");
+
+        assert_eq!(settings.identity(), Some(Identity::Hardware));
+        assert!(warnings.is_empty());
+    }
+
+    /// A policy that is not one is refused with the names that would have
+    /// worked, rather than the file quietly comparing under a policy nobody
+    /// asked for.
+    #[test]
+    fn an_identity_that_is_not_one_is_refused() {
+        let refused = parse("identity = \"mac\"\n", std::path::Path::new("cli.toml"))
+            .expect_err("not a policy");
+
+        let message = refused.to_string();
+        assert!(message.contains("'mac'"), "{message}");
+        for identity in Identity::ALL {
+            assert!(message.contains(identity.as_str()), "{message}");
+        }
+    }
+
+    /// A file that says nothing about it must not overrule a lower layer.
+    #[test]
+    fn an_identity_layers_like_every_other_key() {
+        let mut lower = Settings {
+            identity: Some(Identity::Hardware),
+            ..Settings::default()
+        };
+        lower.overlay(Settings::default());
+        assert_eq!(lower.identity(), Some(Identity::Hardware));
+
+        lower.overlay(Settings {
+            identity: Some(Identity::Primary),
+            ..Settings::default()
+        });
+        assert_eq!(lower.identity(), Some(Identity::Primary));
+    }
+
+    #[test]
     fn a_presentation_is_read_from_the_document() {
         let (settings, _) = parse_text(r#"presentation = "pipe""#).expect("a known mode");
         assert_eq!(settings.presentation(), Some(Presentation::Pipe));
@@ -865,6 +1003,7 @@ mod tests {
     fn a_later_file_overrides_only_what_it_mentions() {
         let mut settings = Settings {
             presentation: Some(Presentation::Fancy),
+            identity: Some(Identity::Hardware),
             journal: Some(false),
             journal_entry_limit: Some(EntryLimit::Unlimited),
             page_size: Some(3),
@@ -886,6 +1025,7 @@ mod tests {
 
         settings.overlay(Settings {
             presentation: Some(Presentation::Minimal),
+            identity: None,
             journal: None,
             journal_entry_limit: None,
             page_size: None,
