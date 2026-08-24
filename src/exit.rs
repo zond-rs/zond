@@ -20,9 +20,22 @@
 //! | 1 | The run could not be carried out. |
 //! | 2 | What was asked for was not usable: an unknown flag, a target that is not a target, or a settings file that says something this program cannot act on. |
 //! | 3 | The run finished, but something it was asked to cover was not covered. |
+//! | 4 | A comparison found changes. |
 //! | 130 | Interrupted with `Ctrl-C`. |
 //!
 //! **Finding nothing is not a failure.** A sweep of an empty range exits `0`.
+//!
+//! **Code 4 is for `zond diff` and nothing else.** A comparison that found
+//! nothing exits `0` and one that found something exits `4`, so a nightly job is
+//! `zond diff last tonight || notify`. This is the convention `diff(1)` set,
+//! moved off `1` because `1` here already means the run could not be carried
+//! out — and a monitor that could not tell "the network changed" from "the scan
+//! failed" would be worse than no monitor.
+//!
+//! **Only confirmed changes count.** A change the other scan is not known to
+//! have looked for is a fact about the scan rather than about the network, and
+//! raising an alarm for one is how a monitoring tool teaches its owner to
+//! ignore it. See [`diff`](zond_engine::diff).
 //!
 //! **Code 3 is the one worth explaining.** A scan whose raw scanner would not
 //! start, or whose range no strategy could walk, still returns every host it did
@@ -44,6 +57,8 @@ pub(crate) enum Code {
     Usage = 2,
     /// The run finished, but part of what was asked for was not covered.
     Partial = 3,
+    /// A comparison found changes. Never returned by anything that scans.
+    Changed = 4,
     /// Interrupted. `128 + SIGINT`, which is what a shell reports for a process
     /// killed by that signal and therefore what a script already tests for.
     Interrupted = 130,
@@ -77,6 +92,12 @@ pub(crate) enum Outcome {
     /// The user stopped it. The results collected up to that point were still
     /// reported.
     Interrupted,
+    /// A comparison ran and found at least one confirmed change.
+    ///
+    /// Not a failure and not a partial result: the command did exactly what it
+    /// was asked. It is reported apart from [`Complete`](Self::Complete) so a
+    /// scheduled job can act on the answer without parsing the output.
+    Changed,
 }
 
 impl Outcome {
@@ -87,6 +108,7 @@ impl Outcome {
             Outcome::Complete => Code::Success,
             Outcome::Partial => Code::Partial,
             Outcome::Interrupted => Code::Interrupted,
+            Outcome::Changed => Code::Changed,
         }
     }
 }
@@ -111,6 +133,7 @@ mod tests {
         assert_eq!(Code::Failure.as_u8(), 1);
         assert_eq!(Code::Usage.as_u8(), 2);
         assert_eq!(Code::Partial.as_u8(), 3);
+        assert_eq!(Code::Changed.as_u8(), 4);
         assert_eq!(Code::Interrupted.as_u8(), 130);
     }
 
@@ -119,6 +142,7 @@ mod tests {
         assert_eq!(Outcome::Complete.code(), Code::Success);
         assert_eq!(Outcome::Partial.code(), Code::Partial);
         assert_eq!(Outcome::Interrupted.code(), Code::Interrupted);
+        assert_eq!(Outcome::Changed.code(), Code::Changed);
     }
 
     /// A shell reports a signalled process as `128 + signal`.

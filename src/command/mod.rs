@@ -19,6 +19,7 @@
 //! Nothing here formats anything, and nothing here decides an exit code. Those
 //! belong to [`render`](crate::render) and [`exit`](crate::exit).
 
+pub(crate) mod diff;
 pub(crate) mod discover;
 pub(crate) mod journal;
 pub(crate) mod scan;
@@ -31,7 +32,7 @@ use zond_engine::export::Redaction;
 use crate::export::Destination;
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
-use zond_engine::journal::store::Journal;
+use zond_engine::journal::store::{self, Journal, Retention};
 use zond_engine::model::host::Host;
 use zond_engine::system::privilege;
 use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ZondConfig};
@@ -44,7 +45,7 @@ use crate::settings;
 
 /// What the engine's settings files said, with what they could not be used for
 /// reported on the way past.
-fn engine_settings(profile: Option<&str>) -> Result<settings::EngineSettings, Error> {
+pub(crate) fn engine_settings(profile: Option<&str>) -> Result<settings::EngineSettings, Error> {
     let (settings, warnings) = settings::engine(profile)?;
 
     for warning in warnings {
@@ -59,12 +60,25 @@ fn engine_settings(profile: Option<&str>) -> Result<settings::EngineSettings, Er
 /// The engine only records the intent — it holds everything a scan found — so
 /// masking on the way out is this program's job, and a `--redact` that did not
 /// reach the renderer would be a flag that does nothing.
-fn redaction(config: &ZondConfig) -> Redaction {
+pub(crate) fn redaction(config: &ZondConfig) -> Redaction {
     if config.redact {
         Redaction::Standard
     } else {
         Redaction::None
     }
+}
+
+/// Whether this run leaves a record, and how many are kept once it has.
+///
+/// The two travel together because they are answered in the same place from the
+/// same file, and because the second only ever comes up when the first is true:
+/// a run recording nothing has added nothing to apply a limit to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Recording {
+    /// Whether to record at all — `journal` in `cli.toml`, or `--no-journal`.
+    pub(crate) wanted: bool,
+    /// The most records this machine keeps — `journal_entry_limit`.
+    pub(crate) limit: settings::EntryLimit,
 }
 
 /// Starts a record for this run, or says why it could not and carries on.
@@ -77,7 +91,9 @@ fn redaction(config: &ZondConfig) -> Redaction {
 /// fails — no home directory, a state directory that will not take a write, an
 /// id that could not be claimed — is reported and returns `None`, and the
 /// caller scans anyway.
-fn record(plan: &Plan, summary: String) -> Option<Journal> {
+///
+/// The record having been claimed, `limit` is applied: see [`enforce`].
+fn record(plan: &Plan, summary: String, limit: settings::EntryLimit) -> Option<Journal> {
     let Some(root) = paths::root() else {
         tracing::warn!("not recording this scan: this environment names no home");
         return None;
@@ -96,12 +112,69 @@ fn record(plan: &Plan, summary: String) -> Option<Journal> {
             // To stderr: where a scan is writing is commentary on the run, and
             // somebody piping its results should still be told.
             tracing::info!("recording this scan as {}", journal.manifest().id);
+
+            // After the record exists, so the limit is a limit on what is there
+            // once this run has been counted rather than one record more.
+            enforce(&root, limit);
             Some(journal)
         }
         Err(e) => {
             tracing::warn!("not recording this scan: {e}");
             None
         }
+    }
+}
+
+/// Drops the oldest records the standing limit no longer keeps.
+///
+/// Here, on the way past, rather than in a sweep somebody has to remember to
+/// run: the journal directory grows by one record per scan and nothing about a
+/// scan shrinks it, so the moment one is added is the moment to say what that
+/// pushed out.
+///
+/// Age plays no part. `zond journal prune` is where a policy about time lives,
+/// and this is only the count — a machine that scans twice a year should not
+/// find its records gone, and one that scans hourly should not have to sweep.
+///
+/// What goes is the engine's decision, and it spends finished records before
+/// unfinished ones and old before new. The record this run just claimed is
+/// never among them: it is locked, and a locked journal is not something a
+/// prune takes — which is also why a limit of zero leaves the run in flight
+/// alone and takes it on the next run instead.
+///
+/// Best effort, like recording itself. A record that could not be deleted is
+/// mentioned and the scan carries on: a state directory that will not give
+/// something up is a reason to say so, not a reason to refuse to scan.
+fn enforce(root: &std::path::Path, limit: settings::EntryLimit) {
+    // Nothing to count against, and no reason to walk the directory to find
+    // that out.
+    let Some(cap) = limit.cap() else { return };
+
+    let retention = Retention {
+        completed_for: None,
+        incomplete_for: None,
+        keep_at_most: Some(cap),
+    };
+
+    match store::prune(root, &retention) {
+        Ok(pruned) => {
+            if !pruned.removed.is_empty() {
+                tracing::info!(
+                    "keeping the newest {cap} records: {} older {} removed",
+                    pruned.removed.len(),
+                    if pruned.removed.len() == 1 {
+                        "one was"
+                    } else {
+                        "ones were"
+                    },
+                );
+            }
+
+            for held in pruned.held {
+                tracing::warn!("could not remove record {}: {}", held.id, held.reason);
+            }
+        }
+        Err(e) => tracing::warn!("could not apply journal_entry_limit: {e}"),
     }
 }
 

@@ -103,6 +103,13 @@ impl PipeRenderer {
 }
 
 /// The fields a host contributes, in the documented order.
+///
+/// Every one goes through [`field::printable`] on the way out. A scanned host
+/// chooses its own hostname, its own banner and its own certificate subject, and
+/// a tab in any of them would add a field to a record a script reads by number
+/// while a newline would add a whole line. The module documentation above says a
+/// tab never occurs inside these values; this is what makes that true rather
+/// than hopeful, and it covers a fourteenth field nobody has written yet.
 fn record(reader: field::Reader, host: &Host) -> [String; FIELDS] {
     [
         reader.addresses(host),
@@ -119,6 +126,7 @@ fn record(reader: field::Reader, host: &Host) -> [String; FIELDS] {
         field::packed_ports(host).unwrap_or_else(field::unknown),
         field::closed_ports(host).unwrap_or_else(field::unknown),
     ]
+    .map(|value| field::printable(&value).into_owned())
 }
 
 impl Renderer for PipeRenderer {
@@ -276,5 +284,40 @@ mod tests {
         let text = records.text();
         let first = text.lines().next().expect("one host, one line");
         assert!(first.starts_with("192.0.2.1"), "got {first:?}");
+    }
+}
+
+#[cfg(test)]
+mod hostile {
+    use zond_engine::model::port::{Port, PortState, Protocol, Service};
+
+    use super::*;
+    use crate::render::test_support::host;
+
+    /// A scanned host chooses its own hostname and its own banner. The module
+    /// documentation promises a tab never occurs inside a value; this is what
+    /// keeps that promise.
+    #[test]
+    fn a_value_a_host_chose_cannot_add_a_field_or_a_line() {
+        let mut scanned = host(1);
+        scanned.set_hostname(Some("evil\thost\nsecond\tline".to_string()));
+        scanned.add_port(
+            Port::new(80, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("http", 90).with_version("1.0\tinjected")),
+        );
+
+        let fields = record(field::Reader::default(), &scanned);
+        let line = fields.join(&SEPARATOR.to_string());
+
+        assert_eq!(
+            line.split(SEPARATOR).count(),
+            FIELDS,
+            "a tab in a value added a field: {line:?}"
+        );
+        assert!(
+            !line.contains('\n'),
+            "a newline in a value forged a record: {line:?}"
+        );
+        assert!(line.contains("\\t") && line.contains("\\n"), "{line:?}");
     }
 }

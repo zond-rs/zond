@@ -52,6 +52,27 @@ fn zond(test: &str, args: &[&str]) -> Output {
     zond_in(&config_home(test), args)
 }
 
+/// Writes this crate's settings file into a test's directory.
+///
+/// Where `zond` itself would provision one, so what is written here is what the
+/// next run in that directory reads.
+fn cli_settings(directory: &Path, text: &str) {
+    let inside = directory.join("zond");
+    std::fs::create_dir_all(&inside).expect("a settings directory");
+    std::fs::write(inside.join("cli.toml"), text).expect("a settings file");
+}
+
+/// The ids `zond journal` lists, newest first.
+fn recorded_ids(directory: &Path) -> Vec<String> {
+    let listed = zond_in(directory, &["--pipe", "journal"]);
+    assert_eq!(status(&listed), 0, "{}", stderr(&listed));
+
+    stdout(&listed)
+        .lines()
+        .filter_map(|line| line.split('\t').next().map(str::to_owned))
+        .collect()
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -604,9 +625,7 @@ fn a_scan_can_decline_to_be_recorded() {
 #[test]
 fn a_settings_file_can_decline_for_good() {
     let home = config_home("journal-declined-standing");
-    std::fs::create_dir_all(home.join("zond")).expect("a settings directory");
-    std::fs::write(home.join("zond").join("cli.toml"), "journal = false\n")
-        .expect("a settings file");
+    cli_settings(&home, "journal = false\n");
 
     let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
     assert_eq!(status(&scan), 0, "{}", stderr(&scan));
@@ -849,5 +868,156 @@ fn a_bad_name_among_good_ones_deletes_nothing() {
         stdout(&left).lines().count(),
         1,
         "the good name was acted on despite the bad one"
+    );
+}
+
+/// A journal does not grow forever: each new record pushes the oldest one out.
+///
+/// The point of the limit is that nobody has to remember to sweep. Three scans
+/// against a limit of one leave the third, and the first two are gone without
+/// `prune` having been typed.
+#[test]
+fn a_new_record_pushes_the_oldest_one_out() {
+    let home = config_home("journal-limit");
+    cli_settings(&home, "journal_entry_limit = 1\n");
+
+    let mut made = Vec::new();
+    for port in ["1", "2", "3"] {
+        let scan = zond_in(&home, &["-q", "s", "::1", "-p", port]);
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+        let listed = recorded_ids(&home);
+        assert_eq!(listed.len(), 1, "one record is the most this machine keeps");
+        made.push(listed[0].clone());
+    }
+
+    let left = recorded_ids(&home);
+    assert_eq!(left, vec![made[2].clone()], "the newest is what is left");
+    assert!(
+        !left.contains(&made[0]) && !left.contains(&made[1]),
+        "the older records went without anything being swept"
+    );
+}
+
+/// And `"unlimited"` is how somebody says they want every one of them.
+///
+/// The contrast with the test above is the whole assertion: the same two scans
+/// under a limit of one leave one record, and under `unlimited` leave both. A
+/// word read as a number would show up here as a journal with one record in it.
+#[test]
+fn the_word_unlimited_keeps_every_record() {
+    let home = config_home("journal-limit-unlimited");
+    cli_settings(&home, r#"journal_entry_limit = "unlimited""#);
+
+    for port in ["1", "2"] {
+        let scan = zond_in(&home, &["-q", "s", "::1", "-p", port]);
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+
+    assert_eq!(recorded_ids(&home).len(), 2, "both records were kept");
+}
+
+/// A limit that is neither stops the run and says what would have worked.
+///
+/// Refused rather than ignored: somebody who wrote a limit believes their
+/// records are bounded, and a key that quietly did nothing is how they find out
+/// otherwise much later.
+#[test]
+fn a_limit_that_is_not_a_count_or_unlimited_is_refused() {
+    let home = config_home("journal-limit-nonsense");
+    cli_settings(&home, r#"journal_entry_limit = "lots""#);
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
+
+    assert_eq!(status(&scan), 2, "a usage error, not a failed scan");
+    assert!(
+        stderr(&scan).contains("cli.toml") && stderr(&scan).contains("lots"),
+        "the message names the file and what was in it: {}",
+        stderr(&scan)
+    );
+    assert!(
+        stdout(&scan).is_empty(),
+        "nothing was scanned, so nothing should be reported"
+    );
+}
+
+/// `zond journal report -o` writes the file and leaves the terminal alone.
+///
+/// Somebody asking for a record in a file has said where they want it. A scan
+/// prints as well as writes because they are watching it happen; nothing is
+/// happening here but a read, so what they hear is which file was written.
+#[test]
+fn an_exported_report_does_not_also_print() {
+    let home = config_home("journal-report-export");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let out = home.join("out.json");
+    let path = out.to_str().expect("a printable path");
+    let exported = zond_in(&home, &["journal", "report", "latest", "-o", path]);
+
+    assert_eq!(status(&exported), 0, "{}", stderr(&exported));
+    assert!(
+        stdout(&exported).is_empty(),
+        "the report was asked for in a file, not on the terminal: {}",
+        stdout(&exported)
+    );
+    assert!(
+        stderr(&exported).contains("wrote") && stderr(&exported).contains("out.json"),
+        "the run should say what it wrote: {}",
+        stderr(&exported)
+    );
+
+    let written = std::fs::read_to_string(&out).expect("the file the run named");
+    assert!(
+        written.trim_start().starts_with('{'),
+        "a JSON report: {written:.80}"
+    );
+}
+
+/// Naming no file still prints, which is what the subcommand is for.
+#[test]
+fn a_report_asked_for_on_the_terminal_is_printed() {
+    let home = config_home("journal-report-print");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let printed = zond_in(&home, &["--pipe", "journal", "report", "latest"]);
+    assert_eq!(status(&printed), 0, "{}", stderr(&printed));
+    assert!(
+        stdout(&printed).contains("::1"),
+        "the record should have been printed: {}",
+        stdout(&printed)
+    );
+}
+
+/// Lowering the limit and sweeping brings an old journal down to it.
+///
+/// The number is one setting, not two: what a recording run applies as it goes
+/// is what `zond journal prune` applies when it is asked. Somebody who kept
+/// everything and changed their mind should not have to work out a second
+/// spelling of the same intention.
+#[test]
+fn prune_applies_the_same_limit_a_scan_does() {
+    let home = config_home("journal-limit-prune");
+    cli_settings(&home, r#"journal_entry_limit = "unlimited""#);
+
+    for port in ["1", "2", "3"] {
+        let scan = zond_in(&home, &["-q", "s", "::1", "-p", port]);
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+    assert_eq!(recorded_ids(&home).len(), 3, "kept while the limit was off");
+
+    // Changing your mind, which is the only way to be over the limit at all.
+    cli_settings(&home, "journal_entry_limit = 1\n");
+
+    let swept = zond_in(&home, &["journal", "prune"]);
+    assert_eq!(status(&swept), 0, "{}", stderr(&swept));
+    assert_eq!(
+        recorded_ids(&home).len(),
+        1,
+        "a bare sweep reads the limit the file now carries"
     );
 }

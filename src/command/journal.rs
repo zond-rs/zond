@@ -26,7 +26,7 @@ use crate::exit::Outcome;
 use crate::export::Destination;
 use crate::render::journal as render;
 use crate::render::{Phase, renderer};
-use crate::settings::{self, Presentation};
+use crate::settings::{self, EntryLimit, Presentation};
 use zond_engine::journal::paths;
 use zond_engine::journal::store::{self, Entry, Retention};
 
@@ -38,7 +38,7 @@ pub(crate) fn run(
     presentation: Presentation,
     verbosity: Verbosity,
 ) -> Result<Outcome, Error> {
-    // Before the lock below: `report` writes through a `Renderer`, which owns
+    // Before the lock below: `report` may write through a `Renderer`, which owns
     // its own handle on standard output.
     if let Some(JournalCommand::Report { id, export }) = args.what.as_ref() {
         return report(id, export, presentation, verbosity);
@@ -59,7 +59,7 @@ pub(crate) fn run(
             older_than,
             dry_run,
         }) if ids.is_empty() => prune(
-            &retention(*all, *completed, *older_than),
+            &retention(*all, *completed, *older_than)?,
             *dry_run,
             presentation,
             &mut out,
@@ -155,6 +155,14 @@ fn configured_page_size() -> Result<usize, Error> {
     Ok(settings.page_size().unwrap_or(DEFAULT_PAGE_SIZE))
 }
 
+/// The most records this machine keeps, or the built-in default.
+fn configured_limit() -> Result<EntryLimit, Error> {
+    let (settings, _) = settings::resolve()?;
+    Ok(settings
+        .journal_entry_limit()
+        .unwrap_or(EntryLimit::DEFAULT))
+}
+
 /// One journal, in full.
 fn show(id: &str, presentation: Presentation, out: &mut dyn Write) -> Result<Outcome, Error> {
     let entries = read()?;
@@ -164,7 +172,8 @@ fn show(id: &str, presentation: Presentation, out: &mut dyn Write) -> Result<Out
     Ok(Outcome::Complete)
 }
 
-/// One scan, printed the way it was printed when it ran.
+/// One scan, printed the way it was printed when it ran — or written to the
+/// files this was asked for, and then not printed.
 ///
 /// The record holds the hosts a scan found and a phase per sitting, which is
 /// everything the end of a run prints — so this rebuilds the report and hands
@@ -172,6 +181,14 @@ fn show(id: &str, presentation: Presentation, out: &mut dyn Write) -> Result<Out
 /// probed and the journal's lock is not taken, so this is safe to run against a
 /// scan that is still going; what comes back is then everything written down as
 /// of the last checkpoint.
+///
+/// **Naming a file replaces the terminal rather than adding to it.** A scan
+/// prints as well as writes, because the person who started it is watching it
+/// happen and the file is for later — but nobody is watching a record being
+/// fetched. `zond journal report latest -o out.json` is somebody saying where
+/// they want this, and answering it with the whole report on standard output as
+/// well means a shell full of a scan they asked to have put in a file. What
+/// they hear is which files were written.
 ///
 /// The exit code follows the scan rather than the reading of it: a record of a
 /// scan that left ground uncovered reports as partial, the same as the scan did.
@@ -198,17 +215,23 @@ fn report(
     // belonging to whoever is reading it now.
     let redaction = command::redaction(&command::engine_settings(None)?.config);
 
-    let mut renderer = renderer(presentation, verbosity)?;
-    renderer.started(
-        Phase::Recorded {
-            id: &entry.manifest.id,
-            started_at: entry.manifest.created_at,
-        },
-        redaction,
-    )?;
-    renderer.finished(&report)?;
+    let written = if destinations.is_empty() {
+        let mut renderer = renderer(presentation, verbosity)?;
+        renderer.started(
+            Phase::Recorded {
+                id: &entry.manifest.id,
+                started_at: entry.manifest.created_at,
+            },
+            redaction,
+        )?;
+        renderer.finished(&report)?;
+        true
+    } else {
+        // Each file is named on standard error as it lands, which is the whole
+        // of what this run says.
+        crate::export::write_all(&destinations, &report, redaction)
+    };
 
-    let written = crate::export::write_all(&destinations, &report, redaction);
     let outcome = command::outcome(&report, false);
 
     // A record that could not be written where it was asked is a request that
@@ -295,7 +318,7 @@ pub(crate) fn newest_if_latest(id: &str) -> Result<String, Error> {
 /// Prefixes because an id is sixteen characters and nobody wants to type one
 /// twice. An ambiguous prefix is refused rather than resolved to the first
 /// match: the wrong scan deleted is not something a person gets back.
-fn find<'a>(entries: &'a [Entry], id: &str) -> Result<&'a Entry, Error> {
+pub(crate) fn find<'a>(entries: &'a [Entry], id: &str) -> Result<&'a Entry, Error> {
     // The listing is newest first, so the most recent is the one at the front.
     if id == LATEST {
         return entries.first().ok_or(Error::NoSuchJournal {
@@ -369,29 +392,40 @@ fn prune(
 /// `--all` means everything, which is the one way to remove an unfinished scan
 /// deliberately. Everything else leaves unfinished work alone, because it is the
 /// only copy of something somebody may still mean to continue.
-fn retention(all: bool, completed: bool, older_than: Option<Duration>) -> Retention {
+///
+/// The count comes from `journal_entry_limit`, which is the same number a
+/// recording run applies as it goes — so a sweep and a scan agree about how many
+/// records this machine keeps, rather than holding two opinions that differ by
+/// whichever of them ran last. Ages are this command's own: nothing prunes by
+/// time unless somebody asks for it here.
+fn retention(all: bool, completed: bool, older_than: Option<Duration>) -> Result<Retention, Error> {
     if all {
-        return Retention {
+        return Ok(Retention {
             completed_for: Some(Duration::ZERO),
             incomplete_for: Some(Duration::ZERO),
             keep_at_most: None,
-        };
+        });
     }
+
+    let standing = Retention {
+        keep_at_most: configured_limit()?.cap(),
+        ..Retention::default()
+    };
 
     if completed {
-        return Retention {
+        return Ok(Retention {
             completed_for: Some(Duration::ZERO),
-            ..Retention::default()
-        };
+            ..standing
+        });
     }
 
-    match older_than {
+    Ok(match older_than {
         Some(age) => Retention {
             completed_for: Some(age),
-            ..Retention::default()
+            ..standing
         },
-        None => Retention::default(),
-    }
+        None => standing,
+    })
 }
 
 /// Where the journals are, or why they cannot be found.
@@ -403,7 +437,7 @@ fn root() -> Result<std::path::PathBuf, Error> {
 ///
 /// A journal something is writing is included and says so. Listing takes no
 /// lock, so this is safe to run mid-scan and useful precisely then.
-fn read() -> Result<Vec<Entry>, Error> {
+pub(crate) fn read() -> Result<Vec<Entry>, Error> {
     Ok(store::list(&root()?)?)
 }
 

@@ -38,6 +38,12 @@ path = "src/main.rs"
 zond-engine = { version = "0.12.0", path = "../zond-engine", features = [
     "import-settings",
     "export-all",
+    # What `zond diff` reads its two sides from: a report this engine exported,
+    # or an nmap file somebody else has had in an engagement repository for a
+    # year. Neither adds a dependency — the JSON reader shares the `serde_json`
+    # already here, and the nmap one is a hand-rolled parser.
+    "import-json",
+    "import-nmap",
 ] }
 
 clap = { version = "4.5", features = ["derive", "wrap_help"] }

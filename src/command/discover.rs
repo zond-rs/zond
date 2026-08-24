@@ -25,7 +25,7 @@ use zond_engine::model::ip::set::IpSet;
 use zond_engine::{ZondConfig, discover, discover_with_journal};
 
 use crate::cli::DiscoverArgs;
-use crate::command;
+use crate::command::{self, Recording};
 use crate::error::Error;
 use crate::exit::Outcome;
 use crate::export::Destination;
@@ -35,7 +35,7 @@ use crate::target::{self, Targets};
 /// Runs a discovery sweep.
 pub(crate) async fn run(
     args: &DiscoverArgs,
-    recording: bool,
+    recording: Recording,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
     // Before anything is sent: a misspelt extension is a mistake made in the
@@ -75,7 +75,7 @@ pub(crate) async fn run(
 /// A sweep of what the command line asked for.
 async fn started(
     args: &DiscoverArgs,
-    recording: bool,
+    recording: Recording,
     config: &mut ZondConfig,
 ) -> Result<(Targets, Option<Journal>), Error> {
     // Exclusions travel with the targets: same grammar, same DNS policy, one
@@ -94,10 +94,12 @@ async fn started(
     // results rather than in the middle of them.
     targets.apply_to(config);
     let journal = recording
+        .wanted
         .then(|| {
             command::record(
                 &Plan::discovery(targets.ips(), &config.exclusions, config.segment_sweep),
                 summarise(targets.ips()),
+                recording.limit,
             )
         })
         .flatten();

@@ -65,6 +65,52 @@ pub(crate) enum Command {
     /// Look at the scans this machine has a record of.
     #[command(visible_alias = "j")]
     Journal(JournalArgs),
+
+    /// Show what changed between two scans.
+    Diff(DiffArgs),
+}
+
+/// Arguments to `zond diff`.
+#[derive(Debug, Args)]
+#[command(after_help = diff_help())]
+pub(crate) struct DiffArgs {
+    /// The earlier scan: a file, or a record as `zond journal` lists them.
+    ///
+    /// A name that is a file on disk is read as one — this engine's JSON or
+    /// nmap's XML, by its extension. Anything else is taken for a record id,
+    /// which may be shortened to any prefix that names only one, or `latest`.
+    #[arg(value_name = "BEFORE")]
+    pub before: String,
+
+    /// The later scan, named the same way.
+    #[arg(value_name = "AFTER")]
+    pub after: String,
+
+    /// Write the comparison to FILE instead of printing it.
+    ///
+    /// JSON only, and the extension must say so. It is the document a pipeline
+    /// ingests: every change as one fact, with a field on each saying whether
+    /// the other scan was known to have looked.
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub output: Vec<std::path::PathBuf>,
+}
+
+/// What `zond diff --help` ends with.
+fn diff_help() -> String {
+    "\
+Examples:
+  zond diff latest 20aa1f3c        two records on this machine
+  zond diff baseline.json latest   an archived report against tonight's scan
+  zond diff q1.xml q2.xml          two nmap files, neither written by zond
+
+Exit status:
+  0  nothing changed
+  4  something changed
+
+  Only a change the other scan is known to have looked for counts towards 4. A
+  scan of new ground turns up hosts nobody had checked before, and those are
+  reported without being treated as findings about the network."
+        .to_string()
 }
 
 /// Arguments to `zond journal`.
@@ -85,6 +131,10 @@ pub(crate) struct JournalArgs {
 /// page for the person who asked for the scan. See [`export`](crate::export)
 /// for how a destination becomes a format, and [`nmap`](crate::nmap) for the
 /// spellings borrowed from there.
+///
+/// Besides the terminal for a scan, and *instead of* it for
+/// [`Report`](JournalCommand::Report): the difference is whether anybody is
+/// watching the run that produces the report. See that command.
 #[derive(Debug, Args, Default)]
 pub(crate) struct ExportArgs {
     /// Write the report to FILE, in the format its extension names.
@@ -166,6 +216,10 @@ pub(crate) enum JournalCommand {
     /// is gone — and a scan still running prints what it has written down so
     /// far, which is a little behind what it has found.
     ///
+    /// Naming a file with -o writes it there and prints nothing: `zond journal
+    /// report latest -o out.json` says which files it wrote and leaves your
+    /// terminal alone. A scan does both, because you are watching a scan.
+    ///
     /// `zond journal show` is the record's own details: where it is, how far it
     /// got, what is holding it.
     Report {
@@ -173,10 +227,11 @@ pub(crate) enum JournalCommand {
         #[arg(value_name = "ID")]
         id: String,
 
-        /// Where to write it, besides the terminal.
+        /// Where to write it instead of the terminal.
         ///
         /// The same spellings a scan takes, so a record can be exported long
         /// after the run that made it: `zond journal report latest -o out.json`.
+        /// Give none of these and the report is printed.
         #[command(flatten)]
         export: ExportArgs,
     },

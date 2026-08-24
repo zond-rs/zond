@@ -43,10 +43,42 @@
 # A record holds the addresses you scanned and what answered. It is kept under
 # your own home, readable only by you, and `zond journal prune` clears it out —
 # finished scans go after a month, unfinished ones stay until you say otherwise.
+# However many you leave there, the limit below is the most that are kept.
 #
 # Set this to false to record nothing, or pass --no-journal for one run.
 #
 # journal = true
+
+
+# How many records to keep at all.
+#
+# A hundred by default. Every scan leaves one and nothing about a scan clears
+# them, so the newest hundred are what you have: each new record pushes the
+# oldest one out, as it is made, without anything having to be swept.
+#
+# Finished records go first. An unfinished scan is the only copy of work you may
+# still mean to continue, so it is the last thing a limit takes — and a scan that
+# is running is never taken at all.
+#
+#   0       Keep none. The record of the run in flight is still written, since
+#           --resume is what a journal is for; it goes when the next run starts.
+#           To record nothing whatsoever, set `journal = false` above.
+#
+#   "unlimited"
+#           Keep every record, however many there are. For an engagement where
+#           the journal is evidence and you would rather bound the directory by
+#           the disk than by a count.
+#
+# Note that 0 reads differently here than in `page_size` below, where it means no
+# limit: a page of no records is not something anyone wants, and a journal of no
+# records is. That is also why the word above is "unlimited" rather than "none",
+# which beside a 0 that means "keep none" would be read as the same thing and is
+# the opposite.
+#
+# `zond journal prune` applies this same number, so the most a sweep leaves
+# behind and the most a scan leaves behind are one setting rather than two.
+#
+# journal_entry_limit = 100
 
 
 # How many records `zond journal` lists at once.

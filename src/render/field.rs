@@ -42,7 +42,7 @@ pub(crate) fn unknown() -> String {
 /// Borrowed rather than reimplemented so a time reads the same in a listing as
 /// in an exported report.
 pub(crate) fn timestamp(time: std::time::SystemTime) -> String {
-    zond_engine::export::time::rfc3339(time)
+    zond_engine::format::time::rfc3339(time)
 }
 
 /// How long ago `time` was, in the largest unit that still says something.
@@ -616,6 +616,40 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool) -> Vec<String> {
     }
 
     lines
+}
+
+/// A value with every control character made visible.
+///
+/// **A scanned host chooses its own banner, its own certificate subject and its
+/// own hostname**, and all three end up in a record this program writes. A tab
+/// in one of them would add a field to a `pipe` record, and a newline would add
+/// a whole line — which is not a cosmetic problem: a script reading field 6
+/// would read a value the host chose to put there.
+///
+/// So a control character is rendered as an escape rather than passed through.
+/// The field count survives, the reader sees that something odd is in the value,
+/// and no quoting rule has to be invented for a format whose whole appeal is not
+/// having one.
+///
+/// Borrows when there is nothing to escape, which is every value in almost every
+/// record.
+pub(crate) fn printable(value: &str) -> std::borrow::Cow<'_, str> {
+    if !value.contains(char::is_control) {
+        return std::borrow::Cow::Borrowed(value);
+    }
+
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\t' => escaped.push_str("\\t"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            c if c.is_control() => escaped.push_str(&format!("\\x{:02x}", c as u32)),
+            c => escaped.push(c),
+        }
+    }
+
+    std::borrow::Cow::Owned(escaped)
 }
 
 /// `word`, pluralised, when there is not exactly one of them.

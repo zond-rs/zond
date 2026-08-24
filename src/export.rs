@@ -12,6 +12,11 @@
 //! wrote a file still prints, because the person watching it asked for a scan
 //! and the file is for later.
 //!
+//! `zond journal report` is the one place that is not so, and for the same
+//! reason: nobody is watching a record being fetched, so naming a file there is
+//! naming where the report goes rather than adding a copy of it. See
+//! [`journal`](crate::command::journal).
+//!
 //! ## Three ways to name a destination, and one that decides the format
 //!
 //! - `-o report.json` — the extension says the format, which is the spelling

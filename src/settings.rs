@@ -151,6 +151,106 @@ impl FromStr for Presentation {
     }
 }
 
+/// How many journals this machine keeps.
+///
+/// The journal directory grows by one record per scan and nothing about a scan
+/// shrinks it, so something has to say when the oldest record has served its
+/// purpose. This is that number, and a run that records applies it as soon as
+/// it has claimed a record of its own.
+///
+/// [`Unlimited`](Self::Unlimited) is the way out for somebody keeping records
+/// deliberately: an engagement where the journal is evidence wants a directory
+/// bounded by the disk rather than by a count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryLimit {
+    /// Keep at most this many, oldest out first.
+    ///
+    /// Zero keeps none. The record of the run in flight is still written, since
+    /// `--resume` is the reason a journal exists at all, and it goes when the
+    /// next run claims one.
+    AtMost(usize),
+    /// Keep every record, however many there are.
+    Unlimited,
+}
+
+impl EntryLimit {
+    /// What a machine keeps when nothing says otherwise.
+    ///
+    /// A hundred is well past the point where anybody resumes a scan and small
+    /// enough that the directory stays something a person can read through.
+    pub(crate) const DEFAULT: Self = Self::AtMost(100);
+
+    /// The word that spells [`Unlimited`](Self::Unlimited) in a settings file.
+    ///
+    /// Not `none`, though `None` is what it becomes: read quickly, in a file
+    /// where `0` means keep none, `none` and `0` look like two spellings of one
+    /// thing and are opposites.
+    const UNLIMITED: &'static str = "unlimited";
+
+    /// The cap as [`Retention`](zond_engine::journal::store::Retention) takes
+    /// it, `None` being no cap at all.
+    #[must_use]
+    pub(crate) fn cap(self) -> Option<usize> {
+        match self {
+            Self::AtMost(count) => Some(count),
+            Self::Unlimited => None,
+        }
+    }
+
+    /// Reads what a document wrote for this key.
+    ///
+    /// A count or the word `unlimited`, and nothing else. A limit is a number or
+    /// the absence of one; `true` is neither, and a negative count is a number of
+    /// records nobody can have.
+    fn from_value(value: &toml::Value) -> Result<Self, UnknownEntryLimit> {
+        // Quoted back as TOML, so a string keeps its quotes and a number does
+        // not: what the message shows is what the file has in it.
+        let refuse = || UnknownEntryLimit {
+            written: value.to_string(),
+        };
+
+        match value {
+            toml::Value::Integer(count) => usize::try_from(*count)
+                .map(Self::AtMost)
+                .map_err(|_| refuse()),
+            toml::Value::String(word) if word.eq_ignore_ascii_case(Self::UNLIMITED) => {
+                Ok(Self::Unlimited)
+            }
+            _ => Err(refuse()),
+        }
+    }
+}
+
+/// The error [`EntryLimit::from_value`] returns.
+///
+/// Names what would have worked, like its neighbour above, so whoever prints it
+/// prints it verbatim — and names both ends apart, because the value this mostly
+/// catches is `none`, and somebody writing that could mean either of them.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "unusable journal entry limit {written}: expected a count like 100, 0 to keep none, or \"unlimited\" for no limit"
+)]
+pub(crate) struct UnknownEntryLimit {
+    /// What was written, as it was written.
+    pub written: String,
+}
+
+/// A value a settings file gave for a key this program does know.
+///
+/// One variant per key that can be written wrong, kept as a type rather than
+/// flattened to a string so that a caller — and a test — can ask which key it
+/// was.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub(crate) enum UnusableValue {
+    /// `presentation` named something that is not a mode.
+    #[error(transparent)]
+    Presentation(#[from] UnknownPresentation),
+    /// `journal_entry_limit` was neither a count nor `unlimited`.
+    #[error(transparent)]
+    EntryLimit(#[from] UnknownEntryLimit),
+}
+
 /// Something a settings file said that this program could not use.
 ///
 /// A warning rather than an error, so a file written by a newer `zond` does not
@@ -205,7 +305,7 @@ pub(crate) enum SettingsError {
         path: PathBuf,
         /// What was wrong with the value.
         #[source]
-        source: UnknownPresentation,
+        source: UnusableValue,
     },
 
     /// The engine's own settings could not be resolved.
@@ -221,6 +321,7 @@ pub(crate) enum SettingsError {
 pub(crate) struct Settings {
     presentation: Option<Presentation>,
     journal: Option<bool>,
+    journal_entry_limit: Option<EntryLimit>,
     page_size: Option<usize>,
 }
 
@@ -235,6 +336,15 @@ impl Settings {
     #[must_use]
     pub(crate) fn journal(self) -> Option<bool> {
         self.journal
+    }
+
+    /// How many records this machine keeps at all, if these settings say.
+    ///
+    /// Distinct from [`page_size`](Self::page_size), which is how many of them
+    /// are shown at once. One bounds a directory and the other a screen.
+    #[must_use]
+    pub(crate) fn journal_entry_limit(self) -> Option<EntryLimit> {
+        self.journal_entry_limit
     }
 
     /// How many records a listing shows at once, if these settings say.
@@ -253,6 +363,9 @@ impl Settings {
         if let Some(journal) = other.journal {
             self.journal = Some(journal);
         }
+        if let Some(limit) = other.journal_entry_limit {
+            self.journal_entry_limit = Some(limit);
+        }
         if let Some(page_size) = other.page_size {
             self.page_size = Some(page_size);
         }
@@ -266,6 +379,9 @@ impl Settings {
 struct Document {
     presentation: Option<String>,
     journal: Option<bool>,
+    // Left as it was written, because this key takes a count or a word and the
+    // message for anything else should be able to quote what was there.
+    journal_entry_limit: Option<toml::Value>,
     page_size: Option<usize>,
     #[serde(flatten)]
     unknown: BTreeMap<String, toml::Value>,
@@ -278,15 +394,24 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
         source,
     })?;
 
+    let bad_value = |source: UnusableValue| SettingsError::BadValue {
+        path: path.to_path_buf(),
+        source,
+    };
+
     let presentation = document
         .presentation
         .as_deref()
         .map(Presentation::from_str)
         .transpose()
-        .map_err(|source| SettingsError::BadValue {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| bad_value(source.into()))?;
+
+    let journal_entry_limit = document
+        .journal_entry_limit
+        .as_ref()
+        .map(EntryLimit::from_value)
+        .transpose()
+        .map_err(|source| bad_value(source.into()))?;
 
     let warnings = document
         .unknown
@@ -301,6 +426,7 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
         Settings {
             presentation,
             journal: document.journal,
+            journal_entry_limit,
             page_size: document.page_size,
         },
         warnings,
@@ -559,6 +685,9 @@ mod tests {
         let (settings, warnings) = parse_text(TEMPLATE).expect("the template is valid TOML");
 
         assert_eq!(settings.presentation(), None);
+        assert_eq!(settings.journal(), None);
+        assert_eq!(settings.journal_entry_limit(), None);
+        assert_eq!(settings.page_size(), None);
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
@@ -598,7 +727,11 @@ mod tests {
     fn an_unusable_value_for_a_known_key_is_refused() {
         let refused = parse_text(r#"presentation = "shiny""#);
 
-        let Err(SettingsError::BadValue { source, .. }) = refused else {
+        let Err(SettingsError::BadValue {
+            source: UnusableValue::Presentation(source),
+            ..
+        }) = refused
+        else {
             panic!("a value that is not a mode cannot be acted on");
         };
         assert_eq!(source.written, "shiny");
@@ -639,6 +772,93 @@ mod tests {
         }
     }
 
+    /// The three shapes a limit can take: a count, none, and every record.
+    #[test]
+    fn a_journal_entry_limit_is_a_count_or_the_word_unlimited() {
+        let read = |text: &str| {
+            parse_text(text)
+                .expect("a usable limit")
+                .0
+                .journal_entry_limit()
+        };
+
+        assert_eq!(
+            read("journal_entry_limit = 10"),
+            Some(EntryLimit::AtMost(10))
+        );
+        assert_eq!(read("journal_entry_limit = 0"), Some(EntryLimit::AtMost(0)));
+        assert_eq!(
+            read(r#"journal_entry_limit = "unlimited""#),
+            Some(EntryLimit::Unlimited)
+        );
+        assert_eq!(
+            read(r#"journal_entry_limit = "UNLIMITED""#),
+            Some(EntryLimit::Unlimited)
+        );
+    }
+
+    /// What the cap becomes for the engine: a number, or no cap at all.
+    #[test]
+    fn only_unlimited_means_no_cap() {
+        assert_eq!(EntryLimit::Unlimited.cap(), None);
+        assert_eq!(EntryLimit::AtMost(0).cap(), Some(0));
+        assert_eq!(EntryLimit::AtMost(100).cap(), Some(100));
+        assert_eq!(EntryLimit::DEFAULT.cap(), Some(100));
+    }
+
+    /// Refused rather than rounded to something: somebody who wrote one of
+    /// these meant a limit, and a limit that quietly did not apply is how a
+    /// state directory fills up while its owner believes it is bounded.
+    #[test]
+    fn a_limit_that_is_not_a_count_or_unlimited_is_refused() {
+        for written in [
+            "journal_entry_limit = -1",
+            "journal_entry_limit = true",
+            r#"journal_entry_limit = "all""#,
+            r#"journal_entry_limit = "none""#,
+            r#"journal_entry_limit = "100""#,
+            "journal_entry_limit = 1.5",
+        ] {
+            let Err(SettingsError::BadValue {
+                source: UnusableValue::EntryLimit(source),
+                ..
+            }) = parse_text(written)
+            else {
+                panic!("'{written}' is not a limit and must be refused");
+            };
+
+            let message = source.to_string();
+            assert!(
+                message.contains("unlimited"),
+                "the message names what would have worked: {message}"
+            );
+
+            let value = written.split_once(" = ").expect("a key and a value").1;
+            assert!(
+                message.contains(value),
+                "the message quotes back what was written ({value}): {message}"
+            );
+        }
+    }
+
+    /// The number in the template is the number the code applies. These drift
+    /// apart silently: nothing about a wrong comment stops a build.
+    #[test]
+    fn the_template_documents_the_default_limit_it_actually_gets() {
+        let EntryLimit::AtMost(default) = EntryLimit::DEFAULT else {
+            panic!("the default has to be a number to be documented as one");
+        };
+
+        assert!(
+            TEMPLATE.contains(&format!("journal_entry_limit = {default}")),
+            "the template never shows the default of {default}"
+        );
+        assert!(
+            TEMPLATE.contains(&format!(r#""{}""#, EntryLimit::UNLIMITED)),
+            "the template never mentions the one value that lifts the limit"
+        );
+    }
+
     /// A file that says nothing about a key leaves the lower layer's answer
     /// standing.
     #[test]
@@ -646,6 +866,7 @@ mod tests {
         let mut settings = Settings {
             presentation: Some(Presentation::Fancy),
             journal: Some(false),
+            journal_entry_limit: Some(EntryLimit::Unlimited),
             page_size: Some(3),
         };
 
@@ -656,11 +877,17 @@ mod tests {
             "a file that said nothing must not reset anything"
         );
         assert_eq!(settings.journal(), Some(false), "nor any other key");
+        assert_eq!(
+            settings.journal_entry_limit(),
+            Some(EntryLimit::Unlimited),
+            "nor any other"
+        );
         assert_eq!(settings.page_size(), Some(3), "nor any other");
 
         settings.overlay(Settings {
             presentation: Some(Presentation::Minimal),
             journal: None,
+            journal_entry_limit: None,
             page_size: None,
         });
         assert_eq!(settings.presentation(), Some(Presentation::Minimal));

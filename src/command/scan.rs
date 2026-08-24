@@ -30,7 +30,7 @@ use zond_engine::system::privilege;
 use zond_engine::{PortSet, ZondConfig, scan};
 
 use crate::cli::ScanArgs;
-use crate::command;
+use crate::command::{self, Recording};
 use crate::error::Error;
 use crate::exit::Outcome;
 use crate::export::Destination;
@@ -55,7 +55,7 @@ const DEFAULT_TOP_PORTS: usize = 1000;
 /// Runs a port scan.
 pub(crate) async fn run(
     args: &ScanArgs,
-    recording: bool,
+    recording: Recording,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
     // Before anything is sent: a misspelt extension is a mistake made in the
@@ -94,7 +94,7 @@ pub(crate) async fn run(
 /// A scan of what the command line asked for.
 async fn started(
     args: &ScanArgs,
-    recording: bool,
+    recording: Recording,
     config: &mut ZondConfig,
 ) -> Result<(ScanTargets, Option<Journal>), Error> {
     let ports = ports(args, ports_from_settings(args)?);
@@ -113,10 +113,12 @@ async fn started(
     // refusing reads as a scan that went wrong rather than one that never
     // started.
     let journal = recording
+        .wanted
         .then(|| {
             command::record(
                 &Plan::port_scan(targets.map(), &config.exclusions, config.tcp_technique),
                 summarise(targets.map()),
+                recording.limit,
             )
         })
         .flatten();

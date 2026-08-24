@@ -49,8 +49,10 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
+use crate::command::Recording;
 use crate::error::Error;
 use crate::exit::Outcome;
+use crate::settings::EntryLimit;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -111,8 +113,15 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     let mut renderer = render::renderer(presentation, verbosity)?;
 
     // On unless the run or the settings file says otherwise: somebody wants to
-    // continue or re-read a scan after it is over, not before.
-    let recording = |declined: bool| !declined && settings.journal().unwrap_or(true);
+    // continue or re-read a scan after it is over, not before. The limit rides
+    // along because it is answered by the same file and only matters to a run
+    // that records.
+    let recording = |declined: bool| Recording {
+        wanted: !declined && settings.journal().unwrap_or(true),
+        limit: settings
+            .journal_entry_limit()
+            .unwrap_or(EntryLimit::DEFAULT),
+    };
 
     match &cli.command {
         Command::Discover(args) => {
@@ -121,6 +130,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         Command::Scan(args) => {
             command::scan::run(args, recording(args.no_journal), renderer.as_mut()).await
         }
+        Command::Diff(args) => command::diff::run(args, presentation),
         Command::Journal(_) => unreachable!("handled above"),
     }
 }

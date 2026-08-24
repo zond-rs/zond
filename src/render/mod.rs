@@ -34,6 +34,10 @@ pub(crate) mod pipe;
 // What the scans on this machine look like. Not a `Renderer`: see the module.
 pub(crate) mod journal;
 
+// What changed between two of them. Not a `Renderer` either, and for the same
+// reason.
+pub(crate) mod diff;
+
 // Plumbing the two share: the field values, and the commentary on stderr.
 pub(crate) mod field;
 pub(crate) mod narrate;

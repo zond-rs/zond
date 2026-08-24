@@ -51,6 +51,32 @@ pub(crate) enum Error {
     #[error("{0}")]
     Presentation(#[from] crate::render::Unavailable),
 
+    /// A document handed in could not be read as a report.
+    #[error("{0}")]
+    Import(#[from] zond_engine::import::ImportError),
+
+    /// A file was named as one side of a comparison and its extension names no
+    /// format this build reads.
+    #[error(
+        "'{path}' is not a report this build can read. Reports are read from \
+         this engine's JSON (.json) and from nmap's XML (.xml); a record on this \
+         machine is named by its id instead."
+    )]
+    UnknownReportFormat {
+        /// What was named.
+        path: std::path::PathBuf,
+    },
+
+    /// A comparison was told to write itself somewhere it cannot be written.
+    #[error(
+        "'{path}' does not name a format a comparison can be written in. A \
+         comparison is written as JSON (.json)."
+    )]
+    UnknownDiffFormat {
+        /// What was named.
+        path: std::path::PathBuf,
+    },
+
     /// A journal could not be read or written.
     #[error("{0}")]
     Journal(#[from] zond_engine::journal::format::JournalError),
@@ -189,6 +215,8 @@ impl Error {
             | Error::NoSuchJournal { .. }
             | Error::NoSuchPage { .. }
             | Error::UnknownExportFormat { .. }
+            | Error::UnknownReportFormat { .. }
+            | Error::UnknownDiffFormat { .. }
             | Error::MalformedOutputAs { .. }
             | Error::UnknownFormatName { .. }
             | Error::FormatNotBuilt { .. }
@@ -198,6 +226,9 @@ impl Error {
             // the caller asking for something that cannot be done, not a fault.
             | Error::JournalOpen(_)
             | Error::PlanChanged(_) => Code::Usage,
+            // A document that will not parse is a fault in the file, not in
+            // what was asked for: the name was right and the contents were not.
+            Error::Import(_) => Code::Failure,
             Error::Scan(_) | Error::Journal(_) | Error::NoJournalDirectory => Code::Failure,
             Error::Io(e) => {
                 if e.kind() == ErrorKind::BrokenPipe {

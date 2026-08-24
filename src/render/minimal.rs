@@ -139,7 +139,12 @@ fn write_host(
     // share the line that opens the block rather than the name sitting among
     // the things that were learned about it.
     match reader.hostname(host) {
-        Some(name) => writeln!(out, "{BULLET}{} [{name}]", reader.primary(host))?,
+        Some(name) => writeln!(
+            out,
+            "{BULLET}{} [{}]",
+            reader.primary(host),
+            field::printable(&name)
+        )?,
         None => writeln!(out, "{BULLET}{}", reader.primary(host))?,
     }
 
@@ -189,7 +194,15 @@ fn write_host(
 
 /// One tagged line.
 fn tag(out: &mut dyn Write, name: &str, value: &str) -> io::Result<()> {
-    writeln!(out, "{INDENT}{:<TAG_WIDTH$} {value}", format!("{name}:"))
+    // A value a scanned host chose reaches here, and a newline in one would
+    // forge a tagged line of its own — a hostname reading `evil\n  port: 443/tcp
+    // open` would put a port in somebody's block that no scan found.
+    writeln!(
+        out,
+        "{INDENT}{:<TAG_WIDTH$} {}",
+        format!("{name}:"),
+        field::printable(value)
+    )
 }
 
 /// A line per value, tagged once and then aligned under itself.
@@ -198,7 +211,7 @@ fn tagged_list(out: &mut dyn Write, name: &str, values: &[String]) -> io::Result
         if index == 0 {
             tag(out, name, value)?;
         } else {
-            writeln!(out, "{:VALUE_COLUMN$}{value}", "")?;
+            writeln!(out, "{:VALUE_COLUMN$}{}", "", field::printable(value))?;
         }
     }
 
@@ -573,5 +586,36 @@ mod tests {
         renderer.host_found(&host(1)).expect("capture cannot fail");
         renderer.interrupted().expect("capture cannot fail");
         assert_eq!(narration.text(), "");
+    }
+}
+
+#[cfg(test)]
+mod hostile {
+    use super::*;
+    use crate::render::test_support::{Capture, host};
+
+    /// A block is line-oriented, so a newline in a value a host chose would put
+    /// a tagged line in it that no scan produced.
+    #[test]
+    fn a_hostname_a_host_chose_cannot_forge_a_tagged_line() {
+        let mut scanned = host(1);
+        scanned.set_hostname(Some("evil\n  port: 443/tcp open".to_string()));
+
+        let mut records = Capture::default();
+        write_host(
+            &mut records,
+            field::Reader::default(),
+            &scanned,
+            Verbosity::default(),
+            false,
+        )
+        .expect("a capture never fails");
+
+        let text = records.text();
+        assert!(
+            !text.contains("\n  port:"),
+            "a hostname forged a port line: {text}"
+        );
+        assert!(text.contains("\\n"), "{text}");
     }
 }
