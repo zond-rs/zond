@@ -1,13 +1,13 @@
 [package]
 # The crate is `zond-cli`; the binary it installs is `zond`. `zond` on crates.io
-# is an unrelated crate somebody else owns, so the package cannot have that name
-# — but nothing about what a user types changes, because the name that reaches
+# is an unrelated crate somebody else owns, so the package cannot have that
+# name. Nothing about what a user types changes, because the name that reaches
 # their PATH is the `[[bin]]` one below.
 name = "zond-cli"
 # The engine's line, so that `zond --version` and the engine it wraps are one
 # number a person can compare. Not the same field as the dependency requirement
 # below, which is what actually decides which engine is built against.
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 # The engine's minimum, because this crate cannot compile on a toolchain that
 # cannot compile what it wraps. Raising it here without raising it there would
@@ -35,13 +35,9 @@ path = "src/main.rs"
 # out of is not much of a scanner. `export-csv`, `export-html` and `export-nmap`
 # add no dependencies at all; the JSON pair shares the `serde_json` the journal
 # already pulls in.
-zond-engine = { version = "0.12.0", path = "../zond-engine", features = [
+zond-engine = { version = "0.13.0", features = [
     "import-settings",
     "export-all",
-    # What `zond diff` reads its two sides from: a report this engine exported,
-    # or an nmap file somebody else has had in an engagement repository for a
-    # year. Neither adds a dependency — the JSON reader shares the `serde_json`
-    # already here, and the nmap one is a hand-rolled parser.
     "import-json",
     "import-nmap",
 ] }
@@ -53,8 +49,8 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
 # No `fmt`, no `ansi`, no `env-filter`. The engine's diagnostics carry a
 # `verbosity` field that decides whether a line is shown at all, and no
-# off-the-shelf formatter knows that convention — so `diagnostics` writes its
-# own layer and needs only the registry to hang it on.
+# off-the-shelf formatter knows that convention, so `diagnostics` writes its own
+# layer and needs only the registry to hang it on.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
 thiserror = "2.0"
 # This crate's own settings document. The engine reads its file with the same
@@ -86,3 +82,7 @@ missing_errors_doc = "allow"
 # nouns this program is about, not identifiers, and backticking them turns
 # ordinary prose into a wall of code spans.
 doc_markdown = "allow"
+# What this lint asks for is `Duration::from_days` and `Duration::from_hours`,
+# and both are still unstable, so every site it fires on is one it cannot fix on
+# the toolchain this crate compiles against.
+duration_suboptimal_units = "allow"

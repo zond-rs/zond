@@ -25,6 +25,7 @@ use zond_engine::config::{OsDetection, ScanEffort, SendMode, ServiceDetection};
 use zond_engine::model::technique::TcpScanTechnique;
 
 use crate::diagnostics::Verbosity;
+use crate::render::style::ColourChoice;
 use crate::settings::Identity;
 use crate::settings::Presentation;
 
@@ -77,8 +78,8 @@ pub(crate) enum Command {
 pub(crate) struct DiffArgs {
     /// The earlier scan: a file, or a record as `zond journal` lists them.
     ///
-    /// A name that is a file on disk is read as one — this engine's JSON or
-    /// nmap's XML, by its extension. Anything else is taken for a record id,
+    /// A name that is a file on disk is read as one, taking this engine's JSON
+    /// or nmap's XML from its extension. Anything else is taken for a record id,
     /// which may be shortened to any prefix that names only one, or `latest`.
     #[arg(value_name = "BEFORE")]
     pub before: String,
@@ -101,11 +102,11 @@ pub(crate) struct DiffArgs {
 
     /// Write the comparison to FILE instead of printing it.
     ///
-    /// The extension decides: `.json` is the document a pipeline ingests, every
+    /// The extension decides. `.json` is the document a pipeline ingests, every
     /// change as one fact with a field on each saying whether the other scan was
     /// known to have looked. `.html` is one self-contained page for whoever
-    /// reads the nightly mail — no script, no request to anywhere, and it
-    /// prints. Give the flag twice for both.
+    /// reads the nightly mail: no script, no request to anywhere, and it prints.
+    /// Give the flag twice for both.
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: Vec<std::path::PathBuf>,
 }
@@ -153,14 +154,14 @@ pub(crate) struct JournalArgs {
 /// spellings borrowed from there.
 ///
 /// Besides the terminal for a scan, and *instead of* it for
-/// [`Report`](JournalCommand::Report): the difference is whether anybody is
+/// [`Report`](JournalCommand::Report). The difference is whether anybody is
 /// watching the run that produces the report. See that command.
 #[derive(Debug, Args, Default)]
 pub(crate) struct ExportArgs {
     /// Write the report to FILE, in the format its extension names.
     ///
     /// `report.json`, `report.jsonl`, `report.csv`, `report.html` and
-    /// `report.xml` — the last being nmap's XML, for the tools that already
+    /// `report.xml`, the last being nmap's XML, for the tools that already
     /// ingest it. Give the flag more than once for more than one file.
     ///
     /// An extension naming no format is refused rather than guessed at.
@@ -190,7 +191,7 @@ pub(crate) struct ExportArgs {
 /// meant "show everything" on one subcommand and "delete everything" on the
 /// next is not a convenience.
 ///
-/// So the set is attached in the two places a listing happens — `zond journal`,
+/// So the set is attached in the two places a listing happens: `zond journal`,
 /// which lists when nothing else is asked, and `zond journal list`.
 #[derive(Debug, Args, Default)]
 pub(crate) struct PageArgs {
@@ -230,11 +231,11 @@ pub(crate) enum JournalCommand {
 
     /// Print what one scan found, the way it was printed when it ran.
     ///
-    /// The same output `zond discover` and `zond scan` end with, from the
+    /// The same output `zond discover` and `zond scan` end with, taken from the
     /// record instead of from the network. Nothing is probed and nothing is
     /// contacted, so a scan can be read back long after the terminal it ran in
-    /// is gone — and a scan still running prints what it has written down so
-    /// far, which is a little behind what it has found.
+    /// is gone. A scan still running prints what it has written down so far,
+    /// which is a little behind what it has found.
     ///
     /// Naming a file with -o writes it there and prints nothing: `zond journal
     /// report latest -o out.json` says which files it wrote and leaves your
@@ -293,7 +294,7 @@ pub(crate) enum JournalCommand {
 /// Written out rather than pulled in, on the same reasoning the engine gives for
 /// its own small parsers: a dependency for four suffixes costs more than it
 /// saves. Bare digits are refused, because `--older-than 30` reads as thirty of
-/// something and this would have to guess which.
+/// something and there is no honest way to guess which.
 fn age(input: &str) -> Result<std::time::Duration, String> {
     let (count, unit) = input.split_at(
         input
@@ -332,10 +333,10 @@ pub(crate) struct DiscoverArgs {
     /// Do not write down how far this sweep gets.
     ///
     /// Every sweep is recorded by default, because the moment you want to
-    /// continue one is after it was cut short — and a flag you had to pass
-    /// beforehand is one you did not. `zond journal` lists what is on record,
-    /// `zond journal report` prints one back, and `zond journal prune` clears
-    /// them out.
+    /// continue one is after it was cut short, and a flag you would have had to
+    /// pass beforehand is a flag you did not pass. `zond journal` lists what is
+    /// on record, `zond journal report` prints one back, and
+    /// `zond journal prune` clears them out.
     ///
     /// A record holds the addresses you swept and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one
@@ -370,8 +371,8 @@ pub(crate) struct DiscoverArgs {
 pub(crate) struct ScanArgs {
     /// What to scan: an address, a range, a CIDR block, a hostname, or `lan`.
     ///
-    /// A target may carry its own ports — `10.0.0.1:8080`, or
-    /// `[2001:db8::1]:443` — and keeps them; `--ports` supplies the rest.
+    /// A target may carry its own ports, as in `10.0.0.1:8080` or
+    /// `[2001:db8::1]:443`, and keeps them. `--ports` supplies the rest.
     ///
     /// Not needed with `--resume`, which scans what the recorded scan was
     /// scanning. Given anyway, they must describe the same scan, or the resume
@@ -397,10 +398,10 @@ pub(crate) struct ScanArgs {
         //
         // It costs one thing, and only on a typo: `-p` with its value left off
         // now swallows whatever follows instead of reporting a missing value.
-        // What that produces is still an error naming the swallowed token —
-        // "malformed port specification: '--service-detection'" — which says
-        // what happened plainly enough, and the alternative is not supporting
-        // the spelling at all.
+        // What that produces is still an error naming the swallowed token,
+        // "malformed port specification: '--service-detection'", which says what
+        // happened plainly enough. The alternative is not supporting the
+        // spelling at all.
         allow_hyphen_values = true
     )]
     pub ports: Option<PortSet>,
@@ -421,9 +422,9 @@ pub(crate) struct ScanArgs {
     /// Do not write down how far this scan gets.
     ///
     /// Every scan is recorded by default, because the moment you want to
-    /// continue one is after it was cut short — and a flag you had to pass
-    /// beforehand is one you did not. `zond journal` lists what is on record and
-    /// prunes it.
+    /// continue one is after it was cut short, and a flag you would have had to
+    /// pass beforehand is a flag you did not pass. `zond journal` lists what is
+    /// on record and prunes it.
     ///
     /// A record holds the addresses you scanned and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one
@@ -446,9 +447,9 @@ pub(crate) struct ScanArgs {
 
     /// Scan every target without checking first that anything is there.
     ///
-    /// A scan normally probes each address for liveness — the same probes
-    /// `zond discover` sends, against those addresses only — and skips the ones
-    /// that answer nothing, because an address nothing lives at costs a probe
+    /// A scan normally probes each address for liveness, using the same probes
+    /// `zond discover` sends against those addresses and no others, then skips
+    /// the ones that answer nothing. An address nothing lives at costs a probe
     /// per port to learn that. This spends them anyway.
     ///
     /// For a host that is up and answering no knock: one behind a firewall that
@@ -527,11 +528,11 @@ Writing the report to a file:
   --output-as json=out     when the extension would say the wrong thing
   --output-all engagement  every format, each under its own extension
 
-Formats: json, jsonl, csv, html, and xml — the last being nmap's, for the
-tools that already ingest it. Nmap's own spellings work too: -oX, -oJ, -oC,
--oH, -oL and -oA. A file is written as well as the terminal output, never
-instead of it, and a destination that names no format is refused before the
-scan starts rather than after it.
+Formats: json, jsonl, csv, html, and xml, the last being nmap's, for the tools
+that already ingest it. Nmap's own spellings work too: -oX, -oJ, -oC, -oH, -oL
+and -oA. A file is written as well as the terminal output, never instead of it,
+and a destination that names no format is refused before the scan starts rather
+than after it.
 ";
 
 /// What is shown under `zond discover --help`, below the flags.
@@ -612,14 +613,14 @@ which one ran.",
 pub(crate) struct EngineArgs {
     /// Addresses this run may not probe, whatever the targets say.
     ///
-    /// The same grammar targets take — an address, a range, a CIDR block, a
-    /// hostname, or `lan` — so a scope document transcribes the same way on
-    /// either side. Repeat the flag, or write a comma-separated list.
+    /// The same grammar targets take, meaning an address, a range, a CIDR
+    /// block, a hostname, or `lan`, so a scope document transcribes the same way
+    /// on either side. Repeat the flag, or write a comma-separated list.
     ///
     /// Nothing is addressed to an excluded host and nothing about one is
     /// reported, including a neighbour a segment sweep would otherwise learn
     /// about from an ARP reply. What it cannot promise is that an excluded
-    /// machine on your own segment never sees a broadcast probe; do not sweep
+    /// machine on your own segment never sees a broadcast probe. Do not sweep
     /// the segment if that matters.
     ///
     /// Adds to `exclude` in engine.toml rather than replacing it.
@@ -638,9 +639,9 @@ pub(crate) struct EngineArgs {
     /// Mask hostnames, hardware addresses and IPv6 host parts in the output.
     ///
     /// For results going somewhere that needs the shape of a network without
-    /// knowing which device is which — a client, an auditor, a screenshot in an
-    /// issue. The scan still finds everything; only what leaves this process is
-    /// masked.
+    /// knowing which device is which: a client, an auditor, a screenshot in an
+    /// issue. The scan still finds everything, and only what leaves this process
+    /// is masked.
     #[arg(long)]
     pub redact: bool,
 
@@ -658,7 +659,7 @@ pub(crate) struct EngineArgs {
 
     /// Multiply how long the scan is willing to wait.
     ///
-    /// Does not touch the shortest timeout a protocol allows: that floor is not
+    /// Does not touch the shortest timeout a protocol allows. That floor is not
     /// a preference, it is what the protocol costs.
     #[arg(long, value_name = "FACTOR", value_parser = positive)]
     pub timeout_scale: Option<f64>,
@@ -685,7 +686,7 @@ pub(crate) struct EngineArgs {
 
     /// How far to go identifying the system behind each host.
     ///
-    /// `passive` sends nothing of its own. `active` and above send probes and
+    /// `passive` sends nothing of its own. `active` and above send probes, and
     /// have to be asked for.
     ///
     /// [possible values: off, passive, active, aggressive]
@@ -699,25 +700,25 @@ pub(crate) struct EngineArgs {
     /// `active` takes. Reach for it when the machine's operating system is
     /// already known and the point is to measure the stack.
     ///
-    /// A separate flag rather than an optional value on `--os-detection`,
-    /// because an option that may or may not take one would read `zond scan -O
-    /// 192.0.2.1` as a level of `192.0.2.1` and scan nothing.
+    /// A separate flag rather than an optional value on `--os-detection`. An
+    /// option that may or may not take a value would read
+    /// `zond scan -O 192.0.2.1` as a level of `192.0.2.1` and scan nothing.
     #[arg(short = 'O', long, conflicts_with = "os_detection")]
     pub os_aggressive: bool,
 
     /// How far to go to identify what is listening behind each open port.
     ///
     /// `off` never connects: ports come back with a state and whatever name
-    /// their number implies, which is the fastest and the only level that leaves
+    /// their number implies. It is the fastest, and the only level that leaves
     /// no trace in the target's application logs. `banner` connects and listens
     /// without sending, which is everything a service that greets on connect was
-    /// going to say anyway — the level for equipment that must not be sent
+    /// going to say anyway. Reach for it with equipment that must not be sent
     /// anything it did not expect. `probe`, the default, also asks: each port
     /// gets the requests its service registered, and a port nothing recognises
     /// gets the one generic request worth asking of anything.
     ///
     /// Turning it down does not make an unknown port faster to scan. Asking is
-    /// how a port is finished with quickly; the alternative is waiting out a
+    /// how a port is finished with quickly, and the alternative is waiting out a
     /// greeting that never comes.
     ///
     /// [possible values: off, banner, probe]
@@ -728,16 +729,16 @@ pub(crate) struct EngineArgs {
     ///
     /// Shorthand for `--service-detection off`. A separate flag because it is
     /// the one level people reach for by name: the scan that answers "what is
-    /// open" without opening a single connection to find out what is behind it.
+    /// open" without opening a connection to find out what is behind it.
     #[arg(long, conflicts_with = "service_detection")]
     pub no_service_detection: bool,
 
     /// Measure the route to each host that answered.
     ///
     /// Runs last, after the ports are known, because what reaches a host decides
-    /// what its trace is made of: a host with an open TCP port is traced with
-    /// SYNs to that port, which crosses filters no ping survives, and any other
-    /// host with ICMP echoes. `zond scan` therefore traces better than
+    /// what its trace is made of. A host with an open TCP port is traced with
+    /// SYNs to that port, which crosses filters no ping survives, and every
+    /// other host with ICMP echoes. `zond scan` therefore traces better than
     /// `zond discover` does.
     ///
     /// Only hosts that answered are traced. A path is measured backwards from
@@ -776,21 +777,21 @@ impl EngineArgs {
     ///
     /// The last layer, and it only speaks about what was actually written: every
     /// flag is an `Option`, or a `bool` whose absence means nothing rather than
-    /// `false`. An absent flag must not cancel a setting from a file — which is
+    /// `false`. An absent flag must not cancel a setting from a file, which is
     /// why the dampening flag is `--no-dampen` and not `--dampen`.
     ///
     /// [`segment_sweep`](ZondConfig::segment_sweep) is neither a flag nor a file
-    /// entry; it comes from the targets, via
+    /// entry. It comes from the targets, via
     /// [`Targets::apply_to`](crate::target::Targets::apply_to).
     ///
     /// **`--exclude` is not applied here either**, and it is the one flag that
     /// is not. Its values are addresses in the same grammar targets are written
     /// in, so turning them into a policy means resolving names and reading this
-    /// host's interface table — asynchronous work against a resolver whose
-    /// existence depends on the `no_dns` these very layers are still settling.
-    /// It is resolved beside the targets in [`crate::target`] and written by the
-    /// same `apply_to`, so the two halves of one grammar are parsed by one
-    /// module rather than by two that could disagree.
+    /// host's interface table. That is asynchronous work against a resolver
+    /// whose existence depends on the `no_dns` these very layers are still
+    /// settling. It is resolved beside the targets in [`crate::target`] and
+    /// written by the same `apply_to`, so the two halves of one grammar are
+    /// parsed by one module rather than by two that could disagree.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
         if self.no_dns {
             config.no_dns = true;
@@ -854,10 +855,10 @@ pub(crate) struct OutputArgs {
 
     /// How to draw this run. Overrides the settings file for one invocation.
     ///
-    /// `pipe` and `minimal` are built; `standard` and `fancy` are named and
-    /// refused rather than quietly served as something else.
+    /// `fancy` is a numbered tree per host and the default; `minimal` is the
+    /// terse tagged form; `pipe` is tab-separated records for a program.
     ///
-    /// [possible values: pipe, minimal, standard, fancy]
+    /// [possible values: pipe, minimal, fancy]
     #[arg(long, value_name = "MODE", global = true)]
     pub presentation: Option<Presentation>,
 
@@ -867,6 +868,21 @@ pub(crate) struct OutputArgs {
     /// no heading.
     #[arg(long, global = true, conflicts_with = "presentation")]
     pub pipe: bool,
+
+    /// Whether to colour the output.
+    ///
+    /// `auto` colours a terminal and leaves a redirected stream alone, reading
+    /// `NO_COLOR`, `CLICOLOR_FORCE` and `TERM` the way every other tool that
+    /// reads them does. The two streams are asked separately, so
+    /// `zond discover lan | less` keeps its commentary coloured while the
+    /// records go out plain.
+    ///
+    /// Box drawing is not on this switch. A file holds a box-drawing character
+    /// perfectly well, so only `TERM=dumb` takes the tree away.
+    ///
+    /// [possible values: auto, always, never]
+    #[arg(long = "colour", alias = "color", value_name = "WHEN", global = true)]
+    pub colour: Option<ColourChoice>,
 }
 
 impl OutputArgs {
@@ -876,10 +892,19 @@ impl OutputArgs {
         Verbosity::new(self.verbose, self.quiet)
     }
 
+    /// The colour setting this run should use.
+    ///
+    /// The flag wins, then the file, then the built-in default, which is the
+    /// order every other setting layers in.
+    #[must_use]
+    pub(crate) fn colour(&self, configured: Option<ColourChoice>) -> ColourChoice {
+        self.colour.or(configured).unwrap_or_default()
+    }
+
     /// The presentation to use, given what the settings files said.
     ///
-    /// The flag wins, then the file, then the built-in default — the same order
-    /// every other setting layers in.
+    /// The flag wins, then the file, then the built-in default, which is the
+    /// order every other setting layers in.
     #[must_use]
     pub(crate) fn presentation(&self, configured: Option<Presentation>) -> Presentation {
         if self.pipe {
@@ -903,8 +928,8 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// A clap derive can produce a definition that only panics at runtime — a
-    /// duplicate id, a conflict naming an argument that does not exist.
+    /// A clap derive can produce a definition that only panics at runtime: a
+    /// duplicate id, or a conflict naming an argument that does not exist.
     #[test]
     fn the_command_definition_is_well_formed() {
         Cli::command().debug_assert();
@@ -935,11 +960,11 @@ mod tests {
     /// Flag over file over default, the order every setting layers in.
     #[test]
     fn the_presentation_flag_beats_the_settings_file() {
-        let with_flag = Cli::try_parse_from(["zond", "--presentation", "fancy", "d", "lan"])
+        let with_flag = Cli::try_parse_from(["zond", "--presentation", "minimal", "d", "lan"])
             .expect("should parse");
         assert_eq!(
-            with_flag.output.presentation(Some(Presentation::Minimal)),
-            Presentation::Fancy
+            with_flag.output.presentation(Some(Presentation::Fancy)),
+            Presentation::Minimal
         );
 
         let without = Cli::try_parse_from(["zond", "d", "lan"]).expect("should parse");
@@ -997,7 +1022,7 @@ mod tests {
         assert!(config.no_dns);
     }
 
-    /// `-O` reaches the engine as the top level, and — the part worth pinning —
+    /// `-O` reaches the engine as the top level. The part worth pinning is that
     /// it does **not** eat the target that follows it.
     ///
     /// A flag rather than an option with an optional value, precisely so that
@@ -1032,46 +1057,13 @@ mod tests {
     fn a_target_is_required() {
         assert!(Cli::try_parse_from(["zond", "discover"]).is_err());
     }
-}
 
-#[cfg(test)]
-mod identity_spelling {
-    use super::*;
-
+    /// The comparison policy is parsed by the same `FromStr` a settings file
+    /// uses, so what is checked here is only that the flag reaches the arguments.
+    /// The spellings themselves are asserted beside
+    /// [`Identity`](crate::settings::Identity).
     #[test]
-    fn every_spelling_parses_however_it_is_typed() {
-        for identity in Identity::ALL {
-            assert_eq!(
-                identity.as_str().parse::<Identity>().expect("its own name"),
-                identity
-            );
-            assert_eq!(
-                identity
-                    .as_str()
-                    .to_uppercase()
-                    .parse::<Identity>()
-                    .expect("shouting is still asking"),
-                identity
-            );
-        }
-    }
-
-    /// A name that is not one is refused with the names that would have worked,
-    /// rather than falling back to the default and comparing under a policy
-    /// nobody asked for.
-    #[test]
-    fn a_name_that_is_not_one_is_refused_with_the_alternatives() {
-        let refused = "mac".parse::<Identity>().expect_err("not a spelling");
-        let message = refused.to_string();
-
-        assert!(message.contains("'mac'"), "{message}");
-        for identity in Identity::ALL {
-            assert!(message.contains(identity.as_str()), "{message}");
-        }
-    }
-
-    #[test]
-    fn the_flag_reaches_the_parsed_arguments() {
+    fn the_identity_flag_reaches_the_parsed_arguments() {
         let cli = Cli::try_parse_from(["zond", "diff", "--identity", "hardware", "a", "b"])
             .expect("should parse");
         let Command::Diff(args) = cli.command else {

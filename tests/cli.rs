@@ -113,9 +113,9 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// Does not assert loopback was *found* — that depends on something listening,
-/// which is true of a developer's machine and not of a build container. What is
-/// checked is that the scan runs to completion.
+/// Does not assert loopback was *found*, since that depends on something
+/// listening, which is true of a developer's machine and not of a build
+/// container. What is checked is that the scan runs to completion.
 #[test]
 fn a_loopback_sweep_runs_to_completion() {
     let run = zond("loopback", &["-q", "d", "127.0.0.1"]);
@@ -151,9 +151,9 @@ fn an_ipv4_range_too_large_to_sweep_is_a_usage_error() {
     assert!(stderr(&run).contains("16777216"), "{}", stderr(&run));
 }
 
-/// The other side of that division. A `/64` is not refused here; where it
-/// genuinely cannot be walked — unprivileged and off-link, as here — the engine
-/// turns it away and records why, so the run exits `3` rather than `2`.
+/// The other side of that division. A `/64` is not refused here. Where it
+/// genuinely cannot be walked, as it cannot when unprivileged and off-link, the
+/// engine turns it away and records why, so the run exits `3` rather than `2`.
 #[test]
 fn an_unwalkable_ipv6_range_is_refused_by_the_engine_and_reported_partial() {
     let run = zond("unwalkable-v6", &["-q", "d", "2001:db8::/64"]);
@@ -173,8 +173,8 @@ fn a_hostname_is_refused_when_dns_is_forbidden() {
 ///
 /// TEST-NET-1 answers nothing either way, so what is asserted is the accounting
 /// rather than a finding: four addresses named, two of them withheld, and the
-/// header reporting the two that are left. That is the whole path — clap to the
-/// target grammar to the engine's policy to the line a person reads — and no
+/// header reporting the two that are left. That is the whole path, from clap to
+/// the target grammar to the engine's policy to the line a person reads, and no
 /// unit test covers all of it.
 #[test]
 fn an_excluded_range_is_named_and_left_out_of_the_count() {
@@ -247,7 +247,7 @@ fn a_first_run_provisions_both_settings_files() {
 
 /// The files appearing must not change the run that follows them.
 ///
-/// Compares what the two runs produced, not merely that both exited `0` — a
+/// Compares what the two runs produced, not merely that both exited `0`. A
 /// provisioning step that corrupted every setting would still exit `0` twice.
 /// Every field but the round-trip times, which no two runs agree on.
 #[test]
@@ -267,12 +267,33 @@ fn provisioned_files_change_nothing_about_the_next_run() {
     );
 }
 
-/// Named but not built is refused, not quietly served as another mode.
+/// Every mode the help lists is a mode the binary will run, and a name that is
+/// not one is refused with the names that would have worked.
+///
+/// The two halves belong together: a mode advertised and not built, and a mode
+/// built and not advertised, are the same defect seen from either side.
 #[test]
-fn a_presentation_that_is_not_built_is_a_usage_error() {
-    let run = zond("fancy", &["--presentation", "fancy", "d", "127.0.0.1"]);
-    assert_eq!(status(&run), 2, "{}", stderr(&run));
-    assert!(stderr(&run).contains("not built yet"), "{}", stderr(&run));
+fn every_named_presentation_runs_and_anything_else_is_a_usage_error() {
+    for mode in ["pipe", "minimal", "fancy"] {
+        let run = zond(
+            &format!("presentation-{mode}"),
+            &["-q", "--presentation", mode, "d", "192.0.2.1"],
+        );
+        assert_eq!(status(&run), 0, "{mode}: {}", stderr(&run));
+    }
+
+    let refused = zond(
+        "presentation-unknown",
+        &["--presentation", "shiny", "d", "127.0.0.1"],
+    );
+    assert_eq!(status(&refused), 2, "{}", stderr(&refused));
+    let said = stderr(&refused);
+    for mode in ["pipe", "minimal", "fancy"] {
+        assert!(
+            said.contains(mode),
+            "the refusal never names '{mode}': {said}"
+        );
+    }
 }
 
 /// A settings file and a flag are two ways of asking for the same thing, so an
@@ -295,16 +316,22 @@ fn an_unusable_settings_file_is_a_usage_error() {
 
 /// A key this program does not know is ignored and named, so that a file written
 /// by a newer `zond` does not stop an older one from running.
+///
+/// The key is deliberately not one this program might plausibly grow. `colour`
+/// stood here until `colour` became a real setting, at which point the test was
+/// asserting that a supported key was unsupported, and `colour = true` stopped
+/// being an unknown key and became a value of the wrong type. The unit test
+/// beside `parse` carries the same warning and the same nonsense word.
 #[test]
 fn an_unknown_setting_is_a_warning_and_the_run_continues() {
     let directory = config_home("unknown-setting");
     std::fs::create_dir_all(directory.join("zond")).expect("a writable directory");
-    std::fs::write(directory.join("zond/cli.toml"), "colour = true\n").expect("a writable file");
+    std::fs::write(directory.join("zond/cli.toml"), "wobble = true\n").expect("a writable file");
 
     let run = zond_in(&directory, &["d", "127.0.0.1"]);
 
     assert_eq!(status(&run), 0, "{}", stderr(&run));
-    assert!(stderr(&run).contains("colour"), "{}", stderr(&run));
+    assert!(stderr(&run).contains("wobble"), "{}", stderr(&run));
 }
 
 /// `default_ports` is read from the engine's file and reaches the scan.
@@ -337,7 +364,7 @@ fn the_engines_default_ports_decide_a_scan_with_no_flag() {
 }
 
 /// A value the program understands, carrying something it cannot act on, is
-/// refused — on every subcommand, not only the one that would have used it.
+/// refused on every subcommand, not only the one that would have used it.
 #[test]
 fn an_unusable_default_ports_is_refused_by_either_subcommand() {
     let directory = config_home("bad-default-ports");
@@ -381,9 +408,9 @@ fn the_engines_settings_file_is_honoured() {
 
 // ── zond scan ────────────────────────────────────────────────────────────────
 //
-// Loopback answers even on a closed port — the kernel sends a reset — so unlike
-// a discovery sweep these do not depend on anything listening, and can assert on
-// the records themselves.
+// Loopback answers even on a closed port, since the kernel sends a reset, so
+// unlike a discovery sweep these do not depend on anything listening and can
+// assert on the records themselves.
 
 #[test]
 fn a_port_scan_runs_to_completion() {
@@ -446,7 +473,7 @@ fn a_scan_beyond_the_probe_limit_is_a_usage_error() {
 }
 
 /// A technique needing raw sockets is refused, never quietly served as a connect
-/// scan — which answers a different question and would say it answered this one.
+/// scan, which answers a different question and would say it answered this one.
 ///
 /// The host is still reported: the liveness phase established it is there before
 /// the port phase refused to probe it. What must be absent is any *port* record,
@@ -486,7 +513,7 @@ fn the_pipe_format_carries_every_documented_field() {
     assert_eq!(status(&run), 0, "{}", stderr(&run));
 
     let fields = record(&run);
-    assert_eq!(fields.len(), 13, "{fields:?}");
+    assert_eq!(fields.len(), 14, "{fields:?}");
     assert_eq!(fields[0], "127.0.0.1");
     assert_eq!(fields[1], "Up", "a reset proves the host is there");
 
@@ -497,12 +524,19 @@ fn the_pipe_format_carries_every_documented_field() {
         closed <= 3,
         "more ports came back than were probed: {closed}"
     );
+
+    // The whole of the contract that is not about a particular field: fourteen
+    // of them, and never an empty one, so `cut -f13` reads field 13 whatever
+    // the scan turned up.
+    for (at, field) in fields.iter().enumerate() {
+        assert!(!field.is_empty(), "field {} is empty: {fields:?}", at + 1);
+    }
 }
 
 /// The case this exists for: a dead address must not cost a probe per port.
 ///
-/// Asserted as behaviour, not timing — no port record, and a note saying which
-/// flag scans it anyway.
+/// Asserted as behaviour rather than timing: no port record, and a note saying
+/// which flag scans it anyway.
 #[test]
 fn an_address_nothing_answers_for_is_not_port_scanned() {
     let run = zond("scan-dead", &["--pipe", "s", "192.0.2.1", "-p", "1-64"]);
@@ -558,7 +592,7 @@ fn a_live_host_is_scanned_and_timed() {
 ///
 /// Asserted against the IPv6 loopback rather than the IPv4 one, because an IPv6
 /// address is masked by its own bits. Whether a *hostname* appears at all
-/// depends on reverse lookup, which is not this program's to guarantee — so that
+/// depends on reverse lookup, which is not this program's to guarantee, so that
 /// half is checked only when there was something to mask.
 #[test]
 fn redaction_masks_what_identifies_a_host() {
@@ -711,7 +745,7 @@ fn pruning_can_be_rehearsed() {
 
 /// A scan is continued by its id alone.
 ///
-/// The plan is on record, so there is nothing to type again — and nothing to
+/// The plan is on record, so there is nothing to type again and nothing to
 /// mistype. What ran the first time is what continues, rather than whatever
 /// somebody reconstructs from memory.
 #[test]

@@ -1,12 +1,12 @@
 # Contributing to Zond
 
 Thanks for wanting to help. This repository is the command-line front end to
-[Zond Engine](https://github.com/zond-rs/zond-engine) — the argument grammar,
+[Zond Engine](https://github.com/zond-rs/zond-engine): the argument grammar,
 target resolution, rendering, and the exit status. The scanning itself lives in
 the engine.
 
 **Which repository does your change belong in?** If it is about what goes on the
-wire — probes, timing, retransmission, fingerprinting, the report — it belongs in
+wire, meaning probes, timing, retransmission, fingerprinting and the report, it belongs in
 the engine. If it is about what a person typed or what they see, it belongs here.
 When in doubt, open an issue and ask; a pull request against the wrong repository
 is a lot of work to move.
@@ -44,7 +44,7 @@ Zond commercially to organisations that cannot accept the AGPL, and to fix the
 license later if the AGPL turns out to be the wrong choice. In exchange, the CLA
 commits the project to always keeping a version available under an OSI-approved
 open source license. If you contribute code you wrote for an employer, check that
-they are happy for you to do so — clause 5 of the CLA covers this.
+they are happy for you to do so; clause 5 of the CLA covers this.
 
 ## New license headers
 
@@ -60,7 +60,7 @@ Every source file carries this header. New files need it too:
 // SPDX-License-Identifier: AGPL-3.0-or-later
 ```
 
-Leave the copyright line as it is — "and Contributors" covers you, and the commit
+Leave the copyright line as it is. "and Contributors" covers you, and the commit
 history is the authoritative record of who wrote what.
 
 ## Third-party code
@@ -100,8 +100,8 @@ network and no privileges.
 A few expectations specific to this codebase:
 
 - **Comments explain what a value is for**, not how it came to be that way. Not
-  why an alternative was rejected either — that is what the commit message is
-  for — and never a restatement of the line below.
+  why an alternative was rejected either, since that is what the commit message
+  is for, and never a restatement of the line below.
 - **Tests should earn their place.** A test that restates the implementation is
   worse than no test. Test what can be wrong without being visible: parsing,
   rendering, exit codes, redaction. Do not test help text or documentation.
@@ -114,7 +114,7 @@ A few expectations specific to this codebase:
 
 ## Pull requests
 
-Keep them focused — one concern per pull request. Fill in the template, explain
+Keep them focused: one concern per pull request. Fill in the template, explain
 what you verified and how, and note anything you deliberately left out. If your
 change affects what a scan puts on the wire or what it prints, say what you
 observed on a real network.

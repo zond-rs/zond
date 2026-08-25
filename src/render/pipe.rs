@@ -20,7 +20,7 @@
 //!
 //! ## The contract
 //!
-//! Thirteen fields, in this order, on every line:
+//! Fourteen fields, in this order, on every line:
 //!
 //! | | Field | |
 //! |---|---|---|
@@ -37,13 +37,14 @@
 //! | 11 | `RTT_MAX` | slowest round trip, milliseconds |
 //! | 12 | `PORTS` | `number/proto/state/service`, comma-joined; closed ones left out |
 //! | 13 | `CLOSED` | how many came back plainly closed; `-` when none were probed |
+//! | 14 | `ROLES` | what the host does, comma-joined: `router`, `dns`, `dhcp`, `ntp`, `snmp`, `origin`, `tarpit`, `truncated` |
 //!
 //! A field the scan did not learn is `-`, never empty, so the field count never
 //! changes and `cut` can be told a number.
 //!
 //! **The round-trip time is in milliseconds and stays there.** The readable
-//! modes choose a unit to suit the magnitude; a script reading that would be a
-//! thousand times wrong the first time a host answered slowly.
+//! modes choose a unit to suit the magnitude, and a script reading that would be
+//! a thousand times wrong the first time a host answered slowly.
 //!
 //! No heading line. Fields are only ever *appended* to, so a script that reads
 //! field 3 today reads field 3 after the next release.
@@ -55,6 +56,7 @@ use zond_engine::{Host, ScanReport};
 
 use crate::diagnostics::Verbosity;
 use crate::render::narrate::Narrator;
+use crate::render::style::Style;
 use crate::render::{Phase, Renderer, field};
 
 /// What separates one field from the next.
@@ -67,7 +69,7 @@ const SEPARATOR: char = '\t';
 ///
 /// Only ever grows, and only at the end: a script reading field 3 today reads
 /// field 3 after the next release.
-pub(crate) const FIELDS: usize = 13;
+pub(crate) const FIELDS: usize = 14;
 
 /// The tab-separated writer.
 pub(crate) struct PipeRenderer {
@@ -96,7 +98,7 @@ impl PipeRenderer {
     ) -> Self {
         Self {
             records,
-            narrator: Narrator::new(narration, verbosity),
+            narrator: Narrator::new(narration, verbosity, Style::bare()),
             reader: field::Reader::default(),
         }
     }
@@ -109,7 +111,7 @@ impl PipeRenderer {
 /// a tab in any of them would add a field to a record a script reads by number
 /// while a newline would add a whole line. The module documentation above says a
 /// tab never occurs inside these values; this is what makes that true rather
-/// than hopeful, and it covers a fourteenth field nobody has written yet.
+/// than hopeful, and it covers a fifteenth field nobody has written yet.
 fn record(reader: field::Reader, host: &Host) -> [String; FIELDS] {
     [
         reader.addresses(host),
@@ -125,6 +127,7 @@ fn record(reader: field::Reader, host: &Host) -> [String; FIELDS] {
         field::rtt_max_millis(host).unwrap_or_else(field::unknown),
         field::packed_ports(host).unwrap_or_else(field::unknown),
         field::closed_ports(host).unwrap_or_else(field::unknown),
+        field::packed_roles(host).unwrap_or_else(field::unknown),
     ]
     .map(|value| field::printable(&value).into_owned())
 }
@@ -133,10 +136,6 @@ impl Renderer for PipeRenderer {
     fn started(&mut self, phase: Phase<'_>, redaction: Redaction) -> io::Result<()> {
         self.reader = field::Reader::new(redaction);
         self.narrator.started(phase, redaction)
-    }
-
-    fn host_found(&mut self, host: &Host) -> io::Result<()> {
-        self.narrator.found(host)
     }
 
     fn interrupted(&mut self) -> io::Result<()> {
@@ -151,21 +150,6 @@ impl Renderer for PipeRenderer {
 
         self.records.flush()?;
         self.narrator.summary(report)
-    }
-}
-
-#[cfg(test)]
-impl PipeRenderer {
-    /// Writes records without needing a whole [`ScanReport`] to build one from.
-    fn write_all_for_test(&mut self, hosts: &[Host]) -> io::Result<()> {
-        for host in hosts {
-            writeln!(
-                self.records,
-                "{}",
-                record(self.reader, host).join(&SEPARATOR.to_string())
-            )?;
-        }
-        Ok(())
     }
 }
 
@@ -207,6 +191,40 @@ mod tests {
         host.record_mac("00:00:5e:00:53:01".parse().expect("a valid address"));
         host.set_hostname(Some("router.example".to_owned()));
         host
+    }
+
+    /// The fourteenth field, and the reason it is the fourteenth.
+    ///
+    /// Appended rather than slotted beside `OS` and `VENDOR`, which is where a
+    /// role belongs by kind. This format has grown by appending before:
+    /// `RTT_MIN`, `RTT_AVG` and `RTT_MAX` sit at nine, ten and eleven, four
+    /// fields away from the `RTT` at three. Every `$N` a person has already
+    /// written keeps working.
+    #[test]
+    fn a_role_is_the_fourteenth_field_and_spelled_for_a_script() {
+        use zond_engine::model::host::NetworkRole;
+
+        let mut router = furnished();
+        router.add_network_role(NetworkRole::Router);
+        router.add_network_role(NetworkRole::DnsServer);
+
+        let fields = record(field::Reader::default(), &router);
+
+        assert_eq!(fields.len(), 14);
+        assert_eq!(fields[13], "router,dns");
+
+        // Everything before it is untouched, which is the whole argument for
+        // appending rather than inserting.
+        let plain = record(field::Reader::default(), &furnished());
+        assert_eq!(fields[..13], plain[..13]);
+    }
+
+    /// A field with nothing in it is a dash, never empty, so the count never
+    /// changes.
+    #[test]
+    fn a_host_with_no_roles_carries_a_dash() {
+        let fields = record(field::Reader::default(), &furnished());
+        assert_eq!(fields[13], "-");
     }
 
     /// The whole contract in one assertion: every field, in the documented
@@ -255,18 +273,13 @@ mod tests {
         }
     }
 
+    /// A vendor is "Icann, Iana Department" and a hostname can hold anything but
+    /// a tab, so a value with a space in it has to stay one field.
     #[test]
     fn a_value_with_spaces_stays_one_field() {
-        let (mut renderer, records, _narration) = renderer();
-        let mut host = host(1);
-        host.set_hostname(Some("router.example".to_owned()));
+        let line = record(field::Reader::default(), &furnished()).join(&SEPARATOR.to_string());
 
-        renderer
-            .write_all_for_test(&[host])
-            .expect("capture cannot fail");
-
-        let text = records.text();
-        let line = text.lines().next().expect("one host, one line");
+        assert!(line.contains("Icann, Iana Department"), "{line:?}");
         assert_eq!(
             line.split(SEPARATOR).count(),
             FIELDS,
@@ -274,16 +287,23 @@ mod tests {
         );
     }
 
+    /// A heading is one more line for a program to skip, and the format is
+    /// documented without one.
+    ///
+    /// Driven through `finished`, which is what a real run calls: a test that
+    /// writes the records itself would prove only that the test writes no
+    /// heading.
     #[test]
-    fn there_is_no_heading_line() {
+    fn a_finished_run_writes_records_and_no_heading() {
         let (mut renderer, records, _narration) = renderer();
-        renderer
-            .write_all_for_test(&[furnished()])
-            .expect("capture cannot fail");
+        let report = crate::render::test_support::scoped(vec![furnished()], "192.0.2.0/24");
+
+        renderer.finished(&report).expect("capture cannot fail");
 
         let text = records.text();
         let first = text.lines().next().expect("one host, one line");
         assert!(first.starts_with("192.0.2.1"), "got {first:?}");
+        assert_eq!(text.lines().count(), 1, "{text:?}");
     }
 }
 

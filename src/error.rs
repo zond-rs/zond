@@ -34,8 +34,8 @@ pub(crate) enum Error {
     #[error("{0}")]
     Target(#[from] TargetError),
 
-    /// The scan did not run to completion — the task behind it panicked or was
-    /// killed, as opposed to a strategy inside it failing.
+    /// The scan did not run to completion, meaning the task behind it panicked
+    /// or was killed rather than a strategy inside it failing.
     #[error("the scan did not run to completion: {0}")]
     Scan(#[from] ScanError),
 
@@ -46,10 +46,6 @@ pub(crate) enum Error {
     /// A settings file could not be read, parsed, or used.
     #[error("{0}")]
     Settings(#[from] crate::settings::SettingsError),
-
-    /// A presentation mode was named that is not built yet.
-    #[error("{0}")]
-    Presentation(#[from] crate::render::Unavailable),
 
     /// A document handed in could not be read as a report.
     #[error("{0}")]
@@ -70,7 +66,8 @@ pub(crate) enum Error {
     /// A comparison was told to write itself somewhere it cannot be written.
     #[error(
         "'{path}' does not name a format a comparison can be written in. A \
-         comparison is written as JSON (.json)."
+         comparison is written as JSON (.json) or as one self-contained page \
+         (.html)."
     )]
     UnknownDiffFormat {
         /// What was named.
@@ -124,7 +121,7 @@ pub(crate) enum Error {
 
     /// A destination's extension names no format this build can write.
     #[error(
-        "{} names no format this build can write. Give it one of: {known} — or \
+        "{} names no format this build can write. Give it one of: {known}. Or \
          say which with --output-as FORMAT=FILE.",
         path.display()
     )]
@@ -205,13 +202,12 @@ impl Error {
     ///
     /// A closed output stream is the odd one out. `zond discover lan | head`
     /// closes the pipe as soon as `head` has what it wanted, and that is not a
-    /// failure — it exits `0`, like every other tool a pipeline may cut short.
+    /// failure. It exits `0`, like every other tool a pipeline may cut short.
     #[must_use]
     pub(crate) fn code(&self) -> Code {
         match self {
             Error::Target(_)
             | Error::Settings(_)
-            | Error::Presentation(_)
             | Error::NoSuchJournal { .. }
             | Error::NoSuchPage { .. }
             | Error::UnknownExportFormat { .. }
@@ -226,10 +222,13 @@ impl Error {
             // the caller asking for something that cannot be done, not a fault.
             | Error::JournalOpen(_)
             | Error::PlanChanged(_) => Code::Usage,
-            // A document that will not parse is a fault in the file, not in
-            // what was asked for: the name was right and the contents were not.
-            Error::Import(_) => Code::Failure,
-            Error::Scan(_) | Error::Journal(_) | Error::NoJournalDirectory => Code::Failure,
+            // A document that will not parse is a fault in the file rather than
+            // in what was asked for: the name was right and the contents were
+            // not. It joins the outright failures for that reason.
+            Error::Import(_)
+            | Error::Scan(_)
+            | Error::Journal(_)
+            | Error::NoJournalDirectory => Code::Failure,
             Error::Io(e) => {
                 if e.kind() == ErrorKind::BrokenPipe {
                     Code::Success
@@ -244,19 +243,13 @@ impl Error {
     ///
     /// Written directly rather than as a `tracing` event: an error must be shown
     /// whatever the verbosity, and can happen before a subscriber exists.
+    ///
+    /// A broken pipe says nothing, because it means the reader has gone.
+    /// Complaining about it is what makes `| head` print a stack of errors.
     pub(crate) fn report(&self) {
-        if self.is_silent() {
+        if matches!(self, Error::Io(e) if e.kind() == ErrorKind::BrokenPipe) {
             return;
         }
         eprintln!("error: {self}");
-    }
-
-    /// Whether reporting this would only be noise.
-    ///
-    /// A broken pipe means the reader has gone. Complaining about it is what
-    /// makes `| head` print a stack of errors.
-    #[must_use]
-    pub(crate) fn is_silent(&self) -> bool {
-        matches!(self, Error::Io(e) if e.kind() == ErrorKind::BrokenPipe)
     }
 }

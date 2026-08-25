@@ -8,21 +8,23 @@
 
 //! # Zond, as a command-line tool
 //!
-//! The front end to [`zond_engine`]. The engine finds hosts and ports; this
-//! binary decides what a person typed, what to show them, and what to tell the
-//! shell afterwards.
+//! The front end to [`zond_engine`]. The engine finds hosts and ports. This
+//! binary works out what a person typed, what to show them, and what to tell
+//! the shell afterwards.
 //!
-//! The engine takes an already-resolved set of addresses, emits `tracing` events
-//! and installs no subscriber, and holds no opinion about terminals. The four
-//! modules with any judgement in them are what follows from that:
+//! The engine takes an already-resolved set of addresses, emits `tracing`
+//! events without installing a subscriber, and holds no opinion about
+//! terminals. Four modules here fill those gaps, and they are the four with any
+//! judgement in them:
 //!
-//! - [`cli`] — the grammar, and how it becomes a
+//! - [`cli`] is the grammar, and the translation of it into a
 //!   [`ZondConfig`](zond_engine::ZondConfig).
-//! - [`target`] — what a target expression stands for. `lan` and `%en0` need the
-//!   host's interface table, which the engine's parser will not read for itself.
-//! - [`render`] — what a run looks like. The only thing here that knows about
-//!   columns and streams.
-//! - [`exit`] — what the shell is told, written down rather than improvised.
+//! - [`target`] is what a target expression stands for. `lan` and `%en0` need
+//!   this host's interface table, which the engine's parser will not read for
+//!   itself.
+//! - [`render`] is what a run looks like, and the only thing here that knows
+//!   about columns and streams.
+//! - [`exit`] is what the shell is told, written down rather than improvised.
 //!
 //! [`command`] drives those against the engine, one module per subcommand.
 //! [`diagnostics`] is the subscriber the engine's events would otherwise fall
@@ -52,6 +54,7 @@ use crate::cli::{Cli, Command};
 use crate::command::Recording;
 use crate::error::Error;
 use crate::exit::Outcome;
+use crate::render::style::{Palette, Style};
 use crate::settings::EntryLimit;
 
 #[tokio::main]
@@ -92,25 +95,46 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     diagnostics::install(verbosity);
 
     // Before the settings are read, so a first run reads what it just created.
-    provision();
+    // What it did is said further down, once the output knows how to draw.
+    let provisioned = settings::provision_all();
 
     let (settings, warnings) = settings::resolve()?;
+
+    let presentation = cli.output.presentation(settings.presentation());
+    // The two decisions about paint travel together from here: every renderer
+    // and every command that draws wants both, and neither is useful alone.
+    let palette = Palette::new(
+        cli.output.colour(settings.colour()),
+        settings.accent_colour().unwrap_or_default(),
+    );
+
+    // The subscriber was installed before any of this was known, so that nothing
+    // emitted on the way here went unheard. This is the first moment it can be
+    // told how to draw.
+    diagnostics::paint(Style::commentary(presentation, palette));
+
+    // The first line of every run, and the reason the two above are held back
+    // until here: a transcript that does not say which build produced it, or
+    // when, is a transcript nobody can check a finding against a year later.
+    tracing::info!(
+        "zond-cli {} \u{b7} zond-engine {} \u{b7} {}",
+        env!("CARGO_PKG_VERSION"),
+        zond_engine::scanner::report::ENGINE_VERSION,
+        render::field::moment(std::time::SystemTime::now())
+    );
+
+    report_provisioning(provisioned);
     for warning in warnings {
         tracing::warn!("{warning}");
     }
 
-    let presentation = cli.output.presentation(settings.presentation());
-
     // `journal` reads what is already on disk rather than watching a run, so it
-    // takes the presentation and not a `Renderer`. The mode is still validated
-    // for it, since somebody who asked for one that is not built should hear so
-    // whichever subcommand they typed.
+    // takes the presentation and not a `Renderer`.
     if let Command::Journal(args) = &cli.command {
-        render::validate(presentation)?;
-        return command::journal::run(args, presentation, verbosity);
+        return command::journal::run(args, presentation, verbosity, palette);
     }
 
-    let mut renderer = render::renderer(presentation, verbosity)?;
+    let mut renderer = render::renderer(presentation, verbosity, palette);
 
     // On unless the run or the settings file says otherwise: somebody wants to
     // continue or re-read a scan after it is over, not before. The limit rides
@@ -130,25 +154,22 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         Command::Scan(args) => {
             command::scan::run(args, recording(args.no_journal), renderer.as_mut()).await
         }
-        Command::Diff(args) => command::diff::run(args, presentation),
+        Command::Diff(args) => command::diff::run(args, presentation, palette),
         Command::Journal(_) => unreachable!("handled above"),
     }
 }
 
-/// Creates the two settings files if this is the first run that can.
+/// Says which settings files this run created, and which it could not.
 ///
-/// Fails at nothing: a home that cannot be written to means built-in defaults,
-/// not a refusal to scan. A file that has just appeared is mentioned once,
-/// because a program that writes into somebody's home should say so.
-fn provision() {
-    let (created, problems) = settings::provision_all();
-
-    for path in created {
+/// A file that has just appeared is mentioned once, because a program that
+/// writes into somebody's home should say so. A file that could not be written
+/// changes nothing about the run, so it waits for `-v`, where somebody
+/// wondering where their file went can find it.
+fn report_provisioning(provisioned: settings::Provisioning) {
+    for path in provisioned.created {
         tracing::info!("created {}", path.display());
     }
-    for problem in problems {
-        // At `-v`: this changes nothing about the run that follows, but
-        // somebody wondering where their file went should be able to ask.
+    for problem in provisioned.problems {
         tracing::warn!(verbosity = 1, "could not create settings file: {problem}");
     }
 }

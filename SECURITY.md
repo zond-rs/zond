@@ -27,7 +27,7 @@ Include:
 This repository is the command-line front end. Its own security surface is
 narrower than the engine's, and roughly:
 
-- **Redaction.** `--redact` masking that leaks what it claims to hide — a
+- **Redaction.** `--redact` masking that leaks what it claims to hide, such as a
   hostname, a hardware address, or the host part of an IPv6 address surviving
   into output.
 - **Settings files.** Provisioning that overwrites a file, creates one with
@@ -36,8 +36,8 @@ narrower than the engine's, and roughly:
 - **Argument and target parsing.** An expression that resolves to addresses
   outside what was named.
 
-Anything about what goes on the wire — probe construction, raw sockets,
-privilege handling, fingerprinting — belongs to
+Anything about what goes on the wire, meaning probe construction, raw sockets,
+privilege handling and fingerprinting, belongs to
 [zond-engine](https://github.com/zond-rs/zond-engine) and should be reported
 against that repository. If you are not sure which, report it here and it will
 be routed.

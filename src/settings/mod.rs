@@ -22,291 +22,58 @@
 //!
 //! The locations come from the engine's
 //! [`paths`](zond_engine::import::settings::paths) so that the two files cannot
-//! land in different directories — `$XDG_CONFIG_HOME` when it is absolute,
-//! `$HOME/.config` otherwise, and `/etc/zond` for a host-wide file underneath
-//! both.
+//! land in different directories. That is `$XDG_CONFIG_HOME` when it is
+//! absolute, `$HOME/.config` otherwise, and `/etc/zond` for a host-wide file
+//! underneath both.
 //!
 //! ## When the files appear
 //!
 //! On the first run that can write them, from templates compiled in with
-//! `include_str!` — so a first run works offline. Not at build time, because a
+//! `include_str!`, so a first run works offline. Not at build time, because a
 //! package installed by `root` would provision `root`'s configuration and
 //! nobody else's.
 //!
 //! Provisioning never overwrites, never edits, and never changes behaviour:
 //! every key in both templates is commented out. Failure to write is not fatal.
 //!
-//! Discovery wants root, so the first run is very often `sudo zond discover lan`
-//! and the files would be created `root`-owned and mode `0600` — unreadable by
-//! the user's own later runs. When `SUDO_UID` and `SUDO_GID` say who asked,
-//! anything newly created is handed to them. See [`provision`].
+//! Discovery wants root, so the first run is very often `sudo zond discover lan`.
+//! The files would then be created `root`-owned and mode `0600`, which the
+//! user's own later runs cannot read. When `SUDO_UID` and `SUDO_GID` say who
+//! asked, anything newly created is handed to them. See [`provision`].
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use zond_engine::diff::HostIdentity;
+
+use crate::render::style::{Accent, ColourChoice, UnknownAccent, UnknownColourChoice};
 
 use serde::Deserialize;
 
 use zond_engine::import::settings as engine_settings;
 use zond_engine::{PortSet, ZondConfig};
 
+mod choice;
+
+pub(crate) use choice::{
+    EntryLimit, Identity, Presentation, UnknownEntryLimit, UnknownIdentity, UnknownPresentation,
+};
+
 /// This crate's settings file, as it is named on disk.
 ///
-/// Beside the engine's `engine.toml`, which is what the engine's own path
-/// documentation says a front end should do.
+/// It sits beside the engine's `engine.toml`, which is what the engine's own
+/// path documentation says a front end should do.
 pub(crate) const FILE_NAME: &str = "cli.toml";
 
 /// The document written when there is not one already.
 ///
 /// Compiled in rather than fetched or generated: see the module documentation.
-pub(crate) const TEMPLATE: &str = include_str!("../assets/settings/cli.toml");
-
-/// How a run is drawn.
-///
-/// Four modes: one for programs and three for people. [`Pipe`](Self::Pipe) is
-/// not a step on that ladder, it is a different audience.
-///
-/// [`Standard`](Self::Standard) and [`Fancy`](Self::Fancy) are named before they
-/// are built, so that `presentation = "fancy"` is answered with "not ready"
-/// rather than "not a word".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Presentation {
-    /// Tab-separated records for a program: no padding, no heading, no unit
-    /// suffixes, and every field a scan established. The only mode whose output
-    /// is a stable interface.
-    Pipe,
-    /// A narrow aligned table for a person. The default until
-    /// [`Standard`](Self::Standard) exists.
-    #[default]
-    Minimal,
-    /// Not built yet. More of what a scan found, still without colour, and
-    /// intended to become the default.
-    Standard,
-    /// Not built yet. Colour and decoration, for a terminal being watched by a
-    /// person rather than a script.
-    Fancy,
-}
-
-impl Presentation {
-    /// Every mode, least to most, with the machine-readable one first.
-    pub(crate) const ALL: [Presentation; 4] = [
-        Presentation::Pipe,
-        Presentation::Minimal,
-        Presentation::Standard,
-        Presentation::Fancy,
-    ];
-
-    /// The mode as it is written in a settings file or on the command line.
-    #[must_use]
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Presentation::Pipe => "pipe",
-            Presentation::Minimal => "minimal",
-            Presentation::Standard => "standard",
-            Presentation::Fancy => "fancy",
-        }
-    }
-
-    /// Whether this mode has been built.
-    ///
-    /// One that has not is refused rather than quietly served as
-    /// [`Minimal`](Self::Minimal).
-    #[must_use]
-    pub(crate) fn is_available(self) -> bool {
-        matches!(self, Presentation::Pipe | Presentation::Minimal)
-    }
-}
-
-impl fmt::Display for Presentation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// The error [`Presentation::from_str`] returns.
-///
-/// Carries the names that would have worked, so whoever prints it can print it
-/// verbatim — the same shape the engine's own settings errors take.
-#[derive(Debug, thiserror::Error)]
-#[error("unknown presentation '{written}': expected one of {}", expected.join(", "))]
-pub(crate) struct UnknownPresentation {
-    /// What was written.
-    pub written: String,
-    /// The names that would have worked.
-    pub expected: Vec<&'static str>,
-}
-
-impl FromStr for Presentation {
-    type Err = UnknownPresentation;
-
-    fn from_str(written: &str) -> Result<Self, Self::Err> {
-        Presentation::ALL
-            .into_iter()
-            .find(|mode| written.eq_ignore_ascii_case(mode.as_str()))
-            .ok_or_else(|| UnknownPresentation {
-                written: written.to_owned(),
-                expected: Presentation::ALL.map(Presentation::as_str).to_vec(),
-            })
-    }
-}
-
-/// What makes two records, in two different scans, the same host.
-///
-/// A thin mirror of the engine's own [`HostIdentity`], because a value the
-/// command line parses needs a `FromStr` this crate is allowed to write. The
-/// meanings are the engine's and are documented there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Identity {
-    /// Two records are the same host when they share any address.
-    #[default]
-    Any,
-    /// That, and when they share a hardware address.
-    Hardware,
-    /// Only when their primary addresses match.
-    Primary,
-}
-
-impl Identity {
-    /// Every spelling, in the order the help lists them.
-    pub(crate) const ALL: [Identity; 3] = [Identity::Any, Identity::Hardware, Identity::Primary];
-
-    /// What this is called on the command line.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Identity::Any => "any",
-            Identity::Hardware => "hardware",
-            Identity::Primary => "primary",
-        }
-    }
-}
-
-impl From<Identity> for HostIdentity {
-    fn from(identity: Identity) -> Self {
-        match identity {
-            Identity::Any => HostIdentity::AnyAddress,
-            Identity::Hardware => HostIdentity::Hardware,
-            Identity::Primary => HostIdentity::PrimaryAddress,
-        }
-    }
-}
-
-/// The error [`Identity::from_str`] returns.
-///
-/// Carries the names that would have worked, so whoever prints it can print it
-/// verbatim — the same shape [`UnknownPresentation`] takes.
-#[derive(Debug, thiserror::Error)]
-#[error("unknown identity '{written}': expected one of {}", expected.join(", "))]
-pub(crate) struct UnknownIdentity {
-    /// What was written.
-    pub written: String,
-    /// The names that would have worked.
-    pub expected: Vec<&'static str>,
-}
-
-impl std::str::FromStr for Identity {
-    type Err = UnknownIdentity;
-
-    fn from_str(written: &str) -> Result<Self, Self::Err> {
-        Identity::ALL
-            .into_iter()
-            .find(|identity| written.eq_ignore_ascii_case(identity.as_str()))
-            .ok_or_else(|| UnknownIdentity {
-                written: written.to_owned(),
-                expected: Identity::ALL.map(Identity::as_str).to_vec(),
-            })
-    }
-}
-
-/// How many journals this machine keeps.
-///
-/// The journal directory grows by one record per scan and nothing about a scan
-/// shrinks it, so something has to say when the oldest record has served its
-/// purpose. This is that number, and a run that records applies it as soon as
-/// it has claimed a record of its own.
-///
-/// [`Unlimited`](Self::Unlimited) is the way out for somebody keeping records
-/// deliberately: an engagement where the journal is evidence wants a directory
-/// bounded by the disk rather than by a count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EntryLimit {
-    /// Keep at most this many, oldest out first.
-    ///
-    /// Zero keeps none. The record of the run in flight is still written, since
-    /// `--resume` is the reason a journal exists at all, and it goes when the
-    /// next run claims one.
-    AtMost(usize),
-    /// Keep every record, however many there are.
-    Unlimited,
-}
-
-impl EntryLimit {
-    /// What a machine keeps when nothing says otherwise.
-    ///
-    /// A hundred is well past the point where anybody resumes a scan and small
-    /// enough that the directory stays something a person can read through.
-    pub(crate) const DEFAULT: Self = Self::AtMost(100);
-
-    /// The word that spells [`Unlimited`](Self::Unlimited) in a settings file.
-    ///
-    /// Not `none`, though `None` is what it becomes: read quickly, in a file
-    /// where `0` means keep none, `none` and `0` look like two spellings of one
-    /// thing and are opposites.
-    const UNLIMITED: &'static str = "unlimited";
-
-    /// The cap as [`Retention`](zond_engine::journal::store::Retention) takes
-    /// it, `None` being no cap at all.
-    #[must_use]
-    pub(crate) fn cap(self) -> Option<usize> {
-        match self {
-            Self::AtMost(count) => Some(count),
-            Self::Unlimited => None,
-        }
-    }
-
-    /// Reads what a document wrote for this key.
-    ///
-    /// A count or the word `unlimited`, and nothing else. A limit is a number or
-    /// the absence of one; `true` is neither, and a negative count is a number of
-    /// records nobody can have.
-    fn from_value(value: &toml::Value) -> Result<Self, UnknownEntryLimit> {
-        // Quoted back as TOML, so a string keeps its quotes and a number does
-        // not: what the message shows is what the file has in it.
-        let refuse = || UnknownEntryLimit {
-            written: value.to_string(),
-        };
-
-        match value {
-            toml::Value::Integer(count) => usize::try_from(*count)
-                .map(Self::AtMost)
-                .map_err(|_| refuse()),
-            toml::Value::String(word) if word.eq_ignore_ascii_case(Self::UNLIMITED) => {
-                Ok(Self::Unlimited)
-            }
-            _ => Err(refuse()),
-        }
-    }
-}
-
-/// The error [`EntryLimit::from_value`] returns.
-///
-/// Names what would have worked, like its neighbour above, so whoever prints it
-/// prints it verbatim — and names both ends apart, because the value this mostly
-/// catches is `none`, and somebody writing that could mean either of them.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "unusable journal entry limit {written}: expected a count like 100, 0 to keep none, or \"unlimited\" for no limit"
-)]
-pub(crate) struct UnknownEntryLimit {
-    /// What was written, as it was written.
-    pub written: String,
-}
+pub(crate) const TEMPLATE: &str = include_str!("../../assets/settings/cli.toml");
 
 /// A value a settings file gave for a key this program does know.
 ///
-/// One variant per key that can be written wrong, kept as a type rather than
-/// flattened to a string so that a caller — and a test — can ask which key it
+/// One variant per key that can be written wrong. It is kept as a type rather
+/// than flattened to a string so that a caller, or a test, can ask which key it
 /// was.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -320,6 +87,12 @@ pub(crate) enum UnusableValue {
     /// `identity` named something that is not a policy.
     #[error(transparent)]
     Identity(#[from] UnknownIdentity),
+    /// `colour` named something that is not a setting.
+    #[error(transparent)]
+    Colour(#[from] UnknownColourChoice),
+    /// `accent_colour` was neither a named accent nor a colour.
+    #[error(transparent)]
+    Accent(#[from] UnknownAccent),
 }
 
 /// Something a settings file said that this program could not use.
@@ -391,6 +164,8 @@ pub(crate) enum SettingsError {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Settings {
     presentation: Option<Presentation>,
+    colour: Option<ColourChoice>,
+    accent_colour: Option<Accent>,
     identity: Option<Identity>,
     journal: Option<bool>,
     journal_entry_limit: Option<EntryLimit>,
@@ -402,6 +177,23 @@ impl Settings {
     #[must_use]
     pub(crate) fn presentation(self) -> Option<Presentation> {
         self.presentation
+    }
+
+    /// Whether these settings ask for colour, if they say.
+    #[must_use]
+    pub(crate) fn colour(self) -> Option<ColourChoice> {
+        self.colour
+    }
+
+    /// The hue these settings mark names and handles with, if they name one.
+    ///
+    /// The only colour in the palette a person may move, because it is the only
+    /// one that carries no meaning. The three greys are a legibility decision
+    /// and the three states are what a verdict looks like, and a settings file
+    /// is not the place to reopen either.
+    #[must_use]
+    pub(crate) fn accent_colour(self) -> Option<Accent> {
+        self.accent_colour
     }
 
     /// What these settings say makes two records the same host, if they say.
@@ -442,6 +234,12 @@ impl Settings {
         if let Some(presentation) = other.presentation {
             self.presentation = Some(presentation);
         }
+        if let Some(colour) = other.colour {
+            self.colour = Some(colour);
+        }
+        if let Some(accent) = other.accent_colour {
+            self.accent_colour = Some(accent);
+        }
         if let Some(identity) = other.identity {
             self.identity = Some(identity);
         }
@@ -463,6 +261,16 @@ impl Settings {
 #[derive(Debug, Default, Deserialize)]
 struct Document {
     presentation: Option<String>,
+    // Both spellings, because this is the one key in the file whose name is a
+    // word two large groups of English speakers write differently, and being
+    // told `color` is an unknown key is a poor way to find that out.
+    colour: Option<String>,
+    color: Option<String>,
+    // Both spellings again, and for the same reason: a file that accepts
+    // `color` and refuses `accent_color` has taught one lesson and then broken
+    // it one key later.
+    accent_colour: Option<String>,
+    accent_color: Option<String>,
     identity: Option<String>,
     journal: Option<bool>,
     // Left as it was written, because this key takes a count or a word and the
@@ -492,6 +300,22 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
         .transpose()
         .map_err(|source| bad_value(source.into()))?;
 
+    let colour = document
+        .colour
+        .as_deref()
+        .or(document.color.as_deref())
+        .map(ColourChoice::from_str)
+        .transpose()
+        .map_err(|source| bad_value(source.into()))?;
+
+    let accent_colour = document
+        .accent_colour
+        .as_deref()
+        .or(document.accent_color.as_deref())
+        .map(Accent::from_str)
+        .transpose()
+        .map_err(|source| bad_value(source.into()))?;
+
     let identity = document
         .identity
         .as_deref()
@@ -518,6 +342,8 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
     Ok((
         Settings {
             presentation,
+            colour,
+            accent_colour,
             identity,
             journal: document.journal,
             journal_entry_limit,
@@ -540,7 +366,7 @@ pub(crate) fn user_path() -> Option<PathBuf> {
 /// Where a host-wide settings file for this crate would be.
 ///
 /// Derived from the engine's own system path rather than spelled out, so the two
-/// files stay in one directory on every platform the engine decides to support.
+/// files stay in one directory on every platform the engine comes to support.
 #[must_use]
 pub(crate) fn system_path() -> Option<PathBuf> {
     engine_settings::paths::system()?
@@ -594,11 +420,15 @@ pub(crate) struct EngineSettings {
     /// The ports they said to probe, if they said.
     ///
     /// Read here rather than on demand because it comes out of the same
-    /// document: asking for it separately meant reading and parsing
+    /// document. Asking for it separately means reading and parsing
     /// `engine.toml` a second time, and two reads can disagree.
     pub(crate) ports: Option<PortSet>,
 }
 
+/// Reads the engine's settings once, reporting what it could not use.
+///
+/// The warnings come back as finished sentences rather than as the engine's own
+/// type, because every caller does the same thing with them: log one line each.
 pub(crate) fn engine(
     profile: Option<&str>,
 ) -> Result<(EngineSettings, Vec<String>), SettingsError> {
@@ -635,40 +465,50 @@ pub(crate) enum Provisioned {
     Existed,
 }
 
+/// What one pass of [`provision_all`] left behind, for the caller to mention.
+///
+/// Only files created just now are listed. A file that was already there is not
+/// news, and saying so on every run would train a reader to skip the line on the
+/// one run where something did appear.
+#[derive(Debug, Default)]
+pub(crate) struct Provisioning {
+    /// The settings files this run created.
+    pub(crate) created: Vec<PathBuf>,
+    /// Why any of them could not be created.
+    pub(crate) problems: Vec<String>,
+}
+
 /// Creates both settings files if they are not already there.
 ///
-/// Best effort: a run that could not write one is a run with built-in defaults,
-/// not a run that refuses to start. Returns the files created just now — an
-/// existing file is not news — and whatever went wrong, for the caller to
-/// mention.
+/// Best effort. A run that could not write one is a run with built-in defaults,
+/// not a run that refuses to start.
 #[must_use]
-pub(crate) fn provision_all() -> (Vec<PathBuf>, Vec<String>) {
-    let mut created = Vec::new();
-    let mut problems = Vec::new();
+pub(crate) fn provision_all() -> Provisioning {
+    let mut provisioning = Provisioning::default();
 
     let engine = engine_settings::paths::user().map(|path| (path, engine_settings::TEMPLATE));
     let cli = user_path().map(|path| (path, TEMPLATE));
 
     for (path, template) in [engine, cli].into_iter().flatten() {
         match provision(&path, template) {
-            Ok(Provisioned::Created) => created.push(path),
+            Ok(Provisioned::Created) => provisioning.created.push(path),
             Ok(Provisioned::Existed) => {}
-            Err(problem) => problems.push(problem.to_string()),
+            Err(problem) => provisioning.problems.push(problem.to_string()),
         }
     }
 
-    (created, problems)
+    provisioning
 }
 
 /// Creates a settings file at `path` if there is not one already.
 ///
-/// Never overwrites — `create_new` fails atomically, so two racing processes
-/// cannot both decide the file was missing. Never reads, reformats or extends an
-/// existing one.
+/// Never overwrites. `create_new` fails atomically, so two racing processes
+/// cannot both decide the file was missing, and an existing file is never read,
+/// reformatted or extended.
 ///
-/// On Unix the directory is `0700` and the file `0600`: a settings file records
-/// which networks somebody scans. Anything created under `sudo` is handed to the
-/// user who invoked it — see [`hand_to_invoker`].
+/// On Unix the directory is `0700` and the file `0600`, because a settings file
+/// records which networks somebody scans. Anything created under `sudo` is
+/// handed to the user who invoked it; see [`hand_to_invoker`].
 pub(crate) fn provision(path: &Path, template: &str) -> Result<Provisioned, SettingsError> {
     let fresh_directory = match path.parent() {
         Some(parent) if !parent.exists() => {
@@ -797,66 +637,70 @@ mod tests {
         }
     }
 
+    /// A policy this program does not know is refused, and the file that carried
+    /// it is named. Which spellings would have worked is
+    /// [`Identity`]'s own business and is asserted beside it.
     #[test]
-    fn an_identity_is_read_from_the_document() {
-        let (settings, warnings) = parse(
-            "identity = \"hardware\"\n",
-            std::path::Path::new("cli.toml"),
+    fn an_identity_that_is_not_one_is_refused_and_the_file_is_named() {
+        let refused = parse_text("identity = \"mac\"\n").expect_err("not a policy");
+
+        assert!(
+            matches!(
+                refused,
+                SettingsError::BadValue {
+                    source: UnusableValue::Identity(_),
+                    ..
+                }
+            ),
+            "a value that is not a policy cannot be acted on: {refused}"
+        );
+
+        let message = refused.to_string();
+        assert!(message.contains("cli.toml"), "{message}");
+        assert!(message.contains("'mac'"), "{message}");
+    }
+
+    /// Every key this document carries is read back out of it.
+    ///
+    /// One assertion rather than one test per key: the parser is a list of
+    /// lookups, and what can go wrong is a key wired to the wrong field or left
+    /// out of the struct at the end.
+    #[test]
+    fn every_key_is_read_out_of_the_document() {
+        let (settings, warnings) = parse_text(
+            "presentation = \"pipe\"\n\
+             colour = \"never\"\n\
+             accent_colour = \"violet\"\n\
+             identity = \"hardware\"\n\
+             journal = false\n\
+             journal_entry_limit = 7\n\
+             page_size = 3\n",
         )
         .expect("a usable document");
 
-        assert_eq!(settings.identity(), Some(Identity::Hardware));
-        assert!(warnings.is_empty());
-    }
-
-    /// A policy that is not one is refused with the names that would have
-    /// worked, rather than the file quietly comparing under a policy nobody
-    /// asked for.
-    #[test]
-    fn an_identity_that_is_not_one_is_refused() {
-        let refused = parse("identity = \"mac\"\n", std::path::Path::new("cli.toml"))
-            .expect_err("not a policy");
-
-        let message = refused.to_string();
-        assert!(message.contains("'mac'"), "{message}");
-        for identity in Identity::ALL {
-            assert!(message.contains(identity.as_str()), "{message}");
-        }
-    }
-
-    /// A file that says nothing about it must not overrule a lower layer.
-    #[test]
-    fn an_identity_layers_like_every_other_key() {
-        let mut lower = Settings {
-            identity: Some(Identity::Hardware),
-            ..Settings::default()
-        };
-        lower.overlay(Settings::default());
-        assert_eq!(lower.identity(), Some(Identity::Hardware));
-
-        lower.overlay(Settings {
-            identity: Some(Identity::Primary),
-            ..Settings::default()
-        });
-        assert_eq!(lower.identity(), Some(Identity::Primary));
-    }
-
-    #[test]
-    fn a_presentation_is_read_from_the_document() {
-        let (settings, _) = parse_text(r#"presentation = "pipe""#).expect("a known mode");
         assert_eq!(settings.presentation(), Some(Presentation::Pipe));
+        assert_eq!(settings.colour(), Some(ColourChoice::Never));
+        assert_eq!(settings.accent_colour(), Some(Accent::VIOLET));
+        assert_eq!(settings.identity(), Some(Identity::Hardware));
+        assert_eq!(settings.journal(), Some(false));
+        assert_eq!(settings.journal_entry_limit(), Some(EntryLimit::AtMost(7)));
+        assert_eq!(settings.page_size(), Some(3));
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     /// Ignored and named, so a file written by a newer `zond` does not stop an
     /// older one running.
     #[test]
     fn an_unknown_key_is_a_warning_and_not_a_failure() {
+        // Deliberately not a key this program might plausibly grow. `colour`
+        // stood here until `colour` became real, at which point the test was
+        // asserting that a supported key was unsupported.
         let (settings, warnings) =
-            parse_text("colour = true\npresentation = \"minimal\"").expect("still usable");
+            parse_text("wobble = true\npresentation = \"minimal\"").expect("still usable");
 
         assert_eq!(settings.presentation(), Some(Presentation::Minimal));
         assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].key, "colour");
+        assert_eq!(warnings[0].key, "wobble");
     }
 
     /// A known key with an unusable value is different: the user meant to change
@@ -880,33 +724,15 @@ mod tests {
         );
     }
 
-    /// The list of built modes, asserted rather than left to drift. A half-built
-    /// mode reporting itself available is how one ships.
+    /// Both spellings of the one key in this file whose name is a word English
+    /// splits on, because being told `color` is unknown is a poor way to find
+    /// out that the file wanted `colour`.
     #[test]
-    fn only_the_built_modes_report_themselves_available() {
-        assert!(Presentation::Pipe.is_available());
-        assert!(Presentation::Minimal.is_available());
-        assert!(!Presentation::Standard.is_available());
-        assert!(!Presentation::Fancy.is_available());
-        assert_eq!(Presentation::default(), Presentation::Minimal);
-    }
-
-    #[test]
-    fn a_mode_is_read_whatever_its_case() {
-        assert_eq!(
-            "MINIMAL".parse::<Presentation>().expect("known"),
-            Presentation::Minimal
-        );
-        assert_eq!(
-            "Fancy".parse::<Presentation>().expect("known"),
-            Presentation::Fancy
-        );
-    }
-
-    #[test]
-    fn every_mode_parses_back_from_its_own_name() {
-        for mode in Presentation::ALL {
-            assert_eq!(mode.as_str().parse::<Presentation>().expect("known"), mode);
+    fn either_spelling_of_the_colour_key_is_read() {
+        for text in [r#"colour = "never""#, r#"color = "never""#] {
+            let (settings, warnings) = parse_text(text).expect("a known key");
+            assert_eq!(settings.colour(), Some(ColourChoice::Never), "{text}");
+            assert!(warnings.is_empty(), "{text}: {warnings:?}");
         }
     }
 
@@ -933,15 +759,6 @@ mod tests {
             read(r#"journal_entry_limit = "UNLIMITED""#),
             Some(EntryLimit::Unlimited)
         );
-    }
-
-    /// What the cap becomes for the engine: a number, or no cap at all.
-    #[test]
-    fn only_unlimited_means_no_cap() {
-        assert_eq!(EntryLimit::Unlimited.cap(), None);
-        assert_eq!(EntryLimit::AtMost(0).cap(), Some(0));
-        assert_eq!(EntryLimit::AtMost(100).cap(), Some(100));
-        assert_eq!(EntryLimit::DEFAULT.cap(), Some(100));
     }
 
     /// Refused rather than rounded to something: somebody who wrote one of
@@ -979,6 +796,23 @@ mod tests {
         }
     }
 
+    /// Every accent the code accepts by name is one the template names. A
+    /// colour nobody can discover is a colour nobody has.
+    #[test]
+    fn the_template_lists_every_accent_it_could_be_given() {
+        for (name, _) in Accent::ALL {
+            assert!(
+                TEMPLATE.contains(name),
+                "the template never mentions the '{name}' accent"
+            );
+        }
+
+        assert!(
+            TEMPLATE.contains(&Accent::default().as_hex()),
+            "the template never shows a triplet, which is the other half of the key"
+        );
+    }
+
     /// The number in the template is the number the code applies. These drift
     /// apart silently: nothing about a wrong comment stops a build.
     #[test]
@@ -1002,7 +836,9 @@ mod tests {
     #[test]
     fn a_later_file_overrides_only_what_it_mentions() {
         let mut settings = Settings {
-            presentation: Some(Presentation::Fancy),
+            presentation: Some(Presentation::Minimal),
+            colour: Some(ColourChoice::Never),
+            accent_colour: Some(Accent::VIOLET),
             identity: Some(Identity::Hardware),
             journal: Some(false),
             journal_entry_limit: Some(EntryLimit::Unlimited),
@@ -1012,19 +848,36 @@ mod tests {
         settings.overlay(Settings::default());
         assert_eq!(
             settings.presentation(),
-            Some(Presentation::Fancy),
+            Some(Presentation::Minimal),
             "a file that said nothing must not reset anything"
         );
-        assert_eq!(settings.journal(), Some(false), "nor any other key");
+        assert_eq!(
+            settings.colour(),
+            Some(ColourChoice::Never),
+            "nor any other"
+        );
+        assert_eq!(
+            settings.identity(),
+            Some(Identity::Hardware),
+            "nor any other"
+        );
+        assert_eq!(settings.journal(), Some(false), "nor any other");
         assert_eq!(
             settings.journal_entry_limit(),
             Some(EntryLimit::Unlimited),
             "nor any other"
         );
         assert_eq!(settings.page_size(), Some(3), "nor any other");
+        assert_eq!(
+            settings.accent_colour(),
+            Some(Accent::VIOLET),
+            "nor the one colour a person is allowed to move"
+        );
 
         settings.overlay(Settings {
             presentation: Some(Presentation::Minimal),
+            colour: None,
+            accent_colour: None,
             identity: None,
             journal: None,
             journal_entry_limit: None,

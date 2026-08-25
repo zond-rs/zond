@@ -13,24 +13,46 @@
 //!
 //! Engine events carry two fields no off-the-shelf formatter knows about:
 //!
-//! - `verbosity` — how much detail an event is. It sits on the *event*, not in
-//!   its level: everything here is logged at `INFO`, and `verbosity = 2` means
-//!   "only if asked for". A level filter cannot express that, which is why this
-//!   module carries its own [`Layer`].
-//! - `status` — `info`, `success`, `warn`, `error`, `incoming`, `outgoing`.
-//!   Unread here; it is what a coloured renderer will select on.
+//! - `verbosity` says how much detail an event is. It sits on the *event*, not
+//!   in its level: everything here is logged at `INFO`, and `verbosity = 2`
+//!   means "only if asked for". A level filter cannot express that, which is why
+//!   this module carries its own [`Layer`].
+//! - `status` is one of `info`, `success`, `warn`, `error`, `incoming` and
+//!   `outgoing`. It is what the glyph opening each line is chosen from; see
+//!   [`Mark`].
 //!
-//! Output is plain lines on standard error with `warning:` and `error:`
-//! prefixes, following `rustc` and `cargo`. No timestamps, no target, no level.
+//! Every line opens with one column saying what kind of line it is: `·` for
+//! ordinary commentary, `»` and `«` for a probe and its answer, `!` and `×` for
+//! the two that want reading. This crate's own narration answers to the same
+//! six, so one stream does not carry two vocabularies.
+//!
+//! The glyph replaced the `warning:` and `error:` words this module used to
+//! follow `rustc` and `cargo` in printing. It says the same thing in one column
+//! instead of eight, and it says it in a *shape*, so a run piped to a file keeps
+//! the distinction that a run piped to a terminal gets from the colour as well.
+//!
+//! ## Colour arrives late, on purpose
+//!
+//! [`install`] runs before the settings are read, because a subscriber installed
+//! after the fact misses everything before it. At that point nobody knows
+//! whether this run wants colour, so the layer starts unpainted and [`paint`]
+//! hands it a [`Style`] once the palette is resolved. The handful of events that
+//! can be emitted in between stay unpainted, which is the right answer rather
+//! than a shortcoming: painting them would be guessing at a preference the run
+//! has not yet been asked for.
 
 use std::fmt;
 use std::io::Write;
+
+use std::sync::OnceLock;
 
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::Registry;
+
+use crate::render::style::{Mark, Style};
 
 /// How much a run says about itself.
 ///
@@ -45,8 +67,8 @@ pub(crate) struct Verbosity {
 impl Verbosity {
     /// From the count of `-v` flags and whether `-q` was given.
     ///
-    /// The two cannot both be set — the argument parser refuses it — so no rule
-    /// for reconciling them is needed or invented here.
+    /// The two cannot both be set, because the argument parser refuses it, so no
+    /// rule for reconciling them is needed or invented here.
     #[must_use]
     pub(crate) fn new(detail: u8, quiet: bool) -> Self {
         Self { detail, quiet }
@@ -58,7 +80,7 @@ impl Verbosity {
         self.quiet
     }
 
-    /// Whether a renderer should narrate — headers, live progress, the summary.
+    /// Whether a renderer should narrate: headers, live progress, the summary.
     ///
     /// Only narration is suppressed by `-q`. The hosts a scan found are the
     /// answer to the question that was asked, and go to standard output whatever
@@ -73,7 +95,7 @@ impl Verbosity {
     /// The distinction is between a *finding* and what it was read off. "Linux
     /// 6.x" is the finding and is always shown; the stack shape and the series
     /// readings behind it are the working, and a person only wants those when
-    /// they are checking the answer rather than using it — which is what asking
+    /// they are checking the answer rather than using it. That is what asking
     /// for detail means.
     #[must_use]
     pub(crate) fn explains(self) -> bool {
@@ -91,6 +113,27 @@ impl Verbosity {
         }
         !self.quiet && verbosity <= self.detail
     }
+}
+
+/// How this layer draws, once anybody knows.
+///
+/// A `OnceLock` rather than an argument to [`install`], because the two are
+/// answered at different moments: the subscriber has to exist before the first
+/// event and the palette is not resolved until the settings have been read.
+static STYLE: OnceLock<Style> = OnceLock::new();
+
+/// Tells the layer how standard error may be drawn on.
+///
+/// Called once, after the settings are read. A second call is ignored rather
+/// than refused: there is only one answer per run, and a caller that asks twice
+/// has not made the output wrong.
+pub(crate) fn paint(style: Style) {
+    let _ = STYLE.set(style);
+}
+
+/// How to draw, or plainly where the question has not been answered yet.
+fn style() -> Style {
+    STYLE.get().copied().unwrap_or_else(Style::bare)
 }
 
 /// Installs the subscriber that renders the engine's events.
@@ -111,8 +154,8 @@ struct ConsoleLayer {
 
 impl<S: Subscriber> Layer<S> for ConsoleLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // Several of the engine's dependencies emit `tracing` too, at whoever
-        // asked them to — which is not the person running a scan.
+        // Several of the engine's dependencies emit `tracing` too, addressed to
+        // whoever asked them to, who is not the person running a scan.
         if !event.metadata().target().starts_with("zond") {
             return;
         }
@@ -131,15 +174,27 @@ impl<S: Subscriber> Layer<S> for ConsoleLayer {
             return;
         };
 
-        let prefix = match *event.metadata().level() {
-            Level::ERROR => "error: ",
-            Level::WARN => "warning: ",
-            _ => "",
-        };
+        // The event's own word for itself where it has one, and its level
+        // otherwise: an event from a dependency of the engine carries no
+        // `status`, and a line with no glyph at all would be the one line on the
+        // stream that did not line up with the others.
+        let mark = fields.status.as_deref().and_then(Mark::named).unwrap_or(
+            match *event.metadata().level() {
+                Level::ERROR => Mark::Error,
+                Level::WARN => Mark::Warning,
+                _ => Mark::Info,
+            },
+        );
+
+        let style = style();
+
+        // A running scan holds a line at the bottom of this stream. Take it
+        // back first, and let the next tick put it below this one.
+        crate::render::progress::clear();
 
         // A scan should not end because the terminal went away.
         let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr, "{prefix}{message}");
+        let _ = writeln!(stderr, "{}", style.line(mark, &message));
     }
 
     /// Nothing below `INFO` is ever rendered, so nothing below it needs to be
@@ -159,6 +214,8 @@ impl<S: Subscriber> Layer<S> for ConsoleLayer {
 struct EngineEvent {
     message: Option<String>,
     verbosity: u8,
+    /// What kind of thing the event is, as the engine named it.
+    status: Option<String>,
 }
 
 impl Visit for EngineEvent {
@@ -171,6 +228,9 @@ impl Visit for EngineEvent {
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "status" {
+            self.status = Some(value.to_owned());
+        }
         if field.name() == "message" {
             self.message = Some(value.to_owned());
         }
@@ -206,8 +266,8 @@ impl Visit for EngineEvent {
 mod tests {
     use super::*;
 
-    /// A default run shows headlines only, and every one of these is `INFO` —
-    /// which is why the layer reads the field rather than filtering on level.
+    /// A default run shows headlines only, and every one of these is `INFO`.
+    /// That is why the layer reads the field rather than filtering on level.
     #[test]
     fn a_default_run_shows_headlines_only() {
         let default = Verbosity::default();

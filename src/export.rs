@@ -8,7 +8,7 @@
 
 //! # Writing a report to a file
 //!
-//! The terminal shows a scan; this writes it down. Both happen — a run that
+//! The terminal shows a scan; this writes it down. Both happen. A run that
 //! wrote a file still prints, because the person watching it asked for a scan
 //! and the file is for later.
 //!
@@ -19,13 +19,13 @@
 //!
 //! ## Three ways to name a destination, and one that decides the format
 //!
-//! - `-o report.json` — the extension says the format, which is the spelling
+//! - `-o report.json` lets the extension say the format, which is the spelling
 //!   most people want. [`ExportFormat::from_path`] resolves it, so every front
 //!   end of this engine reads an extension the same way.
-//! - `--output-as xml=report.out` — for a name whose extension would say the
+//! - `--output-as xml=report.out` is for a name whose extension would say the
 //!   wrong thing, or nothing.
-//! - `--output-all engagement` — every format this build can write, each under
-//!   its own extension.
+//! - `--output-all engagement` writes every format this build can produce, each
+//!   under its own extension.
 //!
 //! Nmap's spellings are accepted for the same thing; see [`nmap`](crate::nmap).
 //!
@@ -47,7 +47,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use zond_engine::ScanReport;
-use zond_engine::export::{ExportFormat, ExportOptions, Redaction};
+use zond_engine::export::{ExportError, ExportFormat, ExportOptions, Redaction};
 
 use crate::error::Error;
 
@@ -195,7 +195,7 @@ fn write_one(
     destination: &Destination,
     report: &ScanReport,
     options: ExportOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), ExportError> {
     use std::io::Write;
 
     let mut out = BufWriter::new(File::create(&destination.path)?);

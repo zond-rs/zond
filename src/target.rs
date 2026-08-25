@@ -39,17 +39,19 @@
 //! cost. Narrowing here as well would leave every report this program produces
 //! claiming a policy withheld nothing.
 //!
-//! The engine refuses what *cannot be done* — a range no strategy can walk.
-//! This module refuses what is merely *unreasonable*, which is a judgement about
-//! a person's time, and it holds that judgement to IPv4: a privileged sweep of
-//! an on-link IPv6 `/64` is one packet, not eighteen quintillion probes.
+//! The engine refuses what *cannot be done*, such as a range no strategy can
+//! walk. This module refuses what is merely *unreasonable*, which is a judgement
+//! about a person's time, and it holds that judgement to IPv4: a privileged
+//! sweep of an on-link IPv6 `/64` is one packet, not eighteen quintillion
+//! probes.
 //!
 //! ## One phase is resolved for us, the other is assembled here
 //!
 //! [`resolve::for_discovery`] is a single call: it wires this host's interface
 //! table for `lan` and `%en0`, resolves names, and works out whether a network
-//! was named. The engine offers no such call for a port scan, so [`resolve_ports`]
-//! assembles the same pieces by hand — the same context, the same keyword test.
+//! was named. The engine offers no such call for a port scan, so
+//! [`resolve_ports`] assembles the same pieces by hand, from the same context
+//! and the same keyword test.
 //!
 //! [`Asked`] is where the two phases meet. Whatever the expressions settle is
 //! held and written in one place, so the phases cannot answer it differently.
@@ -65,9 +67,10 @@ use zond_engine::{Exclusions, IpSet, PortSet, Resolver, TargetMap, ZondConfig};
 /// The most IPv4 addresses one run will accept: a `/12` exactly.
 ///
 /// IPv4 is swept one address at a time, and a range can be written down far
-/// faster than it can be walked — `10.0.0.0/8` is sixteen million addresses and
-/// hours of probing. A guard against a mistyped prefix, not a policy about how
-/// much anyone may scan. IPv6 is not bounded here; see the module docs.
+/// faster than it can be walked: `10.0.0.0/8` is sixteen million addresses and
+/// hours of probing. This is a guard against a mistyped prefix, not a policy
+/// about how much anyone may scan. IPv6 is not bounded here; see the module
+/// documentation.
 pub(crate) const MAX_IPV4_ADDRESSES: u128 = 1 << 20;
 
 /// A target expression that could not be turned into addresses.
@@ -85,9 +88,9 @@ pub(crate) enum TargetError {
     /// responsible. The engine says only that no host lookup was supplied, which
     /// is not what the person did.
     #[error(
-        "'{expression}' is a hostname, and this run may not send DNS — from \
-         --no-dns, or `no_dns` in engine.toml. Give its address instead, or \
-         allow DNS."
+        "'{expression}' is a hostname, and this run may not send DNS, because of \
+         --no-dns or `no_dns` in engine.toml. Give its address instead, or allow \
+         DNS."
     )]
     NameNeedsDns {
         /// The expression as it was written.
@@ -142,9 +145,9 @@ pub(crate) enum TargetError {
 
 /// What a run was asked about, and what the asking settles.
 ///
-/// Held by both phases. They resolve to different things — a set of addresses,
-/// or a map of addresses to ports — but they are asked in the same words, and
-/// the words decide the same settings.
+/// Held by both phases. They resolve to different things, a set of addresses or
+/// a map of addresses to ports, but they are asked in the same words, and the
+/// words decide the same settings.
 #[derive(Debug, Clone)]
 struct Asked {
     expressions: Vec<String>,
@@ -155,9 +158,9 @@ struct Asked {
 impl Asked {
     /// From the expressions alone, working out for itself what they settle.
     ///
-    /// What the port scan uses, because nothing resolved it on the way — where
-    /// a sweep is handed the answer by [`resolve::for_discovery`] and passes it
-    /// to [`new`](Self::new) rather than deriving it twice.
+    /// What the port scan uses, because nothing resolved it on the way. A sweep
+    /// is handed the answer by [`resolve::for_discovery`] and passes it to
+    /// [`new`](Self::new) rather than deriving it twice.
     fn from_expressions<S: AsRef<str>>(expressions: &[S], exclusions: Exclusions) -> Self {
         Self::new(
             expressions,
@@ -182,10 +185,9 @@ impl Asked {
     ///
     /// A mirror of the engine's
     /// [`DiscoveryTargets::apply_to`](zond_engine::resolve::DiscoveryTargets::apply_to),
-    /// which the port
-    /// scan has no equivalent of. **If the engine's ever writes a second
-    /// setting, this is the one place here that has to hear about it** — and it
-    /// is one place rather than two so that it cannot be half-heard.
+    /// which the port scan has no equivalent of. **If the engine's ever writes a
+    /// second setting, this is the one place here that has to hear about it.**
+    /// It is one place rather than two so that it cannot be half-heard.
     fn apply_to(&self, cfg: &mut ZondConfig) {
         cfg.segment_sweep = self.segment_sweep;
 
@@ -222,7 +224,7 @@ impl Targets {
     ///
     /// `remaining` rather than the plan's own size: a sweep with four hundred
     /// addresses left should not announce sixty-five thousand. `label` is what
-    /// the header line shows, since there are no expressions — nobody typed
+    /// the header line shows, since there are no expressions. Nobody typed
     /// anything but an id.
     ///
     /// The exclusions are empty because the record's plan already has them
@@ -253,8 +255,8 @@ impl Targets {
 
     /// The same addresses, borrowed.
     ///
-    /// For what has to read the plan before the sweep takes it — a journal
-    /// recording what this run was pointed at.
+    /// For what has to read the plan before the sweep takes it, such as a
+    /// journal recording what this run was pointed at.
     #[must_use]
     pub(crate) fn ips(&self) -> &IpSet {
         &self.ips
@@ -323,8 +325,8 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
 
     // A measurement, on a copy, and then discarded. What the guard and the
     // header both want is the ground this run will actually cover, and the
-    // engine wants the set as it was named — so the subtraction is performed
-    // here to be counted and there to be enforced.
+    // engine wants the set as it was named. So the subtraction is performed here
+    // to be counted and there to be enforced.
     let mut walked = ips.clone();
     asked.exclusions.withhold(&mut walked);
     let remaining = walked.len();
@@ -358,9 +360,9 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
 /// the run will cover and what the size guards are checked against, and the
 /// ranges it holds are what the header prints for somebody to check against a
 /// scope document. A policy assembled from the flag alone would under-report
-/// both — a scan whose header omitted a range that was nonetheless in force,
-/// which is the one kind of wrong this feature exists to prevent. The engine
-/// applies the union either way, so the discrepancy would be silent.
+/// both, giving a scan whose header omitted a range that was nonetheless in
+/// force. That is the one kind of wrong this feature exists to prevent, and the
+/// engine applies the union either way, so the discrepancy would be silent.
 ///
 /// Unions rather than replaces, for the reason
 /// [`Exclusions::extend`](zond_engine::Exclusions::extend) gives.
@@ -389,8 +391,8 @@ fn name_needs_dns(error: TargetParseError) -> TargetError {
 
 /// The most probes one port scan will accept: four million.
 ///
-/// Cost is addresses times ports, and the product grows in a way the two numbers
-/// separately do not look like — a `/16` is a reasonable sweep, and a `/16` on a
+/// Cost is addresses times ports, and the product grows in a way neither number
+/// looks like on its own: a `/16` is a reasonable sweep, and a `/16` on a
 /// thousand ports is sixty-seven million probes. The same guard as
 /// [`MAX_IPV4_ADDRESSES`], applied to the number that decides how long a scan
 /// takes.
@@ -414,7 +416,7 @@ impl ScanTargets {
     ///
     /// `remaining` rather than the plan's own size: a run that has sixty
     /// thousand ports left should not announce sixty-five thousand. `label` is
-    /// what the header line shows, since there are no expressions — nobody typed
+    /// what the header line shows, since there are no expressions. Nobody typed
     /// anything but an id.
     #[must_use]
     pub(crate) fn resumed(map: TargetMap, remaining: u128, label: String) -> Self {
@@ -442,7 +444,7 @@ impl ScanTargets {
 
     /// The same map, borrowed.
     ///
-    /// For what has to read the plan before the scan takes it — a journal
+    /// For what has to read the plan before the scan takes it, such as a journal
     /// checking that this is the plan it was written against.
     #[must_use]
     pub(crate) fn map(&self) -> &TargetMap {
@@ -494,7 +496,7 @@ impl fmt::Display for ScanTargets {
 ///
 /// The engine wires these itself for a discovery sweep. There is no equivalent
 /// entry point for a port scan, so this is the front end assembling the same
-/// context — see the module documentation.
+/// context. See the module documentation.
 fn host_context() -> TargetContext<'static> {
     const KEYWORDS: ResolverFn<'static> = &interface::resolve_keyword;
     const ZONES: ZoneResolverFn<'static> = &interface::resolve_zone;
@@ -508,8 +510,9 @@ fn host_context() -> TargetContext<'static> {
 
 /// Resolves target expressions into addresses and the ports to try on each.
 ///
-/// `ports` is the *default*: an expression naming its own — `10.0.0.1:8080`, or
-/// `[2001:db8::1]:443` — keeps them, and everything else gets these.
+/// `ports` is the *default*. An expression naming its own, as in
+/// `10.0.0.1:8080` or `[2001:db8::1]:443`, keeps them, and everything else gets
+/// these.
 pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     expressions: &[S],
     exclude: &[E],
@@ -645,7 +648,7 @@ mod tests {
 
     /// Both phases write the same setting from the same words. They are two
     /// types because they resolve to different things, not because they settle
-    /// different questions — and only one of them has an engine call that does
+    /// different questions, and only one of them has an engine call that does
     /// the settling for it.
     #[test]
     fn both_phases_write_the_same_settings() {
@@ -687,7 +690,7 @@ mod tests {
     /// header prints and what the size guard is checked against, so it has to be
     /// the ground actually covered. The set is what the engine receives, so that
     /// the engine performs the subtraction itself and its report can say what
-    /// the policy cost — narrowing here as well would leave every report this
+    /// the policy cost. Narrowing here as well would leave every report this
     /// program writes claiming a policy withheld nothing.
     #[tokio::test]
     async fn a_run_is_counted_after_exclusions_and_handed_over_before_them() {
@@ -728,8 +731,8 @@ mod tests {
     /// The size guard is about how long a run takes, so it is checked against
     /// what the run will walk.
     ///
-    /// A `/8` is refused, and a `/8` with all but a `/12` of it excluded is not
-    /// — because the second one is a `/12` of probing however it was written.
+    /// A `/8` is refused, and a `/8` with all but a `/12` of it excluded is not,
+    /// because the second one is a `/12` of probing however it was written.
     /// Checking the guard before the subtraction would refuse a run whose cost
     /// is within the limit, which is the guard answering a question nobody
     /// asked.

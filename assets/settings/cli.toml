@@ -2,8 +2,8 @@
 #
 # Every key below is commented out, so this file as written changes nothing.
 #
-# This file is about how zond *shows* you a scan. What a scan puts on the wire —
-# retries, rates, techniques, whether DNS is used — lives next door in
+# This file is about how zond *shows* you a scan. What a scan puts on the wire,
+# meaning retries, rates, techniques and whether DNS is used, lives next door in
 # `engine.toml`.
 #
 # Layering, each overriding the one before:
@@ -20,18 +20,80 @@
 #             heading, and a round-trip time that stays in milliseconds. The
 #             only mode whose output is a stable interface.
 #
-#   minimal   A tagged block per host, for reading. Shows what a sweep learned
-#             and nothing it did not. The default.
+#   minimal   A tagged block per host, in abbreviated tags and no colour. The
+#             terse reading mode, for a narrow terminal or a long sweep.
 #
-#   standard  Not built yet. More detail, still without colour.
+#   fancy     A numbered block per host, for reading closely. Colour, aligned
+#             columns, and the TLS session and certificate hanging under the
+#             port that served them. The default, and the shape `scan`,
+#             `discover`, `diff` and `journal` all draw in.
 #
-#   fancy     Not built yet. Colour and decoration.
+# The three differ in register rather than in how much they say: `pipe` shouts
+# in field names a program matches on, `minimal` mutters in abbreviated tags,
+# and `fancy` speaks in words.
 #
-# Naming one that is not built is refused rather than quietly served as
-# something else. Records go to standard output and commentary to standard
-# error in every mode.
+# Records go to standard output and commentary to standard error in every mode.
 #
-# presentation = "minimal"
+# presentation = "fancy"
+
+
+# Whether to colour the output. `--colour <WHEN>` overrides it for one run, and
+# `color` is accepted here as a spelling of this same key.
+#
+#   auto      Colour a terminal, leave a redirected stream alone. The default.
+#             Reads NO_COLOR, CLICOLOR_FORCE and TERM the way other tools do.
+#
+#   always    Colour whatever the stream is, which is what a pager being fed on
+#             purpose needs.
+#
+#   never     No colour, whatever the environment says.
+#
+# Standard output and standard error are asked separately, so
+# `zond discover lan | less` sends the records out plain and keeps the running
+# commentary coloured.
+#
+# Colour never carries a fact by itself. Every state a colour marks is also a
+# word, and the marks opening a line of commentary differ in shape as well as in
+# hue, so a run captured to a file loses nothing but the paint.
+#
+# colour = "auto"
+
+
+# The one hue in the palette you may move.
+#
+# `zond` draws in three greys, one accent and three states. The greys are a
+# legibility decision, being what makes a label read as furniture and an address
+# read as the answer. The states are what a verdict looks like: filtered is amber
+# and expired is red wherever you go, because a colour that means something has
+# to mean it everywhere. Neither is yours to set.
+#
+# The accent is the one colour here that carries no meaning at all. It marks the
+# hostnames and record identifiers you scan the screen looking for, and which
+# colour does that is nobody's business but yours.
+#
+#   teal      The default. Far enough from green, amber and red that a hostname
+#             never reads as a verdict, which no warmer hue manages.
+#
+#   amber     An instrument-panel reading, and the closest of the three to the
+#             probe programme this tool is named after. One desaturation step
+#             from the colour a filtered port is drawn in, so on a display that
+#             is unkind to either they can end up looking alike.
+#
+#   violet    Maximum separation from every state colour. A little less legible
+#             at dim weights against a light background.
+#
+# Any colour of your own works too, written the way a colour is written
+# everywhere else: `accent_colour = "#63d2c3"`. The hash is optional. The
+# three-digit short form is not accepted, because here it would only be a second
+# spelling of a value the long form already covers.
+#
+# Sent as a twenty-four bit triplet where COLORTERM says the terminal takes one,
+# and rounded to the nearest of the two hundred and fifty-six otherwise, so an
+# accent no palette has is still an accent.
+#
+# `accent_color` is accepted here as a spelling of this same key.
+#
+# accent_colour = "teal"
 
 
 # What makes two records, in two different scans, the same host.
@@ -47,8 +109,8 @@
 #              the host's own: under proxy ARP a router lends its address to
 #              everything behind it, and those records then fold into one.
 #   primary    Only when their primary addresses match. The strictest, and the
-#              right reading when the address *is* the asset — an external scan
-#              of a public range, where the machine behind it is nobody's
+#              right reading when the address *is* the asset, as in an external
+#              scan of a public range where the machine behind it is nobody's
 #              business.
 #
 # identity = "hardware"
@@ -61,7 +123,7 @@
 # it stopped rather than starting again. `zond journal` lists what is on record.
 #
 # A record holds the addresses you scanned and what answered. It is kept under
-# your own home, readable only by you, and `zond journal prune` clears it out —
+# your own home, readable only by you, and `zond journal prune` clears it out:
 # finished scans go after a month, unfinished ones stay until you say otherwise.
 # However many you leave there, the limit below is the most that are kept.
 #
@@ -77,7 +139,7 @@
 # oldest one out, as it is made, without anything having to be swept.
 #
 # Finished records go first. An unfinished scan is the only copy of work you may
-# still mean to continue, so it is the last thing a limit takes — and a scan that
+# still mean to continue, so it is the last thing a limit takes, and a scan that
 # is running is never taken at all.
 #
 #   0       Keep none. The record of the run in flight is still written, since

@@ -19,8 +19,7 @@
 //! `zond journal report` prints any of it back.
 
 use zond_engine::journal::manifest::Plan;
-use zond_engine::journal::paths;
-use zond_engine::journal::store::{self, Journal};
+use zond_engine::journal::store::Journal;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::{ZondConfig, discover, discover_with_journal};
 
@@ -56,7 +55,7 @@ pub(crate) async fn run(
     // A resume needs no targets: the plan comes from the record, which is what
     // ran rather than what somebody types the second time.
     let (targets, journal) = match args.resume.as_deref() {
-        Some(id) => continued(id, &mut config).await?,
+        Some(id) => continued(id, &mut config)?,
         None => started(args, recording, &mut config).await?,
     };
 
@@ -110,28 +109,15 @@ async fn started(
 /// A sweep continuing one already on record.
 ///
 /// The plan is the recorded one, so there is nothing to type but the id. What
-/// the engine is handed back is the whole of it: the addresses this sitting has
+/// the engine is handed back is the whole of it. The addresses this sitting has
 /// to ask about are worked out from the record's own cursor, which is the only
 /// thing that knows what the earlier sittings earned.
-async fn continued(id: &str, config: &mut ZondConfig) -> Result<(Targets, Option<Journal>), Error> {
-    let id = &command::journal::newest_if_latest(id)?;
-    let directory = paths::scan(id).ok_or(Error::NoJournalDirectory)?;
-    if !directory.is_dir() {
-        let known = paths::root()
-            .and_then(|root| store::list(&root).ok())
-            .map_or(0, |entries| entries.len());
-        return Err(Error::NoSuchJournal {
-            id: id.to_owned(),
-            known,
-        });
-    }
+fn continued(id: &str, config: &mut ZondConfig) -> Result<(Targets, Option<Journal>), Error> {
+    let resumed = command::reopen(id, "addresses")?;
 
-    let (journal, checkpoint, recorded) =
-        Journal::reopen(&directory, zond_engine::system::privilege::is_elevated())?;
-
-    let Some(addresses) = recorded.addresses().cloned() else {
+    let Some(addresses) = resumed.plan.addresses().cloned() else {
         return Err(Error::WrongPhase {
-            id: id.to_owned(),
+            id: resumed.id,
             held: "a port scan",
             remedy: "zond scan --resume",
         });
@@ -139,16 +125,11 @@ async fn continued(id: &str, config: &mut ZondConfig) -> Result<(Targets, Option
 
     // The record's own answer, not this run's: whether the first sitting swept
     // the segment beyond its addresses is part of what is being continued.
-    config.segment_sweep = journal.manifest().sweep;
+    config.segment_sweep = resumed.journal.manifest().sweep;
 
-    let total = journal.manifest().total_targets;
-    let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
-    tracing::info!("continuing {id}: {settled} of {total} addresses already settled");
-
-    let remaining = total.saturating_sub(settled);
     Ok((
-        Targets::resumed(addresses, remaining, id.to_owned()),
-        Some(journal),
+        Targets::resumed(addresses, resumed.remaining, resumed.id),
+        Some(resumed.journal),
     ))
 }
 

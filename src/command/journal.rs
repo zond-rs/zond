@@ -25,6 +25,7 @@ use crate::error::Error;
 use crate::exit::Outcome;
 use crate::export::Destination;
 use crate::render::journal as render;
+use crate::render::style::{Mark, Palette, Style};
 use crate::render::{Phase, renderer};
 use crate::settings::{self, EntryLimit, Presentation};
 use zond_engine::journal::paths;
@@ -37,21 +38,32 @@ pub(crate) fn run(
     args: &JournalArgs,
     presentation: Presentation,
     verbosity: Verbosity,
+    palette: Palette,
 ) -> Result<Outcome, Error> {
     // Before the lock below: `report` may write through a `Renderer`, which owns
     // its own handle on standard output.
     if let Some(JournalCommand::Report { id, export }) = args.what.as_ref() {
-        return report(id, export, presentation, verbosity);
+        return report(id, export, presentation, verbosity, palette);
     }
 
     let mut out = io::stdout().lock();
+    // The record stream's answer, not standard error's: `zond journal | less`
+    // redirects this one alone. Inert in every mode but `standard`, which is the
+    // only one that promises colour.
+    let style = Style::records(presentation, palette);
+    // Standard error's own answer, which is not standard output's: `zond journal
+    // | less` redirects one and not the other. The same question a scan asks.
+    let commentary = Commentary {
+        style: Style::commentary(presentation, palette),
+        verbosity,
+    };
 
     match args.what.as_ref() {
         // Both spellings reach the same listing: `zond journal` carries the
         // paging itself, and `zond journal list` carries its own copy.
-        None => list(&args.page, presentation, &mut out),
-        Some(JournalCommand::List(page)) => list(page, presentation, &mut out),
-        Some(JournalCommand::Show { id }) => show(id, presentation, &mut out),
+        None => list(&args.page, presentation, &mut out, style, commentary),
+        Some(JournalCommand::List(page)) => list(page, presentation, &mut out, style, commentary),
+        Some(JournalCommand::Show { id }) => show(id, presentation, &mut out, style),
         Some(JournalCommand::Prune {
             ids,
             all,
@@ -63,9 +75,10 @@ pub(crate) fn run(
             *dry_run,
             presentation,
             &mut out,
+            style,
         ),
         Some(JournalCommand::Prune { ids, dry_run, .. }) => {
-            remove(ids, *dry_run, presentation, &mut out)
+            remove(ids, *dry_run, presentation, &mut out, style)
         }
         Some(JournalCommand::Report { .. }) => unreachable!("handled above"),
     }
@@ -83,13 +96,15 @@ fn list(
     page: &PageArgs,
     presentation: Presentation,
     out: &mut dyn Write,
+    style: Style,
+    commentary: Commentary,
 ) -> Result<Outcome, Error> {
     let entries = read()?;
 
     if entries.is_empty() {
         // To stderr, so `zond journal | wc -l` counts journals rather than a
         // sentence about there being none.
-        tracing::info!("no scans on record");
+        commentary.remark("no scans on record");
         return Ok(Outcome::Complete);
     }
 
@@ -101,39 +116,104 @@ fn list(
         page.shown.start + 1,
         presentation,
         out,
+        style,
     )?;
 
     // To stderr, like every other piece of commentary here: what is on standard
     // output is the records, and a note about there being more of them is not
     // one of the records.
-    if page.shown.len() < entries.len() {
-        // A page you can actually go to rather than the flag's grammar: the
-        // next one where there is one, the previous where this is the last. A
-        // hint that names something which would fail is worse than none.
-        let step = if page.number < page.of {
-            format!("--page {} for the next", page.number + 1)
-        } else {
-            format!("--page {} for the previous", page.number - 1)
-        };
-
-        tracing::info!(
-            "\npage {} of {}, {} records; {step}, --all for every one",
-            page.number,
-            page.of,
-            entries.len()
-        );
+    if let Some(footer) = footer(&page, entries.len()) {
+        commentary.blank();
+        commentary.remark(&footer);
     }
 
     Ok(Outcome::Complete)
 }
 
-/// Which slice of the listing to show.
+/// This command's own commentary stream.
 ///
-/// **`pipe` shows everything unless a limit is asked for.** Paging is a reading
-/// affordance, and that mode's output is a stable interface — a program running
-/// `zond journal --pipe` and silently receiving the first ten of forty records
-/// would be worse served by the convenience than helped by it. Asking for a
-/// limit there is still honoured, because then it was asked for.
+/// A listing's records go to standard output and everything *about* the listing
+/// goes to standard error, which is the split every renderer here keeps. It is
+/// written directly rather than through `tracing`, for the same reason a scan's
+/// narration is: `tracing` carries the *engine's* events, and a sentence about
+/// how many pages this listing has is not one of them. It could not be painted
+/// either, since the subscriber is installed before anyone knows whether this
+/// run wants colour.
+#[derive(Clone, Copy)]
+struct Commentary {
+    /// How standard error may be drawn on.
+    style: Style,
+    /// Whether this run says anything at all.
+    verbosity: Verbosity,
+}
+
+impl Commentary {
+    /// A blank line, to set what follows apart from the records above it.
+    ///
+    /// Its own call rather than a `\n` on the front of the next line. A painted
+    /// line is escaped before it is wrapped, so a newline handed to a role comes
+    /// out as the two characters `\` and `n`; see
+    /// [`Style::paint`](crate::render::style::Style). That escaping is what stops
+    /// a hostname a scanned host chose from clearing the screen, so the fix is to
+    /// stop handing it whitespace to escape rather than to weaken it.
+    fn blank(self) {
+        if !self.verbosity.narrates() {
+            return;
+        }
+
+        let _ = writeln!(io::stderr());
+    }
+
+    /// A line of commentary, drawn as the furniture it is.
+    ///
+    /// One line. Anything with a newline in it arrives at the terminal with that
+    /// newline spelled out, which is [`blank`](Self::blank)'s reason for
+    /// existing; the debug assertion is here because the symptom shows up in the
+    /// output rather than at the call site.
+    ///
+    /// A closed standard error is not this command's problem. The records are
+    /// already written, and failing the run over a note about them would throw
+    /// away the answer to keep the footnote.
+    fn remark(self, line: &str) {
+        debug_assert!(
+            !line.contains('\n'),
+            "commentary is written a line at a time; use `blank` for the space"
+        );
+
+        if !self.verbosity.narrates() {
+            return;
+        }
+
+        let _ = writeln!(io::stderr(), "{}", self.style.line(Mark::Info, line));
+    }
+}
+
+/// What a listing says about itself, or `None` where it showed everything.
+///
+/// Separated from the writing so it can be read back in a test. The command it
+/// belongs to reads the real journal directory, so there is no unit test that
+/// runs `list` end to end, which is how a `\n` on the front of this line once
+/// reached a terminal and printed itself.
+fn footer(page: &Page, records: usize) -> Option<String> {
+    if page.shown.len() >= records {
+        return None;
+    }
+
+    // A page you can actually go to rather than the flag's grammar: the next one
+    // where there is one, the previous where this is the last. A hint that names
+    // something which would fail is worse than none.
+    let step = if page.number < page.of {
+        format!("--page {} for the next", page.number + 1)
+    } else {
+        format!("--page {} for the previous", page.number - 1)
+    };
+
+    Some(format!(
+        "page {} of {}, {records} records; {step}, --all for every one",
+        page.number, page.of,
+    ))
+}
+
 /// Which slice a listing shows, and where that slice sits.
 ///
 /// The number and the count travel with the range because the footer needs
@@ -149,10 +229,17 @@ struct Page {
     of: usize,
 }
 
+/// Which slice of the listing to show.
+///
+/// **`pipe` shows everything unless a limit is asked for.** Paging is a reading
+/// affordance, and that mode's output is a stable interface. A program running
+/// `zond journal --pipe` and silently receiving the first ten of forty records
+/// would be worse served by the convenience than helped by it. Asking for a
+/// limit there is still honoured, because then it was asked for.
 fn paginate(page: &PageArgs, presentation: Presentation, total: usize) -> Result<Page, Error> {
     let size = match (page.all, page.limit, presentation) {
-        (true, _, _) => None,
-        (_, Some(0), _) => None,
+        // Everything, and `-n 0` as the other way of asking for it.
+        (true, _, _) | (_, Some(0), _) => None,
         (_, Some(limit), _) => Some(limit),
         (_, None, Presentation::Pipe) => page.page.map(|_| DEFAULT_PAGE_SIZE),
         (_, None, _) => Some(configured_page_size()?),
@@ -200,31 +287,36 @@ fn configured_limit() -> Result<EntryLimit, Error> {
 }
 
 /// One journal, in full.
-fn show(id: &str, presentation: Presentation, out: &mut dyn Write) -> Result<Outcome, Error> {
+fn show(
+    id: &str,
+    presentation: Presentation,
+    out: &mut dyn Write,
+    style: Style,
+) -> Result<Outcome, Error> {
     let entries = read()?;
     let entry = find(&entries, id)?;
 
-    render::show(entry, presentation, out)?;
+    render::show(entry, presentation, out, style)?;
     Ok(Outcome::Complete)
 }
 
-/// One scan, printed the way it was printed when it ran — or written to the
-/// files this was asked for, and then not printed.
+/// One scan, printed the way it was printed when it ran, or written to the files
+/// this was asked for and then not printed.
 ///
 /// The record holds the hosts a scan found and a phase per sitting, which is
-/// everything the end of a run prints — so this rebuilds the report and hands
-/// it to the same renderer, and the output is the same output. Nothing is
-/// probed and the journal's lock is not taken, so this is safe to run against a
-/// scan that is still going; what comes back is then everything written down as
-/// of the last checkpoint.
+/// everything the end of a run prints. So this rebuilds the report and hands it
+/// to the same renderer, and the output is the same output. Nothing is probed
+/// and the journal's lock is not taken, so this is safe to run against a scan
+/// that is still going; what comes back is then everything written down as of
+/// the last checkpoint.
 ///
 /// **Naming a file replaces the terminal rather than adding to it.** A scan
 /// prints as well as writes, because the person who started it is watching it
-/// happen and the file is for later — but nobody is watching a record being
-/// fetched. `zond journal report latest -o out.json` is somebody saying where
-/// they want this, and answering it with the whole report on standard output as
-/// well means a shell full of a scan they asked to have put in a file. What
-/// they hear is which files were written.
+/// happen and the file is for later. Nobody is watching a record being fetched.
+/// `zond journal report latest -o out.json` is somebody saying where they want
+/// this, and answering it with the whole report on standard output as well means
+/// a shell full of a scan they asked to have put in a file. What they hear is
+/// which files were written.
 ///
 /// The exit code follows the scan rather than the reading of it: a record of a
 /// scan that left ground uncovered reports as partial, the same as the scan did.
@@ -233,6 +325,7 @@ fn report(
     export: &ExportArgs,
     presentation: Presentation,
     verbosity: Verbosity,
+    palette: Palette,
 ) -> Result<Outcome, Error> {
     // Before the record is read, so a misspelt extension is answered at once
     // rather than after the findings are in hand.
@@ -252,7 +345,7 @@ fn report(
     let redaction = command::redaction(&command::engine_settings(None)?.config);
 
     let written = if destinations.is_empty() {
-        let mut renderer = renderer(presentation, verbosity)?;
+        let mut renderer = renderer(presentation, verbosity, palette);
         renderer.started(
             Phase::Recorded {
                 id: &entry.manifest.id,
@@ -285,6 +378,7 @@ fn remove(
     dry_run: bool,
     presentation: Presentation,
     out: &mut dyn Write,
+    style: Style,
 ) -> Result<Outcome, Error> {
     let entries = read()?;
     let chosen: Vec<&Entry> = ids
@@ -308,7 +402,7 @@ fn remove(
         }
     }
 
-    render::pruned(&pruned, dry_run, presentation, out)?;
+    render::pruned(&pruned, dry_run, presentation, out, style)?;
 
     // Naming a journal that could not be deleted is a request that did not
     // happen, unlike a sweep passing one over.
@@ -391,6 +485,7 @@ fn prune(
     dry_run: bool,
     presentation: Presentation,
     out: &mut dyn Write,
+    style: Style,
 ) -> Result<Outcome, Error> {
     let root = root()?;
 
@@ -412,7 +507,7 @@ fn prune(
         store::prune(&root, retention)?
     };
 
-    render::pruned(&pruned, dry_run, presentation, out)?;
+    render::pruned(&pruned, dry_run, presentation, out, style)?;
 
     // A sweep that could not take everything it chose has not finished its job,
     // and a script scheduling it should be able to tell.
@@ -430,8 +525,8 @@ fn prune(
 /// only copy of something somebody may still mean to continue.
 ///
 /// The count comes from `journal_entry_limit`, which is the same number a
-/// recording run applies as it goes — so a sweep and a scan agree about how many
-/// records this machine keeps, rather than holding two opinions that differ by
+/// recording run applies as it goes, so a sweep and a scan agree about how many
+/// records this machine keeps rather than holding two opinions that differ by
 /// whichever of them ran last. Ages are this command's own: nothing prunes by
 /// time unless somebody asks for it here.
 fn retention(all: bool, completed: bool, older_than: Option<Duration>) -> Result<Retention, Error> {
@@ -490,8 +585,60 @@ pub(crate) fn read() -> Result<Vec<Entry>, Error> {
 mod tests {
     use super::*;
 
+    /// A page as the flags describe one.
     fn asked(limit: Option<usize>, page: Option<usize>, all: bool) -> PageArgs {
         PageArgs { limit, page, all }
+    }
+
+    /// Commentary is written one line at a time, and this is the line that
+    /// forgot.
+    ///
+    /// A painted string is escaped before it is wrapped, which is what stops a
+    /// hostname a scanned host chose from clearing the screen, so a `\n` handed
+    /// to a role arrives at the terminal as the two characters `\` and `n`. The
+    /// footer carried one on its front and printed it.
+    #[test]
+    fn no_line_of_commentary_carries_a_newline() {
+        let paged = Page {
+            shown: 0..10,
+            number: 1,
+            of: 4,
+        };
+
+        let line = footer(&paged, 38).expect("a page of four says so");
+
+        assert!(
+            !line.contains('\n'),
+            "the footer would print its own newline: {line:?}"
+        );
+        assert!(line.starts_with("page 1 of 4, 38 records"), "{line:?}");
+        assert!(line.contains("--page 2 for the next"), "{line:?}");
+    }
+
+    /// The last page points backwards, because a hint naming a page that does
+    /// not exist is worse than no hint.
+    #[test]
+    fn the_last_page_offers_the_one_before_it() {
+        let last = Page {
+            shown: 30..38,
+            number: 4,
+            of: 4,
+        };
+
+        let line = footer(&last, 38).expect("a page of four says so");
+        assert!(line.contains("--page 3 for the previous"), "{line:?}");
+    }
+
+    /// A listing that showed everything says nothing about itself.
+    #[test]
+    fn a_listing_that_fits_has_no_footer() {
+        let whole = Page {
+            shown: 0..38,
+            number: 1,
+            of: 1,
+        };
+
+        assert_eq!(footer(&whole, 38), None);
     }
 
     /// A page is as long as the limit, and the last one is however much is left.
@@ -553,7 +700,7 @@ mod tests {
         }
     }
 
-    /// **`pipe` is a stable interface, so it is not truncated by a default.**
+    /// **`pipe` is a stable interface, so no default truncates it.**
     ///
     /// A program running `zond journal --pipe` and silently receiving the first
     /// ten of forty records is worse served by the convenience than helped by

@@ -15,8 +15,8 @@
 //!
 //! A side that names a file that exists is read as a file, and anything else is
 //! taken for a record on this machine. A record's id is sixteen hexadecimal
-//! characters, so the two are not going to be confused by accident — and the
-//! test is decidable, which "does this look like an id" is not.
+//! characters, so the two are not going to be confused by accident, and the test
+//! is decidable, which "does this look like an id" is not.
 //!
 //! That gives every combination without a flag to say which is which:
 //!
@@ -38,31 +38,39 @@
 //! scan rather than about the network, and waking somebody for one is how a
 //! monitor teaches its owner to ignore it. See [`exit`](crate::exit).
 
-use std::io::{self, BufReader, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use zond_engine::ScanReport;
 use zond_engine::diff::{DiffOptions, ScanDiff};
 use zond_engine::export::ExportOptions;
 use zond_engine::export::diff::{DiffExporter, HtmlDiffExporter, JsonDiffExporter};
-use zond_engine::import::report::{ReportFormat, ReportOptions};
-use zond_engine::journal::store;
 
 use crate::cli::DiffArgs;
 use crate::command;
 use crate::error::Error;
 use crate::exit::Outcome;
 use crate::render::diff as render;
+use crate::render::style::{Palette, Style};
 use crate::settings::{Identity, Presentation};
 
 /// Compares the two scans named and reports what moved.
-pub(crate) fn run(args: &DiffArgs, presentation: Presentation) -> Result<Outcome, Error> {
+pub(crate) fn run(
+    args: &DiffArgs,
+    presentation: Presentation,
+    palette: Palette,
+) -> Result<Outcome, Error> {
+    // Asked once, and asked of each stream separately: a comparison piped into a
+    // file must lose its colour while the commentary beside it keeps it. Inert
+    // in every mode but `standard`, which is the only one that promises colour.
+    let style = Style::records(presentation, palette);
+    let narration_style = Style::commentary(presentation, palette);
+
     // Before either side is read, so a misspelt extension is answered at once
     // rather than after both reports are in hand.
     let destinations = destinations(&args.output)?;
 
-    let (baseline_name, baseline) = side(&args.before)?;
-    let (current_name, current) = side(&args.after)?;
+    let (baseline_name, baseline) = command::scan_named(&args.before)?;
+    let (current_name, current) = command::scan_named(&args.after)?;
 
     // From this machine's settings rather than from either record. What a scan
     // saw is in the file; whether to mask it on the way out belongs to whoever
@@ -73,15 +81,29 @@ pub(crate) fn run(args: &DiffArgs, presentation: Presentation) -> Result<Outcome
     let diff = ScanDiff::compare(
         &baseline,
         &current,
-        &comparison(args, configured_identity()?),
+        &comparison(args, command::configured_identity()?),
     );
 
     let written = if destinations.is_empty() {
         let mut records = io::stdout().lock();
         let mut narration = io::stderr();
 
-        render::comparing(&baseline_name, &current_name, &diff, &mut narration)?;
-        render::write(&diff, presentation, &options, &mut records, &mut narration)?;
+        render::comparing(
+            &baseline_name,
+            &current_name,
+            &diff,
+            &mut narration,
+            narration_style,
+        )?;
+        render::write(
+            &diff,
+            presentation,
+            &options,
+            &mut records,
+            &mut narration,
+            style,
+            narration_style,
+        )?;
         true
     } else {
         write_all(&destinations, &diff, &options)
@@ -102,8 +124,8 @@ pub(crate) fn run(args: &DiffArgs, presentation: Presentation) -> Result<Outcome
 /// records the same host; everything else the engine settles. Separated from
 /// [`run`] so the flag's effect can be asserted without a file on disk.
 fn comparison(args: &DiffArgs, configured: Option<Identity>) -> DiffOptions {
-    // The flag wins, then the file, then the built-in default — the same order
-    // every other setting layers in.
+    // The flag wins, then the file, then the built-in default, which is the
+    // order every other setting layers in.
     let identity = args.identity.or(configured).unwrap_or_default();
     DiffOptions::new().with_identity(identity.into())
 }
@@ -130,53 +152,6 @@ fn outcome(diff: &ScanDiff) -> Outcome {
     }
 }
 
-/// What this machine's settings say makes two records the same host.
-///
-/// Read here rather than in `main`, as the journal listing reads its page size:
-/// no other command has an opinion about it, and threading one through every
-/// command for the sake of one would cost more than it saves.
-fn configured_identity() -> Result<Option<Identity>, Error> {
-    let (settings, _) = crate::settings::resolve()?;
-    Ok(settings.identity())
-}
-
-/// One side of the comparison: a file if that is what it names, and a record on
-/// this machine otherwise.
-///
-/// Returns what to call it as well, since a person reading the commentary wants
-/// the name they typed rather than a path this resolved it to.
-fn side(name: &str) -> Result<(String, ScanReport), Error> {
-    let path = Path::new(name);
-    if path.is_file() {
-        return Ok((name.to_owned(), from_file(path)?));
-    }
-
-    let entries = crate::command::journal::read()?;
-    let entry = crate::command::journal::find(&entries, name)?;
-
-    Ok((entry.manifest.id.clone(), store::report(&entry.directory)?))
-}
-
-/// A report read out of a document.
-///
-/// The extension decides the format, and a name that says nothing this build
-/// reads is refused rather than sniffed: a file called `scan.txt` is a mistake
-/// worth naming, and guessing at it would have this read an nmap file as JSON
-/// and blame the contents.
-fn from_file(path: &Path) -> Result<ScanReport, Error> {
-    let Some(format) = ReportFormat::from_path(path) else {
-        return Err(Error::UnknownReportFormat {
-            path: path.to_path_buf(),
-        });
-    };
-
-    let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::new(file);
-
-    Ok(format.read(&mut reader, ReportOptions::new())?)
-}
-
-/// Every file this comparison was told to write.
 /// A format a comparison can be written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiffFormat {
@@ -202,6 +177,10 @@ impl DiffFormat {
     }
 }
 
+/// Every file this comparison was told to write, with the format each names.
+///
+/// Resolved before either side is read, so a misspelt extension is answered at
+/// once rather than after both reports are in hand.
 fn destinations(paths: &[PathBuf]) -> Result<Vec<(PathBuf, DiffFormat)>, Error> {
     paths
         .iter()
@@ -277,8 +256,7 @@ mod tests {
 
     use super::*;
     use crate::exit::Code;
-    use crate::render::diff::tests::scoped;
-    use crate::render::test_support::host;
+    use crate::render::test_support::{host, scoped};
 
     #[test]
     fn two_scans_of_an_unchanged_network_exit_zero() {
@@ -308,7 +286,7 @@ mod tests {
     /// losing it would wake somebody at three in the morning.
     ///
     /// A wider scan turns up hosts the earlier one never walked. Those are
-    /// reported — they are in the output above — and they are not what the exit
+    /// reported, and appear in the output above, but they are not what the exit
     /// status is for.
     #[test]
     fn a_wider_scan_alone_does_not_exit_four() {
@@ -385,8 +363,7 @@ mod identity {
     use zond_engine::model::mac::MacAddr;
 
     use super::*;
-    use crate::render::diff::tests::scoped;
-    use crate::render::test_support::host;
+    use crate::render::test_support::{host, scoped};
 
     fn asked(identity: Option<Identity>) -> DiffArgs {
         DiffArgs {
@@ -413,8 +390,8 @@ mod identity {
         );
     }
 
-    /// The flag wins over the file, and the file over the default — the order
-    /// every other setting layers in.
+    /// The flag wins over the file, and the file over the default, which is the
+    /// order every other setting layers in.
     #[test]
     fn the_flag_wins_over_the_file_and_the_file_over_the_default() {
         assert_eq!(
@@ -437,8 +414,8 @@ mod identity {
     /// The flag has to reach the comparison, not merely parse.
     ///
     /// A machine whose lease moved shares no address between the two scans, so
-    /// only the hardware policy can follow it — under the default it reads as
-    /// one host gone and another arrived, which is what a DHCP segment produces
+    /// only the hardware policy can follow it. Under the default it reads as one
+    /// host gone and another arrived, which is what a DHCP segment produces
     /// every night.
     #[test]
     fn hardware_follows_a_machine_whose_lease_moved() {

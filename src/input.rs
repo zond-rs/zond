@@ -17,16 +17,16 @@
 //! ## Reading a single keypress
 //!
 //! A terminal is line-buffered, so `q` would not arrive until Enter followed it.
-//! This module puts the terminal in *cbreak* for the length of the run —
-//! `ICANON` and `ECHO` off — and puts it back afterwards.
+//! This module puts the terminal in *cbreak* for the length of the run, with
+//! `ICANON` and `ECHO` off, and puts it back afterwards.
 //!
 //! Cbreak rather than raw mode: `ISIG` stays on, so the terminal still turns
 //! `Ctrl-C` into `SIGINT`. Raw mode would deliver it as a keystroke instead, and
 //! a run that died without restoring the terminal would leave a shell that
 //! cannot interrupt anything.
 //!
-//! When stdin is not a terminal — a pipe, a script, the test suite — nothing is
-//! changed and no key is read. `Ctrl-C` still stops the scan.
+//! When stdin is not a terminal, as in a pipe, a script or the test suite,
+//! nothing is changed and no key is read. `Ctrl-C` still stops the scan.
 
 use std::io::Read;
 
@@ -145,8 +145,8 @@ mod terminal {
 
     /// Puts stdin in cbreak, if stdin is a terminal at all.
     ///
-    /// `None` when it is not, and when the terminal refuses — neither is a
-    /// reason to fail a scan, and both simply mean `q` will not be read.
+    /// `None` when it is not, and when the terminal refuses. Neither is a reason
+    /// to fail a scan, and both simply mean `q` will not be read.
     pub(super) fn cbreak() -> Option<Cbreak> {
         if !isatty(stdin()) {
             return None;

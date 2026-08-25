@@ -29,7 +29,7 @@
 //! nothing exits `0` and one that found something exits `4`, so a nightly job is
 //! `zond diff last tonight || notify`. This is the convention `diff(1)` set,
 //! moved off `1` because `1` here already means the run could not be carried
-//! out — and a monitor that could not tell "the network changed" from "the scan
+//! out. A monitor that could not tell "the network changed" from "the scan
 //! failed" would be worse than no monitor.
 //!
 //! **Only confirmed changes count.** A change the other scan is not known to
@@ -50,10 +50,10 @@ pub(crate) enum Code {
     Success = 0,
     /// The run could not be carried out at all.
     Failure = 1,
-    /// What was asked for was not usable — on the command line or in a settings
-    /// file, which are two ways of asking for the same things and deserve the
-    /// same answer. Matches the convention `clap` already exits with for a flag
-    /// it does not know, so the two agree.
+    /// What was asked for was not usable, whether on the command line or in a
+    /// settings file. Those are two ways of asking for the same things and
+    /// deserve the same answer. This matches the convention `clap` already exits
+    /// with for a flag it does not know, so the two agree.
     Usage = 2,
     /// The run finished, but part of what was asked for was not covered.
     Partial = 3,
@@ -86,7 +86,7 @@ impl From<Code> for std::process::ExitCode {
 pub(crate) enum Outcome {
     /// Everything asked for was covered.
     Complete,
-    /// The run produced results, but something was left uncovered — a strategy
+    /// The run produced results, but something was left uncovered: a strategy
     /// that failed, or a target range nothing could take.
     Partial,
     /// The user stopped it. The results collected up to that point were still

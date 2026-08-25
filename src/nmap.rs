@@ -15,15 +15,15 @@
 //! ## Why a rewrite rather than arguments
 //!
 //! They cannot be expressed as arguments. `-o` takes a file, so `-oX report`
-//! *is* `-o` with the value `X` followed by a stray word — that is what a
-//! short option with a value means, and no amount of declaring gets a parser to
-//! read it the other way. Nmap's own parser is hand-written and has no such
+//! *is* `-o` with the value `X` followed by a stray word. That is what a short
+//! option with a value means, and no amount of declaring gets a parser to read
+//! it the other way. Nmap's own parser is hand-written and has no such
 //! constraint.
 //!
 //! So the tokens are rewritten here, where the rule is one table and can be
 //! read: `-oX f` becomes `--output-as xml=f`. The rewrite is deliberately
-//! narrow — a token matching `-o` followed by exactly one letter, and nothing
-//! else — so `-o report.json` passes through untouched.
+//! narrow, matching a token of `-o` followed by exactly one letter and nothing
+//! else, so `-o report.json` passes through untouched.
 //!
 //! ## The ones that are not built
 //!
@@ -47,7 +47,7 @@ where
 {
     let mut rewritten = Vec::new();
     let mut verbatim = false;
-    let mut arguments = arguments.into_iter().peekable();
+    let mut arguments = arguments.into_iter();
 
     while let Some(argument) = arguments.next() {
         if verbatim {

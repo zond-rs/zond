@@ -25,9 +25,9 @@
 //!   os:   Linux [84%]
 //!   rtt:  12.1ms
 //!   via:  arp
-//!   port: 22/tcp open (ssh OpenSSH 9.6)
-//!         80/tcp open (http nginx 1.24)
-//!         5/tcp filtered
+//!   port: 22/tcp  open      ssh OpenSSH 9.6
+//!         80/tcp  open      http nginx 1.24
+//!         5/tcp   filtered
 //!         [996 closed ports omitted]
 //!
 //! * 2001:db8::4
@@ -45,12 +45,12 @@
 //! A block pays only for what it has: a host nothing is known about is one
 //! line, a well-furnished one is seven. Nothing is padded to the width of the
 //! most interesting host in the sweep, and nothing runs off the right edge. The
-//! cost is length — a `/24` with two hundred live hosts is long, and that is
-//! what `--pipe` is for.
+//! cost is length. A `/24` with two hundred live hosts is long, and that is what
+//! `--pipe` is for.
 //!
 //! **A missing line was not learned.** There are no placeholders. The one line
 //! that means something by its absence is `status`, which appears only when the
-//! host is not simply up — so an address something is filtering stands out
+//! host is not simply up, so an address something is filtering stands out
 //! instead of being one block among two hundred.
 
 use std::io::{self, BufWriter, Write};
@@ -60,6 +60,7 @@ use zond_engine::{Host, ScanReport};
 
 use crate::diagnostics::Verbosity;
 use crate::render::narrate::Narrator;
+use crate::render::style::Style;
 use crate::render::{Phase, Renderer, field};
 
 /// What opens a host's block.
@@ -70,10 +71,10 @@ const INDENT: &str = "  ";
 
 /// The width a tag is padded to, its colon included.
 ///
-/// Five, which is `also:` and `port:` — the longest. Every value therefore
-/// begins in the same column, which is what lets an eye run down them. A longer
-/// tag would still print and would push its own value out by however much it
-/// overran, so this is an alignment choice rather than a limit.
+/// Five, which is the length of `also:` and `port:`, the longest of them. Every
+/// value therefore begins in the same column, which is what lets an eye run down
+/// them. A longer tag would still print and would push its own value out by
+/// however much it overran, so this is an alignment choice rather than a limit.
 const TAG_WIDTH: usize = 5;
 
 /// The column every value begins in.
@@ -94,8 +95,9 @@ impl MinimalRenderer {
     /// Writing to this process's own streams.
     #[must_use]
     pub(crate) fn to_terminal(verbosity: Verbosity) -> Self {
-        // Records are buffered — thousands of lines in one burst at the end.
-        // Commentary is not: a progress line held in a buffer is not progress.
+        // Records are buffered, since they arrive as thousands of lines in one
+        // burst at the end. Commentary is not: a progress line held in a buffer
+        // is not progress.
         Self::new(
             Box::new(BufWriter::new(io::stdout())),
             Box::new(io::stderr()),
@@ -112,7 +114,7 @@ impl MinimalRenderer {
     ) -> Self {
         Self {
             records,
-            narrator: Narrator::new(narration, verbosity),
+            narrator: Narrator::new(narration, verbosity, Style::bare()),
             reader: field::Reader::default(),
             verbosity,
         }
@@ -135,7 +137,7 @@ fn write_host(
     verbosity: Verbosity,
     silence_means_something: bool,
 ) -> io::Result<()> {
-    // The address and the name are one fact — which machine this is — so they
+    // The address and the name are one fact, which machine this is, so they
     // share the line that opens the block rather than the name sitting among
     // the things that were learned about it.
     match reader.hostname(host) {
@@ -163,14 +165,15 @@ fn write_host(
 
     // `read` sits directly under `os` because it is that line's working: the
     // shape of each reply the verdict was drawn from, and what a series of them
-    // turned out to be. Only under detail — a person using the finding wants the
-    // finding, and a person checking it wants this.
+    // turned out to be. Only under detail, because a person using the finding
+    // wants the finding and a person checking it wants this.
     let working = verbosity
         .explains()
         .then(|| field::os_evidence(host))
         .flatten();
 
     for (name, value) in [
+        ("role", field::role_tags(host)),
         ("os", field::os(host)),
         ("read", working),
         ("rtt", field::rtt_human(host)),
@@ -185,7 +188,7 @@ fn write_host(
     // list comma-joined into one value runs off the screen. A path is a list for
     // the same reason, and goes above the ports because it is about how this
     // host was reached rather than what was found on it.
-    tagged_list(out, "also", &reader.other_addresses(host))?;
+    tagged_list(out, "also", &reader.other_addresses(host, true))?;
     tagged_list(out, "path", &field::path(reader, host))?;
     tagged_list(out, "port", &field::ports(host, silence_means_something))?;
 
@@ -195,7 +198,7 @@ fn write_host(
 /// One tagged line.
 fn tag(out: &mut dyn Write, name: &str, value: &str) -> io::Result<()> {
     // A value a scanned host chose reaches here, and a newline in one would
-    // forge a tagged line of its own — a hostname reading `evil\n  port: 443/tcp
+    // forge a tagged line of its own: a hostname reading `evil\n  port: 443/tcp
     // open` would put a port in somebody's block that no scan found.
     writeln!(
         out,
@@ -222,10 +225,6 @@ impl Renderer for MinimalRenderer {
     fn started(&mut self, phase: Phase<'_>, redaction: Redaction) -> io::Result<()> {
         self.reader = field::Reader::new(redaction);
         self.narrator.started(phase, redaction)
-    }
-
-    fn host_found(&mut self, host: &Host) -> io::Result<()> {
-        self.narrator.found(host)
     }
 
     fn interrupted(&mut self) -> io::Result<()> {
@@ -268,6 +267,7 @@ impl Renderer for MinimalRenderer {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::render::test_support::{Capture, host};
     use std::net::{IpAddr, Ipv4Addr};
@@ -281,6 +281,20 @@ mod tests {
 
     fn block(host: &Host) -> String {
         rendered(field::Reader::default(), host)
+    }
+
+    /// The abbreviated register spells a role the way a record does, so a
+    /// `minimal` capture and a `pipe` record can be grepped with one pattern.
+    #[test]
+    fn a_role_is_tagged_in_the_terse_register() {
+        use zond_engine::model::host::NetworkRole;
+
+        let mut router = host(1);
+        router.add_network_role(NetworkRole::Router);
+        router.add_network_role(NetworkRole::DhcpServer);
+
+        let text = block(&router);
+        assert!(text.contains("role: router, dhcp"), "{text}");
     }
 
     /// The block a plain run writes: no detail asked for, so no working shown.
@@ -310,7 +324,7 @@ mod tests {
         host.set_hostname(Some("router.example".to_owned()));
         // A measured hop and a silent one. The path is the only tagged value
         // built from a number, so it is the one that can begin with padding and
-        // fall out of the value column — which is exactly what it did until this
+        // fall out of the value column. That is exactly what it did until this
         // host grew one, with the alignment test passing over a line it never
         // rendered.
         host.record_hop(Hop::answered(
@@ -325,10 +339,10 @@ mod tests {
     /// The working behind an operating-system finding is shown only when a
     /// person asked for detail.
     ///
-    /// It is what the finding was read off — the shape of each reply, and what a
-    /// series of them turned out to be — and it is the readout somebody
-    /// authoring a rule needs in front of them. It is also noise to somebody
-    /// using the answer, which is why it is not unconditional.
+    /// It is what the finding was read off: the shape of each reply, and what a
+    /// series of them turned out to be. That is the readout somebody authoring a
+    /// rule needs in front of them, and noise to somebody using the answer,
+    /// which is why it is not unconditional.
     #[test]
     fn the_working_behind_an_os_finding_appears_only_under_detail() {
         let mut host = furnished();
@@ -559,31 +573,23 @@ mod tests {
         (renderer, records, narration)
     }
 
-    /// Nothing but the records reaches the other end of a pipe.
+    /// Progress reaches neither stream in this mode: `minimal` promises a
+    /// tagged block per host and a figure that changes is not one.
     #[test]
-    fn progress_never_reaches_the_record_stream() {
+    fn progress_is_not_written_in_the_terse_register() {
         let (mut renderer, records, narration) = renderer(Verbosity::default());
-        renderer.host_found(&host(1)).expect("capture cannot fail");
-        renderer.host_found(&host(2)).expect("capture cannot fail");
-
-        assert_eq!(records.text(), "");
-        assert!(narration.text().contains("found 192.0.2.1"));
-        assert!(narration.text().contains("found 192.0.2.2"));
-    }
-
-    #[test]
-    fn a_host_is_announced_once_however_often_it_is_updated() {
-        let (mut renderer, _records, narration) = renderer(Verbosity::default());
-        for _ in 0..5 {
-            renderer.host_found(&host(1)).expect("capture cannot fail");
+        for open in 0..5 {
+            renderer.progressed(1, open).expect("capture cannot fail");
         }
-        assert_eq!(narration.text().matches("found 192.0.2.1").count(), 1);
+
+        assert_eq!(records.text(), "", "progress reached the record stream");
+        assert_eq!(narration.text(), "", "progress was narrated");
     }
 
     #[test]
     fn quiet_narrates_nothing() {
         let (mut renderer, _records, narration) = renderer(Verbosity::new(0, true));
-        renderer.host_found(&host(1)).expect("capture cannot fail");
+        renderer.progressed(1, 0).expect("capture cannot fail");
         renderer.interrupted().expect("capture cannot fail");
         assert_eq!(narration.text(), "");
     }

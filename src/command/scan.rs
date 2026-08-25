@@ -11,7 +11,7 @@
 //! Which of the named hosts' ports are open.
 //!
 //! It probes what it was given. It does not sweep first to check the targets are
-//! there, and it does not decide which of them are worth the probes — the engine
+//! there, and it does not decide which of them are worth the probes. The engine
 //! keeps [`discover`](zond_engine::discover) and [`scan`](zond_engine::scan)
 //! apart so that the caller chooses, and a front end that quietly ran both would
 //! be taking that choice back.
@@ -22,8 +22,7 @@
 //! there, and its output feeds straight back in.
 
 use zond_engine::journal::manifest::Plan;
-use zond_engine::journal::paths;
-use zond_engine::journal::store::{self, Journal};
+use zond_engine::journal::store::Journal;
 use zond_engine::model::target::TargetMap;
 use zond_engine::scanner::scan_with_journal;
 use zond_engine::system::privilege;
@@ -44,9 +43,9 @@ use crate::target::{self, ScanTargets};
 /// narrow enough that anybody who cares will say what they actually want. What
 /// changed is *which* thousand: this was the well-known range, `1-1024`, and
 /// that range is both incomplete and wasteful. Most of what a machine listens on
-/// in 2026 is above it — a home server answering on 3001, 5432 and 7778 was
-/// reported as running half the services it runs — while much of what is inside
-/// it belongs to protocols nobody has deployed this century.
+/// in 2026 sits above it, so a home server answering on 3001, 5432 and 7778 was
+/// reported as running half the services it runs. Much of what is inside it
+/// belongs to protocols nobody has deployed this century.
 ///
 /// The same thousand probes, spent on the thousand ports most likely to answer.
 /// See `zond_engine::model::port::catalog` for the ranking and its provenance.
@@ -67,16 +66,21 @@ pub(crate) async fn run(
         args.export.output_all.as_deref(),
     )?;
 
+    // Read once, here, and threaded down: `ports` and `config` come out of the
+    // same document, and asking for them separately means parsing `engine.toml`
+    // twice and warning about it twice. See `settings::EngineSettings`.
     let settings = command::engine_settings(args.engine.profile.as_deref())?;
     let mut config = settings.config;
     args.apply_to(&mut config);
+
+    let ports = ports(args, settings.ports);
 
     // A resume needs no targets: the plan comes from the record, which is what
     // ran rather than what somebody types the second time. Targets given anyway
     // are checked against it.
     let (targets, journal) = match args.resume.as_deref() {
-        Some(id) => continued(id, args, &config).await?,
-        None => started(args, recording, &mut config).await?,
+        Some(id) => continued(id, args, ports, &config).await?,
+        None => started(args, recording, ports, &mut config).await?,
     };
 
     let redaction = command::redaction(&config);
@@ -95,9 +99,9 @@ pub(crate) async fn run(
 async fn started(
     args: &ScanArgs,
     recording: Recording,
+    ports: PortSet,
     config: &mut ZondConfig,
 ) -> Result<(ScanTargets, Option<Journal>), Error> {
-    let ports = ports(args, ports_from_settings(args)?);
     let targets = target::resolve_ports(
         &args.targets,
         &args.engine.exclude,
@@ -129,37 +133,26 @@ async fn started(
 /// A scan continuing one already on record.
 ///
 /// The plan is the recorded one. Targets named on the command line are checked
-/// against it and refused if they describe something else — continuing the wrong
-/// scan quietly would count positions against a plan they were never counted in.
+/// against it and refused if they describe something else, because continuing
+/// the wrong scan quietly would count positions against a plan they were never
+/// counted in.
 async fn continued(
     id: &str,
     args: &ScanArgs,
+    ports: PortSet,
     config: &ZondConfig,
 ) -> Result<(ScanTargets, Option<Journal>), Error> {
-    let id = &command::journal::newest_if_latest(id)?;
-    let directory = paths::scan(id).ok_or(Error::NoJournalDirectory)?;
-    if !directory.is_dir() {
-        let known = paths::root()
-            .and_then(|root| store::list(&root).ok())
-            .map_or(0, |entries| entries.len());
-        return Err(Error::NoSuchJournal {
-            id: id.to_owned(),
-            known,
-        });
-    }
+    let resumed = command::reopen(id, "targets")?;
 
-    let (journal, checkpoint, recorded) = Journal::reopen(&directory, privilege::is_elevated())?;
-
-    let Some(plan) = recorded.targets().cloned() else {
+    let Some(plan) = resumed.plan.targets().cloned() else {
         return Err(Error::WrongPhase {
-            id: id.to_owned(),
+            id: resumed.id,
             held: "a sweep",
             remedy: "zond discover --resume",
         });
     };
 
     if !args.targets.is_empty() {
-        let ports = ports(args, ports_from_settings(args)?);
         let named = target::resolve_ports(
             &args.targets,
             &args.engine.exclude,
@@ -169,30 +162,17 @@ async fn continued(
         )
         .await?;
 
-        journal.manifest().covers(
-            &Plan::port_scan(
-                named.map(),
-                &config.exclusions,
-                journal.manifest().technique(),
-            ),
+        let manifest = resumed.journal.manifest();
+        manifest.covers(
+            &Plan::port_scan(named.map(), &config.exclusions, manifest.technique()),
             privilege::is_elevated(),
         )?;
     }
 
-    let total = journal.manifest().total_targets;
-    let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
-    tracing::info!("continuing {id}: {settled} of {total} targets already settled");
-
-    let remaining = total.saturating_sub(settled);
     Ok((
-        ScanTargets::resumed(plan, remaining, id.to_owned()),
-        Some(journal),
+        ScanTargets::resumed(plan, resumed.remaining, resumed.id),
+        Some(resumed.journal),
     ))
-}
-
-/// The ports a settings file asks for, where the command line says nothing.
-fn ports_from_settings(args: &ScanArgs) -> Result<Option<PortSet>, Error> {
-    Ok(command::engine_settings(args.engine.profile.as_deref())?.ports)
 }
 
 /// How a plan is described in a listing.
