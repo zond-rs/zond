@@ -1055,3 +1055,216 @@ fn prune_applies_the_same_limit_a_scan_does() {
         "a bare sweep reads the limit the file now carries"
     );
 }
+
+/// Two scans of the same address, exported, and folded back into one report.
+///
+/// The fold itself is the engine's and is tested there. What this asserts is the
+/// part only the binary can be asked about: that two documents on disk reach it,
+/// and that both of their phases are in what comes back.
+///
+/// The probe count is what says so, and it is the one figure here that does not
+/// depend on the machine this runs on. Whether anything answers on a loopback
+/// port is true of a developer's laptop and not of a build container, so nothing
+/// below asks; a phase records what it probed either way. One port each in, two
+/// probed out.
+#[test]
+fn two_exported_scans_fold_into_one_report() {
+    let home = config_home("merge-two-scans");
+    let (first, second) = (home.join("first.json"), home.join("second.json"));
+
+    for (port, file) in [("7", &first), ("9", &second)] {
+        let scan = zond_in(
+            &home,
+            &[
+                "-q",
+                "s",
+                "127.0.0.1",
+                "-p",
+                port,
+                "--no-journal",
+                "-o",
+                file.to_str().expect("a utf-8 path"),
+            ],
+        );
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+
+    let merged = zond_in(
+        &home,
+        &[
+            "merge",
+            first.to_str().expect("a utf-8 path"),
+            second.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&merged), 0, "{}", stderr(&merged));
+
+    let said = stderr(&merged);
+    assert!(
+        said.contains("of 2 probed"),
+        "a source's phase was dropped on the way in: {said}"
+    );
+
+    // And it does not claim a duration. A fold is not one job, so the sum of its
+    // sources' scanning is not a length of time anything took.
+    assert!(
+        said.contains("drawn from"),
+        "the fold did not report the span its sources cover: {said}"
+    );
+}
+
+/// Which documents went in is said on standard error, so it survives a report
+/// redirected into a file and never lands inside one.
+#[test]
+fn a_fold_names_its_sources_on_standard_error() {
+    let home = config_home("merge-narration");
+    let (first, second) = (home.join("first.json"), home.join("second.json"));
+
+    for file in [&first, &second] {
+        let scan = zond_in(
+            &home,
+            &[
+                "-q",
+                "s",
+                "127.0.0.1",
+                "-p",
+                "7",
+                "--no-journal",
+                "-o",
+                file.to_str().expect("a utf-8 path"),
+            ],
+        );
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+
+    let merged = zond_in(
+        &home,
+        &[
+            "--pipe",
+            "merge",
+            first.to_str().expect("a utf-8 path"),
+            second.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&merged), 0, "{}", stderr(&merged));
+
+    let said = stderr(&merged);
+    assert!(said.contains("folding 2 sources"), "{said}");
+    assert!(said.contains("first.json"), "{said}");
+    assert!(said.contains("second.json"), "{said}");
+    assert!(
+        !stdout(&merged).contains("first.json"),
+        "the commentary reached the records: {}",
+        stdout(&merged)
+    );
+}
+
+/// One source is not a fold. Refused by the grammar, so `zond merge
+/// chunk*.json` cannot report success on a glob that matched a single file.
+#[test]
+fn folding_fewer_than_two_scans_is_a_usage_error() {
+    let one = zond("merge-arity", &["merge", "only.json"]);
+    assert_eq!(status(&one), 2, "{}", stderr(&one));
+
+    let none = zond("merge-arity-none", &["merge"]);
+    assert_eq!(status(&none), 2, "{}", stderr(&none));
+}
+
+/// A source that cannot be read ends the command, by name.
+///
+/// The alternative is a report that states a smaller network with nothing about
+/// it to say a document was left out, which is a wrong answer that looks like a
+/// right one.
+#[test]
+fn a_source_that_cannot_be_read_ends_the_fold() {
+    let home = config_home("merge-bad-source");
+    let good = home.join("good.json");
+
+    let scan = zond_in(
+        &home,
+        &[
+            "-q",
+            "s",
+            "127.0.0.1",
+            "-p",
+            "7",
+            "--no-journal",
+            "-o",
+            good.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let merged = zond_in(
+        &home,
+        &[
+            "merge",
+            good.to_str().expect("a utf-8 path"),
+            "no-such-record",
+        ],
+    );
+    assert_ne!(status(&merged), 0, "a missing source should not succeed");
+    assert!(
+        stderr(&merged).contains("no-such-record"),
+        "the source that failed was not named: {}",
+        stderr(&merged)
+    );
+}
+
+/// Naming a file replaces the terminal rather than adding to it, which is
+/// `zond journal report`'s rule: nobody is watching a fold happen.
+#[test]
+fn naming_a_file_is_where_the_merged_report_goes() {
+    let home = config_home("merge-output");
+    let (first, second) = (home.join("first.json"), home.join("second.json"));
+
+    for file in [&first, &second] {
+        let scan = zond_in(
+            &home,
+            &[
+                "-q",
+                "s",
+                "127.0.0.1",
+                "-p",
+                "7",
+                "--no-journal",
+                "-o",
+                file.to_str().expect("a utf-8 path"),
+            ],
+        );
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+
+    let out = home.join("merged.json");
+    let merged = zond_in(
+        &home,
+        &[
+            "merge",
+            first.to_str().expect("a utf-8 path"),
+            second.to_str().expect("a utf-8 path"),
+            "-o",
+            out.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&merged), 0, "{}", stderr(&merged));
+
+    assert!(out.is_file(), "the report was not written");
+    assert_eq!(
+        stdout(&merged),
+        "",
+        "the report was printed as well as written"
+    );
+
+    // And what was written is a report this build reads back, which is what
+    // makes a merge a legal input to the next one.
+    let refolded = zond_in(
+        &home,
+        &[
+            "--pipe",
+            "merge",
+            out.to_str().expect("a utf-8 path"),
+            first.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&refolded), 0, "{}", stderr(&refolded));
+}

@@ -70,6 +70,73 @@ pub(crate) enum Command {
 
     /// Show what changed between two scans.
     Diff(DiffArgs),
+
+    /// Fold several scans into one report.
+    Merge(MergeArgs),
+}
+
+/// Arguments to `zond merge`.
+#[derive(Debug, Args)]
+#[command(after_help = merge_help())]
+pub(crate) struct MergeArgs {
+    /// The scans to fold together: files, or records as `zond journal` lists
+    /// them.
+    ///
+    /// Named the same way either side of a comparison is. A name that is a file
+    /// on disk is read as one, taking this engine's JSON or nmap's XML from its
+    /// extension; anything else is taken for a record id, which may be shortened
+    /// to any prefix that names only one, or `latest`.
+    ///
+    /// **The order they are given in does not matter.** A fold is ordered by
+    /// each document's own clock, so there is no way to hand them over
+    /// backwards.
+    #[arg(value_name = "SCAN", num_args = 2.., required = true)]
+    pub sources: Vec<String>,
+
+    /// What makes two records the same host.
+    ///
+    /// `any` by default, which folds a machine whose primary address was
+    /// re-picked between scans into one host. `hardware` follows one across a
+    /// DHCP lease, and is what a segment with phones on it wants. `primary`
+    /// treats the address itself as the thing being recorded, which is what
+    /// folding scans of a public range means.
+    ///
+    /// [possible values: any, hardware, primary]
+    #[arg(long, value_name = "HOW")]
+    pub identity: Option<Identity>,
+
+    /// Where to write the merged report, instead of the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
+}
+
+/// What `zond merge --help` ends with.
+fn merge_help() -> String {
+    "\
+Examples:
+  zond merge chunk*.json           a range scanned in pieces, put back together
+  zond merge q1.xml q2.xml q3.xml  a quarter of nmap files, neither written by zond
+  zond merge baseline.json latest  an archived report and tonight's scan
+
+What a merge answers:
+  What is out there, given everything you know. Sources are folded oldest to
+  newest, and where a newer one states something it wins. Where it says nothing
+  the older answer stands, because absence is not a claim: a host missing from
+  tonight's scan is not evidence the host went away.
+
+  For what changed rather than what is there, use `zond diff`.
+
+Fold everything at once:
+  Give every document to one command. Merging in rounds folds each new source
+  against a report already carrying an older source's clock, so a verdict the
+  new one should have overturned survives it. `zond merge a b c` is not the same
+  as merging a and b and then folding in c.
+
+Where it goes:
+  The terminal, unless -o names a file, and then only the file. Nobody is
+  watching a merge happen the way they watch a scan, so naming a file is saying
+  where you want this rather than asking for a copy."
+        .to_string()
 }
 
 /// Arguments to `zond diff`.

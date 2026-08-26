@@ -104,6 +104,12 @@ pub(crate) fn strip_escapes(text: &str) -> String {
     plain
 }
 
+/// When [`scoped`] says its scan began: fixed, so nothing drawn from one of
+/// these moves between runs.
+pub(crate) fn recorded_at() -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_780_000_000)
+}
+
 /// A report of one discovery phase that says it walked `covered`.
 ///
 /// What a comparison needs and a live scan cannot give it: two reports whose
@@ -111,7 +117,20 @@ pub(crate) fn strip_escapes(text: &str) -> String {
 /// host that one of them never looked for. The phase carries a fixed start time,
 /// so nothing drawn from it moves between runs.
 pub(crate) fn scoped(hosts: Vec<Host>, covered: &str) -> zond_engine::ScanReport {
-    use std::time::{Duration, SystemTime};
+    scoped_at(hosts, covered, recorded_at())
+}
+
+/// The same report, with its scan placed at `started_at`.
+///
+/// For the tests that need two reports a clock apart. Anything that folds or
+/// compares reports orders them by their own timing, so a test asserting on that
+/// order cannot use two reports built at the same fixed instant.
+pub(crate) fn scoped_at(
+    hosts: Vec<Host>,
+    covered: &str,
+    started_at: std::time::SystemTime,
+) -> zond_engine::ScanReport {
+    use std::time::Duration;
 
     use zond_engine::ZondConfig;
     use zond_engine::model::exclusion::Exclusions;
@@ -123,7 +142,7 @@ pub(crate) fn scoped(hosts: Vec<Host>, covered: &str) -> zond_engine::ScanReport
     let mut targets = to_set(&[covered], None, None).expect("a parseable range");
     let phase = ScanPhase::from_parts(PhaseParts {
         kind: ScanKind::Discovery,
-        started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
+        started_at,
         elapsed: Duration::from_secs(1),
         privileged: true,
         targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),

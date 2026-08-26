@@ -145,7 +145,7 @@ fn counting(phase: Phase<'_>) -> Option<Counting> {
     match phase {
         Phase::Discovery { .. } => Some(Counting::Hosts),
         Phase::PortScan { .. } => Some(Counting::Ports),
-        Phase::Recorded { .. } => None,
+        Phase::Recorded { .. } | Phase::Merged { .. } => None,
     }
 }
 

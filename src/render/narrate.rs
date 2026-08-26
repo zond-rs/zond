@@ -26,7 +26,7 @@ use zond_engine::{Exclusions, ScanReport};
 use crate::diagnostics::Verbosity;
 use crate::render::field::plural;
 use crate::render::style::{Mark, Style};
-use crate::render::{Phase, field};
+use crate::render::{MergeSource, Phase, field};
 
 /// Writes the commentary, or does not, depending on the verbosity.
 pub(crate) struct Narrator {
@@ -123,6 +123,13 @@ impl Narrator {
     pub(crate) fn started(&mut self, phase: Phase<'_>, redaction: Redaction) -> io::Result<()> {
         self.redact(redaction);
 
+        // Its own shape. A fold has a line per source rather than one line and a
+        // qualifier under it, and those lines are the whole of what lets a
+        // reader check the report that follows.
+        if let Phase::Merged { sources } = phase {
+            return self.folding(sources);
+        }
+
         let (line, excluded) = match phase {
             Phase::Discovery { targets } => {
                 let count = targets.len();
@@ -152,12 +159,58 @@ impl Narrator {
                 format!("reading {id}, a scan from {}", field::timestamp(started_at)),
                 None,
             ),
+            Phase::Merged { .. } => unreachable!("answered above"),
         };
 
         self.remark(&line)?;
         if let Some(excluded) = excluded {
             self.remark(&excluded)?;
         }
+        self.out.flush()
+    }
+
+    /// What is being folded, oldest first, and on whose word each part of it
+    /// comes.
+    ///
+    /// One line per source rather than a count of them. A merge settles every
+    /// disagreement by taking the newest source's word, so which source is
+    /// newest decides what the report says; a reader who cannot see that cannot
+    /// check the answer against the documents they handed in. The order here is
+    /// the order the fold uses.
+    ///
+    /// Ages rather than timestamps, for the reason a listing gives: what is
+    /// being asked is which of these is the recent one, and `7d` answers it
+    /// where an RFC 3339 timestamp makes the reader do arithmetic. A merge is a
+    /// handful of sources, so the columns are measured and padded.
+    fn folding(&mut self, sources: &[MergeSource<'_>]) -> io::Result<()> {
+        let count = sources.len();
+        self.remark(&format!(
+            "folding {count} {} into one report, oldest first",
+            plural(count as u128, "source")
+        ))?;
+
+        let name = sources
+            .iter()
+            .map(|source| source.name.len())
+            .max()
+            .unwrap_or_default();
+        let age = sources
+            .iter()
+            .map(|source| field::age(source.observed_at).len())
+            .max()
+            .unwrap_or_default();
+
+        for source in sources {
+            self.remark(&format!(
+                "  {:name$}  {:age$}  {}, {} {}",
+                source.name,
+                field::age(source.observed_at),
+                produced_by(source.engine_version),
+                source.hosts,
+                plural(source.hosts as u128, "host"),
+            ))?;
+        }
+
         self.out.flush()
     }
 
@@ -170,7 +223,6 @@ impl Narrator {
     /// What the run amounted to, and anything that qualifies it.
     pub(crate) fn summary(&mut self, report: &ScanReport) -> io::Result<()> {
         let summary = field::summary(report);
-        let elapsed = report.elapsed().as_secs_f64();
 
         // The ground covered is named only where the record says what it was.
         // A report from another scanner often does not, and "3 hosts up of 0
@@ -182,9 +234,10 @@ impl Narrator {
 
         self.say("")?;
         self.remark(&format!(
-            "{} {} up{ground} in {elapsed:.2}s",
+            "{} {} up{ground}{}",
             summary.hosts_alive,
             plural(summary.hosts_alive as u128, "host"),
+            timing(report),
         ))?;
 
         // A discovery sweep probes no ports, and "0 open ports" would read as a
@@ -305,6 +358,50 @@ fn withheld(exclusions: &Exclusions, addresses: u128) -> Option<String> {
     ))
 }
 
+/// How long the run behind a report took, as a clause that follows the counts.
+///
+/// **A merged report has no duration**, and this is the whole reason it is
+/// asked. `elapsed` is a sum over the phases; for a scan that is exactly right,
+/// since the engine really did work through each of them in turn. For a report
+/// folded out of documents it is the working time of several scanners across
+/// arbitrary moments added together, which is a real quantity and is not a
+/// length of time anything took. Printed as `in 6.18s` it describes a scan that
+/// never ran, and the further apart the sources are the worse it reads: a year
+/// of archived files sums to hours and reports itself as an afternoon.
+///
+/// What such a report has instead is the span it draws on, from the earliest
+/// phase to the latest. That is the number a reader wants from a merged report
+/// anyway, because it says how much drift is baked into a single answer
+/// assembled out of several moments.
+fn timing(report: &ScanReport) -> String {
+    if !report.is_merged() {
+        return format!(" in {:.2}s", report.elapsed().as_secs_f64());
+    }
+
+    let span = report
+        .finished_at()
+        .duration_since(report.started_at())
+        .unwrap_or_default();
+
+    format!(", drawn from {} of scanning", field::span(span))
+}
+
+/// What produced a source, in a form that names it.
+///
+/// A foreign scanner attributes itself with its name — `nmap 7.94` — and this
+/// engine records a bare version, because a document of its own has never needed
+/// telling apart from itself. In a fold it does: `0.13.0` sitting beside
+/// `nmap 7.94` leaves a reader to work out which tool the bare number belongs
+/// to. So a version that already names its scanner is left alone, and one that
+/// does not is this engine's and is named as such.
+fn produced_by(engine_version: &str) -> String {
+    if engine_version.contains(' ') {
+        return engine_version.to_owned();
+    }
+
+    format!("{} {engine_version}", zond_engine::format::ENGINE_NAME)
+}
+
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
 // ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
@@ -342,6 +439,162 @@ mod tests {
 
         let many = summarised(&scoped(vec![host(1), host(2)], "192.0.2.0/24"));
         assert!(many.contains("2 hosts up of 256 addresses"), "{many}");
+    }
+
+    // -----------------------------------------------------------------------
+    // What a fold says went into it
+    // -----------------------------------------------------------------------
+
+    /// Every source is named, in the order it was handed over — which the
+    /// command has already put in fold order.
+    ///
+    /// The whole worth of these lines is that a reader can check the report
+    /// underneath against the documents they handed in, and a source missing
+    /// from them is a document whose findings arrived unannounced.
+    #[test]
+    fn a_fold_names_every_source_in_the_order_it_will_use() {
+        let said = folded(&[
+            source("q1.xml", "nmap 7.94", 41),
+            source("baseline.json", "0.12.1", 52),
+        ]);
+
+        assert!(said.contains("folding 2 sources"), "{said}");
+        let (first, second) = (
+            said.find("q1.xml").expect("the first source"),
+            said.find("baseline.json").expect("the second source"),
+        );
+        assert!(first < second, "the fold order was not kept: {said}");
+    }
+
+    /// A bare version is this engine's and is named as such; one that already
+    /// names its scanner is left alone. Both spellings sit in the same column of
+    /// a mixed fold, which is the only place the difference shows.
+    #[test]
+    fn a_source_says_which_scanner_produced_it() {
+        let said = folded(&[
+            source("q1.xml", "nmap 7.94", 1),
+            source("tonight.json", "0.13.0", 1),
+        ]);
+
+        assert!(said.contains("nmap 7.94"), "{said}");
+        assert!(
+            said.contains(&format!("{} 0.13.0", zond_engine::format::ENGINE_NAME)),
+            "a bare version was left unattributed: {said}"
+        );
+    }
+
+    /// The counts read as English at one and at many, as every other count this
+    /// module writes does.
+    #[test]
+    fn the_source_counts_read_as_english() {
+        let one = folded(&[source("a.json", "0.13.0", 1), source("b.json", "0.13.0", 2)]);
+
+        assert!(one.contains("1 host"), "{one}");
+        assert!(one.contains("2 hosts"), "{one}");
+    }
+
+    /// A run told to say nothing says nothing, the fold included. A merge
+    /// written into a file by a scheduled job has no reader for this.
+    #[test]
+    fn a_quiet_run_narrates_no_fold_at_all() {
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::new(0, true),
+            Style::bare(),
+        );
+
+        narrator
+            .started(
+                Phase::Merged {
+                    sources: &[source("a.json", "0.13.0", 1)],
+                },
+                Redaction::None,
+            )
+            .expect("a capture never fails");
+
+        assert_eq!(capture.text(), "");
+    }
+
+    /// One source as the command would describe it.
+    fn source<'a>(name: &'a str, engine_version: &'a str, hosts: usize) -> MergeSource<'a> {
+        MergeSource {
+            name,
+            engine_version,
+            observed_at: crate::render::test_support::recorded_at(),
+            hosts,
+        }
+    }
+
+    /// What a narrator writes for a fold about to happen, as one string.
+    fn folded(sources: &[MergeSource<'_>]) -> String {
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::default(),
+            Style::bare(),
+        );
+
+        narrator
+            .started(Phase::Merged { sources }, Redaction::None)
+            .expect("a capture never fails");
+        capture.text()
+    }
+
+    // -----------------------------------------------------------------------
+    // What the summary says a run took
+    // -----------------------------------------------------------------------
+
+    /// A scan reports its own duration, which is what it has: the engine worked
+    /// through its phases in turn and the sum is how long that was.
+    #[test]
+    fn a_scan_reports_how_long_it_took() {
+        let said = summarised(&scoped(vec![host(1)], "192.0.2.0/24"));
+
+        assert!(said.contains(" in 1.00s"), "{said}");
+        assert!(!said.contains("drawn from"), "{said}");
+    }
+
+    /// A merged report reports the span its sources cover instead.
+    ///
+    /// The failure this replaces: `elapsed` sums the phases, so two one-second
+    /// scans a day apart summed to two seconds and the line called it the length
+    /// of the run. No run took two seconds, and the thing a reader of a merged
+    /// report actually needs to know — that its answers were assembled out of
+    /// moments a day apart — was the part left out.
+    #[test]
+    fn a_merged_report_says_the_span_its_sources_cover() {
+        let said = summarised(&folded_a_day_apart());
+
+        assert!(
+            said.contains("drawn from 1d of scanning"),
+            "the span its sources cover was not reported: {said}"
+        );
+        assert!(
+            !said.contains("2.00s"),
+            "the sum of the sources' scanning was reported as a duration: {said}"
+        );
+    }
+
+    /// Two one-second scans, folded, whose phases are a day apart.
+    fn folded_a_day_apart() -> ScanReport {
+        use std::time::Duration;
+
+        use zond_engine::merge::{Merge, MergeOptions};
+
+        use crate::render::test_support::{recorded_at, scoped_at};
+
+        let day = Duration::from_secs(24 * 60 * 60);
+        let mut merge = Merge::new(MergeOptions::default());
+        merge.add_from(
+            "yesterday",
+            scoped_at(vec![host(1)], "192.0.2.0/24", recorded_at()),
+        );
+        merge.add_from(
+            "today",
+            scoped_at(vec![host(2)], "192.0.2.0/24", recorded_at() + day),
+        );
+        merge.finish()
     }
 
     /// What a narrator writes for a finished report, as one string.

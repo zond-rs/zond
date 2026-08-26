@@ -10,9 +10,10 @@ a network mapping and discovery tool for Linux and macOS.
 Two phases, and they are two commands. `zond discover` finds which hosts on a
 network are alive; `zond scan` finds which of a host's ports are open.
 
-Two more read back what those left behind. `zond journal` lists the scans this
+Three more read back what those left behind. `zond journal` lists the scans this
 machine has a record of, and continues one that stopped part way.
-`zond diff` says what changed between any two of them.
+`zond diff` says what changed between any two of them, and `zond merge` folds
+several into one report.
 
 ## Installing
 
@@ -414,6 +415,58 @@ decides the exit status: `0` for no change, `4` for changes, so a nightly job is
 segment with phones on it wants; the default follows one by any address it
 shares. `-o changes.json` and `-o changes.html` write the comparison to a file
 instead of the terminal.
+
+## Folding several scans into one
+
+```bash
+zond merge chunk*.json           a range scanned in pieces, put back together
+zond merge q1.xml q2.xml q3.xml  a quarter of nmap files, neither written by zond
+zond merge baseline.json latest  an archived report and tonight's scan
+```
+
+Sources are named the way either side of a comparison is: a file on disk is read
+as one, and anything else is taken for a record id. Give as many as you have.
+
+**A merge answers what is out there, given everything you know.** Sources are
+folded oldest to newest, and where a newer one states something it wins. Where it
+says nothing the older answer stands, because absence is not a claim: a host
+missing from tonight's scan is not evidence the host went away, and a port not
+listed is not evidence it closed. For what *changed* rather than what is there,
+use `zond diff`.
+
+```
+$ zond merge q1.xml baseline.json latest
+• folding 3 sources into one report, oldest first
+•   q1.xml         176d  nmap 7.94, 41 hosts
+•   baseline.json  8d    zond-engine 0.12.1, 52 hosts
+•   latest         4m    zond-engine 0.13.0, 38 hosts
+
+  1  192.168.0.1  kabelbox.local  2 open
+     ports  443/tcp  open  https
+            22/tcp   open  ssh
+
+• 61 hosts up of 65534 addresses, drawn from 176d of scanning
+```
+
+**A merged report reports the span it draws on, not a duration.** A scan says how
+long it took; a fold is not one job, and adding up what its sources spent would
+describe a scan that never ran. The span is the number that matters here anyway,
+because it says how much drift is baked into a single answer assembled out of
+several moments — a report drawing on 176 days is not a picture of one evening.
+
+The order they are given in does not matter: a fold is ordered by each document's
+own clock. What does matter is that they all go into one command. Merging in
+rounds folds each new source against a report already carrying an older source's
+clock, so a verdict the new one should have overturned survives it — `zond merge
+a b c` is not the same as merging `a` and `b` and then folding in `c`.
+
+What comes back is an ordinary report, so every `-o` format a scan writes works
+here too, and a merged report is a legal input to the next merge and to
+`zond diff`. Naming a file replaces the terminal rather than adding to it: nobody
+is watching a merge happen the way they watch a scan.
+
+`--identity hardware` folds a machine across a DHCP lease, the same way it
+follows one in a comparison.
 
 ## Scan settings
 

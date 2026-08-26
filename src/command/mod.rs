@@ -22,6 +22,7 @@
 pub(crate) mod diff;
 pub(crate) mod discover;
 pub(crate) mod journal;
+pub(crate) mod merge;
 pub(crate) mod scan;
 
 use zond_engine::export::Redaction;

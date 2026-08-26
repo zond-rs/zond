@@ -83,6 +83,24 @@ pub(crate) fn age(time: std::time::SystemTime) -> String {
     }
 }
 
+/// A length of time, in the largest unit that still says something.
+///
+/// [`age`]'s ladder, for a duration rather than a moment, and it differs at the
+/// bottom rung on purpose. A moment less than a minute old is `now`, because
+/// what an age answers is which of these is the recent one. A *span* of less
+/// than a minute is not `now` — it is how long something took, and a scan that
+/// took six seconds has to be able to say so. So the seconds are kept, in the
+/// same two decimals a scan reports its own duration in.
+pub(crate) fn span(length: Duration) -> String {
+    let seconds = length.as_secs();
+    match seconds {
+        0..60 => format!("{:.2}s", length.as_secs_f64()),
+        60..3600 => format!("{}m", seconds / 60),
+        3600..86_400 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
 /// `text`, or [`UNKNOWN`] where there is none.
 pub(crate) fn or_dash(text: &str) -> &str {
     if text.is_empty() { UNKNOWN } else { text }
@@ -1618,6 +1636,25 @@ pub(crate) fn fastest_of(hosts: &[&Host]) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    /// The ladder a span is written on, and the rung where it parts company with
+    /// [`age`].
+    ///
+    /// A span under a minute keeps its seconds. `age` calls that `now`, which is
+    /// the right answer to "how recent is this" and the wrong one to "how long
+    /// did it take": a fold of two scans seconds apart would report itself as
+    /// having drawn on `now` of scanning.
+    #[test]
+    fn a_span_is_written_in_the_largest_unit_that_says_something() {
+        assert_eq!(span(Duration::from_millis(340)), "0.34s");
+        assert_eq!(span(Duration::from_secs(6)), "6.00s");
+        assert_eq!(span(Duration::from_secs(59)), "59.00s");
+        assert_eq!(span(Duration::from_secs(60)), "1m");
+        assert_eq!(span(Duration::from_secs(18 * 60)), "18m");
+        assert_eq!(span(Duration::from_secs(3600)), "1h");
+        assert_eq!(span(Duration::from_secs(86_400)), "1d");
+        assert_eq!(span(Duration::from_secs(341 * 86_400)), "341d");
+    }
+
     use super::*;
     use crate::render::test_support::host;
 

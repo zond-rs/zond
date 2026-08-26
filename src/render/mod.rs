@@ -44,6 +44,11 @@ pub(crate) mod journal;
 // reason.
 pub(crate) mod diff;
 
+// What a fold of several of them says beside the report it produces. The report
+// is a `ScanReport` and prints through the renderer a scan's does, so this is
+// only the lines that are about the command rather than about the network.
+pub(crate) mod merge;
+
 // The shape every record is drawn in: one header line and its labelled facts,
 // with the whole listing measured before any of it is drawn. A scan, a
 // comparison and a stored record are the same six line types.
@@ -100,6 +105,36 @@ pub(crate) enum Phase<'a> {
         /// When the scan it holds began.
         started_at: std::time::SystemTime,
     },
+    /// Folding several documents into one report, rather than running a scan.
+    ///
+    /// Nothing is probed. The sources arrive in the order they will be folded,
+    /// oldest first, because a fold answers every disagreement by taking the
+    /// newest source's word and a reader who cannot see which source that is
+    /// cannot check the answer.
+    Merged {
+        /// Every document going in, oldest first.
+        sources: &'a [MergeSource<'a>],
+    },
+}
+
+/// One document going into a merge, as the command that read it knows it.
+///
+/// What a person checks before trusting a merged report is that the sources are
+/// the ones they meant and that the newest of them is the one whose answers they
+/// expect to win. So this carries the name they typed rather than the path it
+/// resolved to, and the clock the fold itself orders by rather than any other
+/// time in the document.
+#[derive(Clone, Copy)]
+pub(crate) struct MergeSource<'a> {
+    /// What it was called on the command line: a path, or a record id.
+    pub(crate) name: &'a str,
+    /// What produced it, as that scanner attributed itself. `nmap 7.94` for a
+    /// document read out of nmap's XML.
+    pub(crate) engine_version: &'a str,
+    /// The moment its findings are as of, which is what the fold orders by.
+    pub(crate) observed_at: std::time::SystemTime,
+    /// How many hosts it holds, before any of them are folded together.
+    pub(crate) hosts: usize,
 }
 
 /// Everything a run shows, as it happens.
