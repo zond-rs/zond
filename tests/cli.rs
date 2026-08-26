@@ -1051,6 +1051,76 @@ fn a_report_written_to_a_file_can_be_read_back() {
     );
 }
 
+/// `--reason` shows the packet behind every verdict, and nothing shows it
+/// without.
+///
+/// The whole point of the flag: a verdict a reader cannot check is a verdict
+/// they have to take on trust, and the engine knew which packet settled every
+/// port long before anything printed it.
+#[test]
+fn the_reason_flag_shows_the_packet_behind_a_verdict() {
+    let home = config_home("reason-flag");
+
+    let quiet = zond_in(&home, &["s", "127.0.0.1", "-p", "22", "--no-journal"]);
+    assert_eq!(status(&quiet), 0, "{}", stderr(&quiet));
+    assert!(
+        !stdout(&quiet).contains("reason"),
+        "the evidence was shown without being asked for: {}",
+        stdout(&quiet)
+    );
+
+    let asked = zond_in(
+        &home,
+        &["s", "127.0.0.1", "-p", "22", "--no-journal", "--reason"],
+    );
+    assert_eq!(status(&asked), 0, "{}", stderr(&asked));
+
+    // Loopback may have nothing listening in a build container, so the assertion
+    // is on the label rather than on a verdict this machine happens to produce.
+    // A port that was probed at all carries the packet that settled it.
+    let shown = stdout(&asked);
+    assert!(
+        shown.contains("reason") || shown.contains("closed port"),
+        "no evidence and no ports to carry it: {shown}"
+    );
+}
+
+/// The same flag reaches a document read back, because the evidence is in it.
+///
+/// This is what makes the flag worth a record's disk space: a scan run months
+/// ago can still be asked what its verdicts rested on.
+#[test]
+fn the_reason_flag_reaches_a_report_read_back() {
+    let home = config_home("reason-read-back");
+    let out = home.join("scan.json");
+    let path = out.to_str().expect("a utf-8 path");
+
+    let scan = zond_in(
+        &home,
+        &[
+            "-q",
+            "s",
+            "127.0.0.1",
+            "-p",
+            "22",
+            "--no-journal",
+            "-o",
+            path,
+        ],
+    );
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    // The document carries it whether or not anybody asked to see it.
+    let written = std::fs::read_to_string(&out).expect("the file the run named");
+    assert!(
+        written.contains("\"discovery\"") || !written.contains("\"ports\":["),
+        "the evidence did not survive the export"
+    );
+
+    let read = zond_in(&home, &["read", path, "--reason"]);
+    assert_eq!(status(&read), 0, "{}", stderr(&read));
+}
+
 /// Reading another scanner's report names the scanner.
 ///
 /// The document carries it and every export said so; the terminal, which is

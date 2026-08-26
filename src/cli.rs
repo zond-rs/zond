@@ -991,6 +991,25 @@ pub(crate) struct OutputArgs {
     /// [possible values: auto, always, never]
     #[arg(long = "colour", alias = "color", value_name = "WHEN", global = true)]
     pub colour: Option<ColourChoice>,
+
+    /// Show the evidence behind every verdict.
+    ///
+    /// A port says which packet settled it — `SYN/ACK`, `RST`, `ICMP
+    /// prohibited`, or `no reply` — with the TTL it carried and the round trip
+    /// it took. A host says what was observed and, where an ICMP error came
+    /// from a router rather than the host itself, which router.
+    ///
+    /// **This is what separates two verdicts that read alike.** A port reported
+    /// `filtered` because a firewall said so and one reported `filtered`
+    /// because nothing came back are the same word and different findings, and
+    /// only one of them is somebody's policy.
+    ///
+    /// Works on a scan, on a record, and on a file — including one nmap wrote,
+    /// whose own reasons are read back. Not on `--pipe`, whose fields are a
+    /// stable interface; a program reads the JSON, which carries all of it
+    /// unconditionally.
+    #[arg(long = "reason", global = true)]
+    pub reason: bool,
 }
 
 impl OutputArgs {

@@ -89,12 +89,14 @@ pub(crate) struct MinimalRenderer {
     /// the *record* stream too: whether a block shows the working behind its
     /// operating-system finding.
     verbosity: Verbosity,
+    /// Whether a port carries the packet that settled it, from `--reason`.
+    reasons: bool,
 }
 
 impl MinimalRenderer {
     /// Writing to this process's own streams.
     #[must_use]
-    pub(crate) fn to_terminal(verbosity: Verbosity) -> Self {
+    pub(crate) fn to_terminal(verbosity: Verbosity, reasons: bool) -> Self {
         // Records are buffered, since they arrive as thousands of lines in one
         // burst at the end. Commentary is not: a progress line held in a buffer
         // is not progress.
@@ -103,6 +105,25 @@ impl MinimalRenderer {
             Box::new(io::stderr()),
             verbosity,
         )
+        .showing_reasons(reasons)
+    }
+
+    /// The same renderer, told whether to show the packet behind each verdict.
+    ///
+    /// Apart from [`new`](Self::new) for the reason `fancy` gives: every test
+    /// that builds one wants the default.
+    #[must_use]
+    pub(crate) fn showing_reasons(mut self, reasons: bool) -> Self {
+        self.reasons = reasons;
+        self
+    }
+
+    /// What this run's flags amount to for a listing.
+    fn evidence(&self) -> field::Evidence {
+        field::Evidence {
+            certificates: self.verbosity.explains(),
+            reasons: self.reasons,
+        }
     }
 
     /// Writing wherever the caller says, which is how this is tested.
@@ -117,6 +138,7 @@ impl MinimalRenderer {
             narrator: Narrator::new(narration, verbosity, Style::bare()),
             reader: field::Reader::default(),
             verbosity,
+            reasons: false,
         }
     }
 }
@@ -124,7 +146,8 @@ impl MinimalRenderer {
 /// Writes one host's block.
 ///
 /// `verbosity` decides only whether the working behind the operating-system
-/// finding is shown; everything else in the block is unconditional.
+/// finding is shown, and `evidence` what each port carries beside its verdict;
+/// everything else in the block is unconditional.
 ///
 /// `silence_means_something` is what the *run* established rather than what this
 /// host did: false when the scan was outrun and its unanswered ports are ports
@@ -135,6 +158,7 @@ fn write_host(
     reader: field::Reader,
     host: &Host,
     verbosity: Verbosity,
+    evidence: field::Evidence,
     silence_means_something: bool,
 ) -> io::Result<()> {
     // The address and the name are one fact, which machine this is, so they
@@ -190,7 +214,11 @@ fn write_host(
     // host was reached rather than what was found on it.
     tagged_list(out, "also", &reader.other_addresses(host, true))?;
     tagged_list(out, "path", &field::path(reader, host))?;
-    tagged_list(out, "port", &field::ports(host, silence_means_something))?;
+    tagged_list(
+        out,
+        "port",
+        &field::ports(host, silence_means_something, evidence),
+    )?;
 
     Ok(())
 }
@@ -235,6 +263,10 @@ impl Renderer for MinimalRenderer {
         let hosts = field::sorted_hosts(report);
         let trustworthy = field::silence_means_something(report);
 
+        // Read before the loop lends out the record stream, and constant across
+        // it: what a run shows does not change host by host.
+        let evidence = self.evidence();
+
         for (index, host) in hosts.iter().enumerate() {
             // The separator belongs to the listing, so it goes on the record
             // stream. Above the first block only if there is commentary to
@@ -247,6 +279,7 @@ impl Renderer for MinimalRenderer {
                 self.reader,
                 host,
                 self.verbosity,
+                evidence,
                 trustworthy,
             )?;
         }
@@ -309,7 +342,15 @@ mod tests {
 
     fn with_verbosity(reader: field::Reader, host: &Host, verbosity: Verbosity) -> String {
         let mut out = Vec::new();
-        write_host(&mut out, reader, host, verbosity, true).expect("a vector cannot fail");
+        write_host(
+            &mut out,
+            reader,
+            host,
+            verbosity,
+            field::Evidence::default(),
+            true,
+        )
+        .expect("a vector cannot fail");
         String::from_utf8(out).expect("the renderer writes text")
     }
 
@@ -613,6 +654,7 @@ mod hostile {
             field::Reader::default(),
             &scanned,
             Verbosity::default(),
+            field::Evidence::default(),
             false,
         )
         .expect("a capture never fails");

@@ -128,13 +128,19 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         tracing::warn!("{warning}");
     }
 
+    // The flag wins, then the file, then off, which is the order every other
+    // setting layers in. Resolved once here because four commands draw hosts and
+    // each of them asking separately is how one of them ends up ignoring the
+    // file.
+    let reasons = cli.output.reason || settings.reason().unwrap_or(false);
+
     // `journal` reads what is already on disk rather than watching a run, so it
     // takes the presentation and not a `Renderer`.
     if let Command::Journal(args) = &cli.command {
         return command::journal::run(args, presentation, verbosity, palette);
     }
 
-    let mut renderer = render::renderer(presentation, verbosity, palette);
+    let mut renderer = render::renderer(presentation, verbosity, palette, reasons);
 
     // On unless the run or the settings file says otherwise: somebody wants to
     // continue or re-read a scan after it is over, not before. The limit rides
@@ -155,8 +161,10 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             command::scan::run(args, recording(args.no_journal), renderer.as_mut()).await
         }
         Command::Diff(args) => command::diff::run(args, presentation, palette),
-        Command::Merge(args) => command::merge::run(args, presentation, verbosity, palette),
-        Command::Read(args) => command::read::run(args, presentation, verbosity, palette),
+        Command::Merge(args) => {
+            command::merge::run(args, presentation, verbosity, palette, reasons)
+        }
+        Command::Read(args) => command::read::run(args, presentation, verbosity, palette, reasons),
         Command::Journal(_) => unreachable!("handled above"),
     }
 }
