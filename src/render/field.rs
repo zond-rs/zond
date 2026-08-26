@@ -1429,8 +1429,14 @@ pub(crate) fn kind(report: &ScanReport) -> Option<ScanKind> {
 ///
 /// Read from the report rather than asked of the process: the two can disagree,
 /// and what matters is what the scan actually had.
-pub(crate) fn was_privileged(report: &ScanReport) -> bool {
-    report.phases().last().is_some_and(ScanPhase::privileged)
+///
+/// `None` where the report cannot say, which is every report another scanner
+/// produced. Whether *these* strategies held the sockets they need is not a
+/// question an nmap document answers, and reading its silence as `false` put
+/// this program's advice about running as root under a sweep performed over ARP
+/// by a process that already was.
+pub(crate) fn was_privileged(report: &ScanReport) -> Option<bool> {
+    report.phases().last().and_then(ScanPhase::privileged)
 }
 
 /// The counts a summary line is drawn from.
@@ -2116,7 +2122,7 @@ mod tests {
             kind: ScanKind::PortScan,
             started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
             elapsed: Duration::from_secs(1),
-            privileged: true,
+            privileged: Some(true),
             targets: TargetScope::from_ip_set(&mut scope, &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),

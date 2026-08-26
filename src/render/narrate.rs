@@ -292,8 +292,15 @@ impl Narrator {
         // A report with no phase at all measured nothing and has no privilege
         // level to advise about. That is a record read back from a scan which
         // stopped before it wrote one, rather than a scan that ran unprivileged.
+        //
+        // Nor has a report another scanner produced, which is the second way of
+        // having nothing to say here and the one that read worst: an nmap sweep
+        // performed over ARP as root was told it had run without raw sockets and
+        // advised to use sudo, on the same page as the ARP replies that answered
+        // it. `Some(false)` and nothing else, so silence is never read as a
+        // finding.
         if let Some(kind) = field::kind(report)
-            && !field::was_privileged(report)
+            && field::was_privileged(report) == Some(false)
         {
             self.note(match kind {
                 ScanKind::PortScan => {
@@ -573,6 +580,73 @@ mod tests {
             .started(Phase::Merged { sources }, Redaction::None)
             .expect("a capture never fails");
         capture.text()
+    }
+
+    // -----------------------------------------------------------------------
+    // Advice about this engine, under this engine's runs only
+    // -----------------------------------------------------------------------
+
+    /// A scan this engine ran without raw sockets is told what it cost and what
+    /// to do about it.
+    #[test]
+    fn an_unprivileged_run_of_this_engine_is_advised_to_use_sudo() {
+        let said = summarised(&unprivileged());
+
+        assert!(said.contains("without raw sockets"), "{said}");
+        assert!(said.contains("sudo"), "{said}");
+    }
+
+    /// A report another scanner produced is not.
+    ///
+    /// The failure: an nmap sweep performed over ARP as root read back as
+    /// `ran without raw sockets ... Run with sudo for ARP and ICMPv6 discovery`,
+    /// printed directly beneath the ARP replies that answered it. Whether *this*
+    /// engine's raw strategies had their sockets is not something another
+    /// scanner's document says, and its silence was being read as a no.
+    #[test]
+    fn a_report_this_engine_did_not_measure_attracts_no_advice_about_it() {
+        let said = summarised(&foreign());
+
+        assert!(
+            !said.contains("raw sockets"),
+            "advice about this engine's privileges under another scanner's \
+             findings: {said}"
+        );
+        assert!(!said.contains("sudo"), "{said}");
+    }
+
+    /// A scan of this engine's whose phase said nothing, on the same rule: the
+    /// note follows a recorded `false` and never an absence.
+    fn unprivileged() -> ScanReport {
+        rebuilt(Some(false))
+    }
+
+    fn foreign() -> ScanReport {
+        rebuilt(None)
+    }
+
+    /// The test fixture's report with its phase's privilege set to `privileged`.
+    fn rebuilt(privileged: Option<bool>) -> ScanReport {
+        use zond_engine::scanner::report::{PhaseParts, ScanPhase};
+
+        let report = scoped(vec![host(1)], "192.0.2.0/24");
+        let phase = &report.phases()[0];
+
+        let rebuilt = ScanPhase::from_parts(PhaseParts {
+            kind: phase.kind(),
+            started_at: phase.started_at(),
+            elapsed: phase.elapsed(),
+            privileged,
+            targets: phase.targets().clone(),
+            settings: *phase.settings(),
+            failures: phase.failures().to_vec(),
+            unroutable: phase.unroutable().to_vec(),
+            probes: phase.probe_stats().to_vec(),
+            origin: phase.origin().cloned(),
+        });
+
+        let hosts: Vec<_> = report.hosts().cloned().collect();
+        ScanReport::recorded("test", vec![rebuilt], hosts)
     }
 
     // -----------------------------------------------------------------------

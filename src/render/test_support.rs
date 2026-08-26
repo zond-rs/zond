@@ -144,7 +144,7 @@ pub(crate) fn scoped_at(
         kind: ScanKind::Discovery,
         started_at,
         elapsed: Duration::from_secs(1),
-        privileged: true,
+        privileged: Some(true),
         targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
         settings: ScanSettings::from(&ZondConfig::default()),
         failures: Vec::new(),
