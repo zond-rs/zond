@@ -74,6 +74,7 @@ pub(crate) fn run(
     presentation: Presentation,
     verbosity: Verbosity,
     palette: Palette,
+    reasons: bool,
 ) -> Result<Outcome, Error> {
     // Before a single source is read: a misspelt extension is answered at once
     // rather than after every document is in hand. `diff` does the same for its
@@ -103,7 +104,7 @@ pub(crate) fn run(
     // is reading it now.
     let redaction = command::redaction(&command::engine_settings(None)?.config);
 
-    let mut renderer = renderer(presentation, verbosity, palette);
+    let mut renderer = renderer(presentation, verbosity, palette, reasons);
 
     // Borrowed from `sources`, which the fold below consumes. Narrated first,
     // which is the order it reads in anyway: what is about to happen, then what

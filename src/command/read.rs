@@ -57,6 +57,7 @@ pub(crate) fn run(
     presentation: Presentation,
     verbosity: Verbosity,
     palette: Palette,
+    reasons: bool,
 ) -> Result<Outcome, Error> {
     // Before the document is read, so a misspelt extension is answered at once
     // rather than after the findings are in hand.
@@ -69,7 +70,7 @@ pub(crate) fn run(
     // is reading it now.
     let redaction = command::redaction(&command::engine_settings(None)?.config);
 
-    let mut renderer = renderer(presentation, verbosity, palette);
+    let mut renderer = renderer(presentation, verbosity, palette, reasons);
 
     // Borrowed from `report`, so scoped to end before the export below takes it
     // by reference again.

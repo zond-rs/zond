@@ -166,6 +166,7 @@ pub(crate) struct Settings {
     presentation: Option<Presentation>,
     colour: Option<ColourChoice>,
     accent_colour: Option<Accent>,
+    reason: Option<bool>,
     identity: Option<Identity>,
     journal: Option<bool>,
     journal_entry_limit: Option<EntryLimit>,
@@ -177,6 +178,17 @@ impl Settings {
     #[must_use]
     pub(crate) fn presentation(self) -> Option<Presentation> {
         self.presentation
+    }
+
+    /// Whether these settings ask for the evidence behind every verdict.
+    ///
+    /// Worth a key rather than a flag alone for the same reason `presentation`
+    /// is one: somebody who wants to see what a verdict rests on wants it on
+    /// every scan they run, and a flag they must remember nightly is a flag
+    /// they will forget.
+    #[must_use]
+    pub(crate) fn reason(self) -> Option<bool> {
+        self.reason
     }
 
     /// Whether these settings ask for colour, if they say.
@@ -240,6 +252,9 @@ impl Settings {
         if let Some(accent) = other.accent_colour {
             self.accent_colour = Some(accent);
         }
+        if let Some(reason) = other.reason {
+            self.reason = Some(reason);
+        }
         if let Some(identity) = other.identity {
             self.identity = Some(identity);
         }
@@ -272,6 +287,7 @@ struct Document {
     accent_colour: Option<String>,
     accent_color: Option<String>,
     identity: Option<String>,
+    reason: Option<bool>,
     journal: Option<bool>,
     // Left as it was written, because this key takes a count or a word and the
     // message for anything else should be able to quote what was there.
@@ -344,6 +360,7 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
             presentation,
             colour,
             accent_colour,
+            reason: document.reason,
             identity,
             journal: document.journal,
             journal_entry_limit,
@@ -839,6 +856,7 @@ mod tests {
             presentation: Some(Presentation::Minimal),
             colour: Some(ColourChoice::Never),
             accent_colour: Some(Accent::VIOLET),
+            reason: Some(true),
             identity: Some(Identity::Hardware),
             journal: Some(false),
             journal_entry_limit: Some(EntryLimit::Unlimited),
@@ -862,6 +880,7 @@ mod tests {
             "nor any other"
         );
         assert_eq!(settings.journal(), Some(false), "nor any other");
+        assert_eq!(settings.reason(), Some(true), "nor any other");
         assert_eq!(
             settings.journal_entry_limit(),
             Some(EntryLimit::Unlimited),
@@ -878,6 +897,7 @@ mod tests {
             presentation: Some(Presentation::Minimal),
             colour: None,
             accent_colour: None,
+            reason: None,
             identity: None,
             journal: None,
             journal_entry_limit: None,

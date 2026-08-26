@@ -96,12 +96,18 @@ pub(crate) struct FancyRenderer {
     /// Decides whether a block shows the working behind its operating-system
     /// finding and behind a certificate.
     verbosity: Verbosity,
+    /// Whether a block shows the packet behind each verdict, from `--reason`.
+    ///
+    /// Apart from `verbosity` because they answer different readers: the one
+    /// above is for somebody auditing a configuration, this is for somebody
+    /// deciding whether to believe a verdict.
+    reasons: bool,
 }
 
 impl FancyRenderer {
     /// Writing to this process's own streams.
     #[must_use]
-    pub(crate) fn to_terminal(verbosity: Verbosity, palette: Palette) -> Self {
+    pub(crate) fn to_terminal(verbosity: Verbosity, palette: Palette, reasons: bool) -> Self {
         // Records are buffered, since they arrive as thousands of lines in one
         // burst at the end. Commentary is not: a progress line held in a buffer
         // is not progress.
@@ -112,6 +118,29 @@ impl FancyRenderer {
             Style::for_stdout(palette),
             Style::for_stderr(palette),
         )
+        .showing_reasons(reasons)
+    }
+
+    /// What this run's flags amount to for a listing.
+    ///
+    /// The two axes meet here and nowhere else, so a renderer never has to
+    /// remember which flag feeds which half.
+    fn evidence(&self) -> field::Evidence {
+        field::Evidence {
+            certificates: self.verbosity.explains(),
+            reasons: self.reasons,
+        }
+    }
+
+    /// The same renderer, told whether to show the packet behind each verdict.
+    ///
+    /// Apart from [`new`](Self::new) because every test that builds one wants
+    /// the default, and threading a fourth argument through all of them to say
+    /// so would obscure the two that are about writing somewhere.
+    #[must_use]
+    pub(crate) fn showing_reasons(mut self, reasons: bool) -> Self {
+        self.reasons = reasons;
+        self
     }
 
     /// Writing wherever the caller says, which is how this is tested.
@@ -129,6 +158,7 @@ impl FancyRenderer {
             reader: field::Reader::default(),
             style,
             verbosity,
+            reasons: false,
         }
     }
 }
@@ -215,6 +245,7 @@ fn children(
     reader: field::Reader,
     host: &Host,
     verbosity: Verbosity,
+    evidence: field::Evidence,
     silence_means_something: bool,
 ) -> Vec<Child> {
     let mut children = Vec::new();
@@ -264,7 +295,19 @@ fn children(
         children.push(Child::one("latency", style.plain(&variation)));
     }
 
-    if let Some(answered) = field::answered(host) {
+    // One line per piece of evidence under `--reason`, because the long form
+    // carries what was observed and who sent it, and those do not fit beside
+    // each other on one line. The label stays: it is the same question answered
+    // at two depths, not two questions.
+    if evidence.reasons {
+        let detailed = field::answered_in_detail(reader, host);
+        if !detailed.is_empty() {
+            children.push(Child::many(
+                "answered",
+                detailed.iter().map(|line| style.plain(line)).collect(),
+            ));
+        }
+    } else if let Some(answered) = field::answered(host) {
         children.push(Child::one("answered", style.plain(&answered)));
     }
 
@@ -301,7 +344,7 @@ fn children(
         ));
     }
 
-    let listing = field::port_rows(host, silence_means_something, verbosity.explains());
+    let listing = field::port_rows(host, silence_means_something, evidence);
     if !listing.rows.is_empty() || !listing.notes.is_empty() {
         children.push(ports(style, &listing));
     }
@@ -416,7 +459,14 @@ impl Renderer for FancyRenderer {
             .enumerate()
             .map(|(index, host)| Block {
                 header: header(self.style, self.reader, host, index + 1, unit),
-                children: children(self.style, self.reader, host, self.verbosity, trustworthy),
+                children: children(
+                    self.style,
+                    self.reader,
+                    host,
+                    self.verbosity,
+                    self.evidence(),
+                    trustworthy,
+                ),
             })
             .collect();
 
@@ -477,10 +527,30 @@ mod tests {
     /// columns come from the whole listing, so there is no drawing a block
     /// outside of one.
     fn drawn(style: Style, reader: field::Reader, host: &Host, verbosity: Verbosity) -> String {
+        drawn_showing(
+            style,
+            reader,
+            host,
+            verbosity,
+            field::Evidence {
+                certificates: verbosity.explains(),
+                reasons: false,
+            },
+        )
+    }
+
+    /// The same, for the tests about what `--reason` adds.
+    fn drawn_showing(
+        style: Style,
+        reader: field::Reader,
+        host: &Host,
+        verbosity: Verbosity,
+        evidence: field::Evidence,
+    ) -> String {
         let unit = field::listing_unit(field::fastest(host));
         let blocks = vec![Block {
             header: header(style, reader, host, 1, unit),
-            children: children(style, reader, host, verbosity, true),
+            children: children(style, reader, host, verbosity, evidence, true),
         }];
 
         let mut out = Vec::new();
@@ -519,6 +589,7 @@ mod tests {
                 field::Reader::default(),
                 host,
                 Verbosity::default(),
+                field::Evidence::default(),
                 true,
             ),
         }])
@@ -1247,7 +1318,14 @@ mod hostile {
         let unit = field::listing_unit(field::fastest(&scanned));
         let blocks = vec![Block {
             header: header(style, reader, &scanned, 1, unit),
-            children: children(style, reader, &scanned, Verbosity::default(), false),
+            children: children(
+                style,
+                reader,
+                &scanned,
+                Verbosity::default(),
+                field::Evidence::default(),
+                false,
+            ),
         }];
 
         let mut out = Vec::new();

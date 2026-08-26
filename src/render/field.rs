@@ -23,9 +23,10 @@ use std::time::Duration;
 use zond_engine::Host;
 use zond_engine::export::{Redaction, redact};
 use zond_engine::model::host::NetworkRole;
-use zond_engine::model::host::status::StatusProtocol;
+use zond_engine::model::host::status::{StatusProtocol, StatusReason};
 use zond_engine::model::ip::scoped::ScopedIp;
 use zond_engine::model::ip::set::IpSet;
+use zond_engine::model::port::discovery::ScanResponse;
 use zond_engine::record::wire;
 use zond_engine::scanner::report::{ScanKind, ScanPhase};
 use zond_engine::{HostStatus, Port, PortState, Protocol, ScanReport, ScanSummary};
@@ -503,6 +504,56 @@ pub(crate) fn answered(host: &Host) -> Option<String> {
     (!names.is_empty()).then(|| names.join("  "))
 }
 
+/// What proved the host alive, one line per piece of evidence.
+///
+/// [`answered`]'s long form, for `--reason`. The short one names the protocols
+/// and stops, which is the right summary and drops the two things that qualify
+/// it: what was actually observed, and who said so.
+///
+/// **Who said so is the one that changes a finding.** An ICMP unreachable from
+/// the host itself proves the host is there. The same message from a router
+/// proves only that something in the path speaks for that address — a NAT
+/// answering on a machine's behalf reads identically to the machine answering,
+/// and reporting them the same way is how a scan claims a host that is not
+/// there. The engine keeps the distinction; until now nothing showed it.
+///
+/// Addresses go through `reader`, because a source address identifies a machine
+/// as surely as the host's own does and redaction that stopped at the header
+/// would not be redaction.
+pub(crate) fn answered_in_detail(reader: Reader, host: &Host) -> Vec<String> {
+    let mut lines: Vec<String> = host
+        .reasons()
+        .iter()
+        .map(|reason| detailed_reason(reader, reason))
+        .collect();
+
+    // Sorted for the reason [`answered`] sorts: the engine holds these in a
+    // `HashSet`, whose order differs between processes, and a listing that
+    // reorders itself between two runs of the same scan cannot be compared.
+    lines.sort_unstable();
+    lines
+}
+
+/// One piece of evidence: the protocol, what was seen, and who sent it.
+fn detailed_reason(reader: Reader, reason: &StatusReason) -> String {
+    let mut line = spoken(&reason.protocol);
+
+    if let Some(details) = reason.details.as_deref() {
+        line.push_str("  ");
+        line.push_str(details);
+    }
+
+    // `via`, not `from`: the address did not send the finding, it sent an error
+    // *about* the finding, and the two readings are the whole reason this field
+    // is kept apart from the host's own address.
+    if let Some(source) = reason.source {
+        line.push_str("  via ");
+        line.push_str(&reader.masked(source));
+    }
+
+    line
+}
+
 /// A protocol as it is written down.
 ///
 /// The family in capitals and whatever qualifies it in lower case, because
@@ -756,6 +807,66 @@ impl PortDetail {
     }
 }
 
+/// The packet that settled a port's state, and what it carried.
+///
+/// The claim under every verdict, and until `--reason` there was no way to see
+/// it: a port reported `filtered` because a firewall said so and one reported
+/// `filtered` because nothing came back are the same word and different
+/// findings. `ICMP prohibited` is somebody's policy; `no reply` is an absence,
+/// and an absence is only as good as the scan that waited for it.
+///
+/// `None` for a port carrying no telemetry, which is what a report from a
+/// scanner that recorded none reads as. Nothing is invented to fill the line.
+///
+/// Everything the telemetry has, and only what it has. Today a scan of this
+/// engine's own records the packet and, on the raw path, the round trip; the
+/// TTL and the source address are read back from documents that carry them and
+/// no scanner sets either yet. A line that named a field the scan never filled
+/// would be the one way to make this lie, so each is shown when present and
+/// omitted when not.
+fn reason_detail(port: &Port) -> Option<PortDetail> {
+    let discovery = port.discovery()?;
+
+    let mut evidence = vec![spoken_response(discovery.reason())];
+    if let Some(ttl) = discovery.ttl() {
+        evidence.push(format!("ttl {ttl}"));
+    }
+    if let Some(rtt) = discovery.rtt() {
+        evidence.push(format_rtt(rtt));
+    }
+
+    Some(PortDetail::new("reason", evidence.join("  ")))
+}
+
+/// A scan response as it is written for a person.
+///
+/// The rule [`spoken`] follows, for the other half of the evidence: the flags a
+/// segment carried are an acronym and shout, and what did not happen is a word
+/// and does not. Underscores are [`spoken`]'s answer to a value drawn into a
+/// two-space-separated list, and this is not drawn into one — it is a value of
+/// its own, beside a label — so the words stay words.
+///
+/// Deliberately not
+/// [`scan_response_name`](zond_engine::record::wire::scan_response_name), which
+/// spells the same list as `tcp_syn_ack` for a document. Neither is derivable
+/// from the other, and the spelling is the part that differs.
+fn spoken_response(response: &ScanResponse) -> String {
+    match response {
+        ScanResponse::TcpSynAck => "SYN/ACK".to_owned(),
+        ScanResponse::TcpRst => "RST".to_owned(),
+        ScanResponse::UdpResponse => "UDP reply".to_owned(),
+        ScanResponse::NoResponse => "no reply".to_owned(),
+        ScanResponse::IcmpUnreachable => "ICMP unreachable".to_owned(),
+        ScanResponse::IcmpProhibited => "ICMP prohibited".to_owned(),
+        ScanResponse::Custom(name) => name.clone(),
+        // A response a newer engine records and this build has no word for.
+        // Spelled as the wire spells it, which is the only name this build has:
+        // inventing prose for a variant whose meaning it does not know would be
+        // the one way to make this line lie.
+        other => wire::scan_response_name(other).into_owned(),
+    }
+}
+
 /// One port worth a line, with its columns padded and anything hanging off it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PortRow {
@@ -770,6 +881,21 @@ pub(crate) struct PortRow {
     pub service: Option<String>,
     /// TLS and certificate lines belonging to this port and to no other.
     pub detail: Vec<PortDetail>,
+}
+
+/// What a port listing shows beyond the ports themselves.
+///
+/// Two axes, and they are separate because a reader wants them separately. The
+/// working behind a certificate is for somebody auditing a TLS configuration;
+/// the packet behind a verdict is for somebody deciding whether to believe the
+/// verdict at all. `-v` asks for the first and `--reason` for the second, and
+/// neither implies the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Evidence {
+    /// Who issued a certificate, what key it carries, what it fingerprints to.
+    pub(crate) certificates: bool,
+    /// The packet that settled each port's state, and what it carried.
+    pub(crate) reasons: bool,
 }
 
 /// The ports worth a line, and the notes about what was left out.
@@ -903,7 +1029,7 @@ fn column_widths(shown: &[&Port]) -> (usize, usize) {
 /// four to twelve characters, so a line assembled left to right puts every state
 /// at a different place and the eye has to search each row instead of running
 /// down one.
-pub(crate) fn ports(host: &Host, silence_means_something: bool) -> Vec<String> {
+pub(crate) fn ports(host: &Host, silence_means_something: bool, evidence: Evidence) -> Vec<String> {
     let Some(selection) = select(host, silence_means_something) else {
         return Vec::new();
     };
@@ -922,7 +1048,16 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool) -> Vec<String> {
             );
             // A port with no service would otherwise carry the padding it was
             // never going to fill.
-            line.trim_end().to_owned()
+            let line = line.trim_end().to_owned();
+
+            // Appended rather than hung, because this mode has nothing to hang
+            // from: `minimal` is one tagged line per value and a second line
+            // under a port would be a value with no tag. Bracketed so the
+            // evidence reads as qualifying the row rather than extending it.
+            match evidence.reasons.then(|| reason_detail(port)).flatten() {
+                Some(reason) => format!("{line}  [{}]", reason.value),
+                None => line,
+            }
         })
         .collect();
 
@@ -937,9 +1072,13 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool) -> Vec<String> {
 /// from one [`select`], so the two modes can never disagree about which ports a
 /// scan is entitled to claim.
 ///
-/// `detailed` adds the working behind a certificate: who issued it, what key it
-/// carries, what it fingerprints to. Everything else is unconditional.
-pub(crate) fn port_rows(host: &Host, silence_means_something: bool, detailed: bool) -> PortListing {
+/// `evidence` decides what hangs off a row beyond the port itself. Everything
+/// else is unconditional.
+pub(crate) fn port_rows(
+    host: &Host,
+    silence_means_something: bool,
+    evidence: Evidence,
+) -> PortListing {
     let Some(selection) = select(host, silence_means_something) else {
         return PortListing::default();
     };
@@ -957,7 +1096,7 @@ pub(crate) fn port_rows(host: &Host, silence_means_something: bool, detailed: bo
             state: format!("{:<widest_state$}", state(port.state())),
             verdict: port.state(),
             service: describe(port),
-            detail: security_detail(port, detailed),
+            detail: port_detail(port, evidence),
         })
         .collect();
 
@@ -1004,6 +1143,21 @@ const EXPIRY_HORIZON: Duration = Duration::from_secs(30 * 86_400);
 /// What is known about the transport under a port, as lines that hang off it.
 ///
 /// Empty for every port nothing negotiated a session on, which is most of them.
+/// Everything hanging off one port row, in the order it is drawn.
+///
+/// The reason first: it is what the row's own verdict rests on, and a reader
+/// checking a verdict should not have to read past a certificate to find it.
+fn port_detail(port: &Port, evidence: Evidence) -> Vec<PortDetail> {
+    let mut detail = Vec::new();
+
+    if evidence.reasons {
+        detail.extend(reason_detail(port));
+    }
+    detail.extend(security_detail(port, evidence.certificates));
+
+    detail
+}
+
 fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
     let Some(security) = port.security() else {
         return Vec::new();
@@ -1642,6 +1796,201 @@ pub(crate) fn fastest_of(hosts: &[&Host]) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    // -----------------------------------------------------------------------
+    // Who said the host is there
+    // -----------------------------------------------------------------------
+
+    /// An error a router sent is not the host answering for itself, and the long
+    /// form is the only place that shows it.
+    ///
+    /// The two read identically in the short form — both are `ICMP_unreachable`
+    /// — and they are different claims. A NAT answering on a machine's behalf
+    /// proves something in the path speaks for that address, not that the
+    /// machine is there, and a scan that reported the two the same way would
+    /// claim a host nobody has.
+    #[test]
+    fn evidence_from_the_path_names_who_sent_it() {
+        use std::net::Ipv4Addr;
+        use zond_engine::model::host::status::{StatusProtocol, StatusReason};
+
+        let router = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254));
+        let mut host = host(1);
+        host.record_evidence(
+            zond_engine::HostStatus::Up,
+            StatusReason::new(
+                StatusProtocol::IcmpUnreachable,
+                "unreachable, from the path",
+            )
+            .from_source(router),
+        );
+
+        let lines = answered_in_detail(Reader::default(), &host);
+        let attributed = lines
+            .iter()
+            .find(|line| line.contains("ICMP_unreachable"))
+            .expect("the reason is listed");
+
+        assert!(
+            attributed.contains("unreachable, from the path"),
+            "{attributed}"
+        );
+        assert!(attributed.contains("via 192.0.2.254"), "{attributed}");
+    }
+
+    /// Evidence the host gave for itself carries no `via`, because there is
+    /// nobody in between to name.
+    #[test]
+    fn evidence_from_the_host_itself_names_nobody() {
+        use zond_engine::model::host::status::{StatusProtocol, StatusReason};
+
+        let mut host = host(1);
+        host.record_evidence(
+            zond_engine::HostStatus::Up,
+            StatusReason::new(StatusProtocol::Arp, "an address resolution reply"),
+        );
+
+        let lines = answered_in_detail(Reader::default(), &host);
+        let arp = lines
+            .iter()
+            .find(|line| line.contains("ARP"))
+            .expect("the reason is listed");
+
+        assert!(arp.contains("an address resolution reply"), "{arp}");
+        assert!(!arp.contains("via"), "{arp}");
+    }
+
+    /// A source address identifies a machine as surely as the host's own does,
+    /// so it is masked when the run is redacting.
+    #[test]
+    fn a_source_address_is_masked_under_redaction() {
+        use zond_engine::model::host::status::{StatusProtocol, StatusReason};
+
+        let router: IpAddr = "2001:db8::254".parse().expect("an address");
+        let mut host = host(1);
+        host.record_evidence(
+            zond_engine::HostStatus::Up,
+            StatusReason::new(StatusProtocol::IcmpUnreachable, "unreachable").from_source(router),
+        );
+
+        let masked = answered_in_detail(Reader::new(Redaction::Standard), &host).join(" ");
+        assert!(
+            !masked.contains("2001:db8::254"),
+            "redaction stopped at the header: {masked}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The evidence behind a verdict
+    // -----------------------------------------------------------------------
+
+    /// The distinction the whole flag exists to draw.
+    ///
+    /// Two ports, both `filtered`, and the word is all a reader had. One was
+    /// dropped by a firewall that said so and one answered nothing at all: the
+    /// first is somebody's policy and the second is an absence, which is only as
+    /// good as the scan that waited for it.
+    #[test]
+    fn two_filtered_ports_that_read_alike_are_told_apart_by_their_evidence() {
+        use zond_engine::model::port::discovery::{Discovery, ScanResponse};
+
+        let refused = Port::new(80, Protocol::Tcp, PortState::Filtered)
+            .with_discovery(Discovery::new(ScanResponse::IcmpProhibited));
+        let silent = Port::new(443, Protocol::Tcp, PortState::Filtered)
+            .with_discovery(Discovery::new(ScanResponse::NoResponse));
+
+        assert_eq!(
+            reason_detail(&refused).expect("evidence").value,
+            "ICMP prohibited"
+        );
+        assert_eq!(reason_detail(&silent).expect("evidence").value, "no reply");
+    }
+
+    /// A port carrying no telemetry gets no line, rather than an invented one.
+    #[test]
+    fn a_port_with_no_telemetry_claims_no_evidence() {
+        assert!(reason_detail(&Port::new(22, Protocol::Tcp, PortState::Open)).is_none());
+    }
+
+    /// Everything the telemetry has, in one value, and nothing it does not.
+    #[test]
+    fn the_evidence_carries_what_was_measured_and_leaves_out_what_was_not() {
+        use std::time::Duration;
+        use zond_engine::model::port::discovery::{Discovery, ScanResponse};
+
+        let bare = Port::new(22, Protocol::Tcp, PortState::Open)
+            .with_discovery(Discovery::new(ScanResponse::TcpSynAck));
+        assert_eq!(reason_detail(&bare).expect("evidence").value, "SYN/ACK");
+
+        let measured = Port::new(22, Protocol::Tcp, PortState::Open).with_discovery(
+            Discovery::new(ScanResponse::TcpSynAck)
+                .with_ttl(64)
+                .with_rtt(Duration::from_micros(2_240)),
+        );
+        let value = reason_detail(&measured).expect("evidence").value;
+        assert!(value.starts_with("SYN/ACK  ttl 64  "), "{value}");
+    }
+
+    /// The evidence hangs off the port only when it was asked for, and above the
+    /// certificate working, which is a different reader's question.
+    #[test]
+    fn evidence_is_shown_only_when_asked_for() {
+        use zond_engine::model::port::discovery::{Discovery, ScanResponse};
+
+        let mut host = host(1);
+        host.add_port(
+            Port::new(22, Protocol::Tcp, PortState::Open)
+                .with_discovery(Discovery::new(ScanResponse::TcpSynAck)),
+        );
+
+        let quiet = port_rows(&host, true, Evidence::default());
+        assert!(quiet.rows[0].detail.is_empty(), "{:?}", quiet.rows[0]);
+
+        let asked = port_rows(
+            &host,
+            true,
+            Evidence {
+                certificates: false,
+                reasons: true,
+            },
+        );
+        assert_eq!(asked.rows[0].detail[0].label, "reason");
+    }
+
+    /// `minimal` has nothing to hang a line from, so the evidence rides on the
+    /// row it qualifies.
+    #[test]
+    fn the_terse_mode_carries_the_evidence_on_the_row() {
+        use zond_engine::model::port::discovery::{Discovery, ScanResponse};
+
+        let mut host = host(1);
+        host.add_port(
+            Port::new(22, Protocol::Tcp, PortState::Open)
+                .with_discovery(Discovery::new(ScanResponse::TcpSynAck)),
+        );
+
+        let lines = ports(
+            &host,
+            true,
+            Evidence {
+                certificates: false,
+                reasons: true,
+            },
+        );
+        assert!(lines[0].ends_with("[SYN/ACK]"), "{}", lines[0]);
+    }
+
+    /// A response this build has no word for is spelled as the wire spells it,
+    /// rather than being given prose whose meaning nobody knows.
+    #[test]
+    fn an_unrecognised_response_falls_back_to_the_name_the_wire_uses() {
+        use zond_engine::model::port::discovery::ScanResponse;
+
+        assert_eq!(
+            spoken_response(&ScanResponse::Custom("tls-alert".to_owned())),
+            "tls-alert"
+        );
+    }
+
     /// The ladder a span is written on, and the rung where it parts company with
     /// [`age`].
     ///
@@ -2211,13 +2560,13 @@ mod tests {
             host.add_port(Port::new(number, Protocol::Tcp, PortState::Filtered));
         }
 
-        let trusted = ports(&host, true);
+        let trusted = ports(&host, true, Evidence::default());
         assert!(
             trusted.iter().any(|line| line.contains("filtered")),
             "a scan that could ask reports what it found: {trusted:?}"
         );
 
-        let outrun = ports(&host, false);
+        let outrun = ports(&host, false, Evidence::default());
         assert!(
             outrun.iter().all(|line| !line.contains("filtered")),
             "and one that could not makes no claim at all: {outrun:?}"
@@ -2448,7 +2797,7 @@ mod tests {
     #[test]
     fn ports_are_listed_open_first_with_the_closed_ones_counted() {
         assert_eq!(
-            ports(&scanned(), true),
+            ports(&scanned(), true, Evidence::default()),
             vec![
                 // Columns, so the eye runs down the states rather than hunting
                 // each one at whatever offset its port number left it at.
@@ -2475,7 +2824,7 @@ mod tests {
             host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Filtered));
         }
 
-        let lines = ports(&host, true);
+        let lines = ports(&host, true, Evidence::default());
 
         // The open port, twelve filtered, and the rollup.
         assert_eq!(lines.len(), 1 + MAX_LISTED_FILTERED + 1);
@@ -2500,7 +2849,7 @@ mod tests {
             host.add_port(Port::new(port, Protocol::Tcp, PortState::Filtered));
         }
 
-        let lines = ports(&host, true);
+        let lines = ports(&host, true, Evidence::default());
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines.iter().all(|line| !line.contains("omitted")),
@@ -2515,7 +2864,10 @@ mod tests {
         let mut host = host(1);
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
 
-        assert_eq!(ports(&host, true), vec!["[1 closed port omitted]"]);
+        assert_eq!(
+            ports(&host, true, Evidence::default()),
+            vec!["[1 closed port omitted]"]
+        );
     }
 
     #[test]
@@ -2525,12 +2877,15 @@ mod tests {
             host.add_port(Port::new(number, Protocol::Tcp, PortState::Closed));
         }
 
-        assert_eq!(ports(&host, true), vec!["[2 closed ports omitted]"]);
+        assert_eq!(
+            ports(&host, true, Evidence::default()),
+            vec!["[2 closed ports omitted]"]
+        );
     }
 
     #[test]
     fn a_host_that_was_never_port_scanned_has_no_port_lines() {
-        assert!(ports(&host(1), true).is_empty());
+        assert!(ports(&host(1), true, Evidence::default()).is_empty());
         assert_eq!(closed_ports(&host(1)), None);
     }
 
@@ -2555,7 +2910,10 @@ mod tests {
                 .with_service(Service::new(NO_SERVICE, 0)),
         );
 
-        assert_eq!(ports(&host, true), vec!["9999/tcp  open"]);
+        assert_eq!(
+            ports(&host, true, Evidence::default()),
+            vec!["9999/tcp  open"]
+        );
         assert_eq!(packed_ports(&host).as_deref(), Some("9999/tcp/open/-"));
     }
 

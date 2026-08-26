@@ -218,11 +218,22 @@ pub(crate) fn renderer(
     presentation: Presentation,
     verbosity: Verbosity,
     palette: Palette,
+    reasons: bool,
 ) -> Box<dyn Renderer> {
     match presentation {
+        // `pipe` takes no `reasons`, and that is the mode's own promise rather
+        // than an omission: its fields are a stable interface, and adding one
+        // because a flag was passed would move every field after it for every
+        // script already reading them. A program that wants the evidence reads
+        // the JSON, which has carried all of it — the packet, the TTL, the round
+        // trip — since long before there was a flag to ask for it.
         Presentation::Pipe => Box::new(pipe::PipeRenderer::to_terminal(verbosity)),
-        Presentation::Minimal => Box::new(minimal::MinimalRenderer::to_terminal(verbosity)),
-        Presentation::Fancy => Box::new(fancy::FancyRenderer::to_terminal(verbosity, palette)),
+        Presentation::Minimal => {
+            Box::new(minimal::MinimalRenderer::to_terminal(verbosity, reasons))
+        }
+        Presentation::Fancy => Box::new(fancy::FancyRenderer::to_terminal(
+            verbosity, palette, reasons,
+        )),
     }
 }
 
@@ -245,7 +256,8 @@ mod tests {
     #[test]
     fn every_mode_produces_a_renderer() {
         for mode in Presentation::ALL {
-            let _: Box<dyn Renderer> = renderer(mode, Verbosity::default(), Palette::default());
+            let _: Box<dyn Renderer> =
+                renderer(mode, Verbosity::default(), Palette::default(), false);
         }
     }
 }

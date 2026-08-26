@@ -468,6 +468,41 @@ is watching a merge happen the way they watch a scan.
 `--identity hardware` folds a machine across a DHCP lease, the same way it
 follows one in a comparison.
 
+## Why a port is in the state it is
+
+```bash
+zond scan 192.168.0.0/24 --reason
+```
+
+A verdict you cannot check is a verdict you have to take on trust. `--reason`
+shows the packet behind every one:
+
+```
+  1  192.168.0.1  kabelbox.local  2 open
+     answered  ARP  an address resolution reply
+               ICMP_unreachable  unreachable for a probed port, via 192.168.0.254
+     ports     22/tcp   open      ssh OpenSSH 9.6
+                 reason  SYN/ACK  2.24 ms
+               443/tcp  filtered
+                 reason  ICMP prohibited
+               8080/tcp filtered
+                 reason  no reply
+```
+
+**The two `filtered` ports are different findings.** One was dropped by a
+firewall that said so; the other answered nothing at all — and an absence is
+only as good as the scan that waited for it. The word is the same and the
+evidence is not.
+
+The host lines say the same thing one level up. An ICMP error the host sent for
+itself proves the host is there; the same error `via` a router proves only that
+something in the path speaks for that address, which is not the same claim.
+
+It works on a scan, on a record, and on any file — including one nmap wrote,
+whose own reasons are read back. `reason = true` in `cli.toml` turns it on for
+good. Not on `--pipe`, whose fields are a stable interface; a program reads the
+JSON, which carries all of it unconditionally.
+
 ## Reading a scan back
 
 ```bash
