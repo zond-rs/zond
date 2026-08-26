@@ -32,10 +32,9 @@ use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
 use zond_engine::journal::store::{self, Journal, Retention};
 use zond_engine::system::privilege;
-use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ZondConfig};
+use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ScopedIp, ZondConfig};
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 use crate::error::Error;
 use crate::exit::Outcome;
@@ -374,10 +373,16 @@ fn outcome(report: &ScanReport, stopped: bool) -> Outcome {
 /// A port scan announces the same address again for every port that settles, so
 /// this is a tally rather than a count: what each address has open, and the
 /// running sum across them.
+///
+/// Keyed by the address the engine keyed the host under, zone and all. An IPv6
+/// link-local names a different machine on every segment it is heard on, so
+/// `fe80::1%en0` and `fe80::1%en1` are two hosts; keyed by the bare address they
+/// would be one, and the second to answer would report the first's open ports as
+/// having closed.
 #[derive(Debug, Default)]
 struct Tally {
     /// What each address has open.
-    open: HashMap<IpAddr, usize>,
+    open: HashMap<ScopedIp, usize>,
     /// Their sum, carried rather than added up again on every event.
     total: usize,
 }
@@ -385,7 +390,7 @@ struct Tally {
 impl Tally {
     /// Records what `ip` has open now, and returns how many addresses have
     /// answered and how many ports are open across them.
-    fn record(&mut self, ip: IpAddr, open: usize) -> (usize, usize) {
+    fn record(&mut self, ip: ScopedIp, open: usize) -> (usize, usize) {
         let previously = self.open.insert(ip, open).unwrap_or(0);
         self.total = self.total.saturating_sub(previously) + open;
 
@@ -405,10 +410,11 @@ impl Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use zond_engine::Zone;
 
-    fn ip(last: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(192, 0, 2, last))
+    fn ip(last: u8) -> ScopedIp {
+        ScopedIp::unscoped(IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
     }
 
     /// A port scan announces the same address once per port that settles, so the
@@ -447,6 +453,24 @@ mod tests {
             (3, 5),
             "a host with nothing open still counts"
         );
+    }
+
+    /// The same link-local address on two interfaces is two machines, and the
+    /// tally has to count them as two.
+    ///
+    /// Keyed by the bare address they would collide: the second interface's host
+    /// would overwrite the first's entry, so the host count would stall at one
+    /// and the total would swing to whichever of them answered last. Both
+    /// figures are what the line at the bottom of a scan reports.
+    #[test]
+    fn the_same_link_local_on_two_interfaces_is_two_hosts() {
+        let mut tally = Tally::default();
+        let addr = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+        let en0 = ScopedIp::scoped(addr, Zone::new(1, "en0"));
+        let en1 = ScopedIp::scoped(addr, Zone::new(2, "en1"));
+
+        assert_eq!(tally.record(en0, 2), (1, 2));
+        assert_eq!(tally.record(en1, 3), (2, 5));
     }
 
     /// A count that went down takes the total down with it.

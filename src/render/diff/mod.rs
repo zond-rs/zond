@@ -490,6 +490,7 @@ mod tests {
                 failures: Vec::new(),
                 unroutable: Vec::new(),
                 probes: Vec::new(),
+                origin: None,
             })
         };
 

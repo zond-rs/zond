@@ -2085,6 +2085,7 @@ mod tests {
             failures: Vec::new(),
             unroutable: Vec::new(),
             probes: vec![probes],
+            origin: None,
         });
 
         ScanReport::recorded("test", vec![phase], Vec::new())

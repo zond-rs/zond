@@ -131,6 +131,7 @@ pub(crate) fn scoped(hosts: Vec<Host>, covered: &str) -> zond_engine::ScanReport
         failures: Vec::new(),
         unroutable: Vec::new(),
         probes: Vec::new(),
+        origin: None,
     });
 
     ScanReport::recorded("test", vec![phase], hosts)

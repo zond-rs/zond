@@ -2403,8 +2403,6 @@ dependencies = [
 [[package]]
 name = "zond-engine"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "256540a238de195f885ec5ccf22cd016d3b4b8482efe3c83c7b0a6d44f9f8817"
 dependencies = [
  "aho-corasick",
  "anyhow",

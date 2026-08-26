@@ -35,7 +35,7 @@ path = "src/main.rs"
 # out of is not much of a scanner. `export-csv`, `export-html` and `export-nmap`
 # add no dependencies at all; the JSON pair shares the `serde_json` the journal
 # already pulls in.
-zond-engine = { version = "0.13.0", features = [
+zond-engine = { version = "0.13.0", path="../zond-engine",features = [
     "import-settings",
     "export-all",
     "import-json",
