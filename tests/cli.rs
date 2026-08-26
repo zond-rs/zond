@@ -1051,6 +1051,69 @@ fn a_report_written_to_a_file_can_be_read_back() {
     );
 }
 
+/// Reading another scanner's report names the scanner.
+///
+/// The document carries it and every export said so; the terminal, which is
+/// where somebody actually looks at a file a colleague sent them, did not.
+#[test]
+fn reading_a_foreign_report_names_what_produced_it() {
+    let home = config_home("read-foreign");
+    let file = home.join("theirs.xml");
+    std::fs::write(
+        &file,
+        concat!(
+            r#"<?xml version="1.0"?>"#,
+            r#"<nmaprun scanner="nmap" args="nmap -sn 192.0.2.0/24" start="1787000000" version="7.94">"#,
+            r#"<host><status state="up" reason="arp-response"/>"#,
+            r#"<address addr="192.0.2.1" addrtype="ipv4"/></host>"#,
+            r#"<runstats><finished time="1787000009" elapsed="9.27"/></runstats></nmaprun>"#,
+        ),
+    )
+    .expect("a writable target directory");
+
+    let read = zond_in(&home, &["read", file.to_str().expect("a utf-8 path")]);
+    assert_eq!(status(&read), 0, "{}", stderr(&read));
+
+    let said = stderr(&read);
+    assert!(
+        said.contains("by nmap 7.94"),
+        "the scanner that produced it was not named: {said}"
+    );
+
+    // And this engine's own report is not annotated with a version nobody asked
+    // about.
+    let out = home.join("mine.json");
+    let scan = zond_in(
+        &home,
+        &[
+            "-q",
+            "s",
+            "::1",
+            "-p",
+            "1",
+            "--no-journal",
+            "-o",
+            out.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let mine = zond_in(&home, &["read", out.to_str().expect("a utf-8 path")]);
+    assert_eq!(status(&mine), 0, "{}", stderr(&mine));
+
+    // The opening line alone: the rest of the commentary is full of prose that
+    // happens to contain the same words.
+    let opening = stderr(&mine)
+        .lines()
+        .find(|line| line.contains("reading "))
+        .expect("a line saying what is being read")
+        .to_owned();
+    assert!(
+        !opening.contains(" by "),
+        "this engine's own report was attributed as though it were foreign: {opening}"
+    );
+}
+
 /// Reading a fold back names the documents it was made from.
 ///
 /// `zond merge` writes the name of every source into the report, and until this

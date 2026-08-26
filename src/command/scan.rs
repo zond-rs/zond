@@ -32,7 +32,6 @@ use crate::cli::ScanArgs;
 use crate::command::{self, Recording};
 use crate::error::Error;
 use crate::exit::Outcome;
-use crate::export::Destination;
 use crate::render::{Phase, Renderer};
 use crate::target::{self, ScanTargets};
 
@@ -60,11 +59,7 @@ pub(crate) async fn run(
     // Before anything is sent: a misspelt extension is a mistake made in the
     // first second of a run that may take hours, and the end of one is the
     // worst moment to be told.
-    let destinations = Destination::resolve(
-        &args.export.output,
-        &args.export.output_as,
-        args.export.output_all.as_deref(),
-    )?;
+    let destinations = args.export.destinations()?;
 
     // Read once, here, and threaded down: `ports` and `config` come out of the
     // same document, and asking for them separately means parsing `engine.toml`

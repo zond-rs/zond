@@ -47,7 +47,6 @@ use crate::command;
 use crate::diagnostics::Verbosity;
 use crate::error::Error;
 use crate::exit::Outcome;
-use crate::export::Destination;
 use crate::render::style::Palette;
 use crate::render::{MergeSource, Phase, renderer};
 use crate::settings::Presentation;
@@ -61,11 +60,7 @@ pub(crate) fn run(
 ) -> Result<Outcome, Error> {
     // Before the document is read, so a misspelt extension is answered at once
     // rather than after the findings are in hand.
-    let destinations = Destination::resolve(
-        &args.export.output,
-        &args.export.output_as,
-        args.export.output_all.as_deref(),
-    )?;
+    let destinations = args.export.destinations()?;
 
     let (name, report) = command::scan_named(&args.source)?;
 
@@ -86,6 +81,7 @@ pub(crate) fn run(
             Phase::Recorded {
                 id: &name,
                 started_at: (!report.phases().is_empty()).then(|| report.started_at()),
+                produced_by: report.engine_version(),
             }
         } else {
             Phase::Folded {
@@ -97,14 +93,7 @@ pub(crate) fn run(
         renderer.started(phase, redaction)?;
     }
 
-    let written = if destinations.is_empty() {
-        renderer.finished(&report)?;
-        true
-    } else {
-        // Each file is named on standard error as it lands, which is the whole
-        // of what this run says.
-        crate::export::write_all(&destinations, &report, redaction)
-    };
+    let written = command::deliver(&report, &destinations, redaction, renderer.as_mut())?;
 
     // The scan's own verdict, carried through: a record of a run that left
     // ground uncovered reports as partial, the same as the run did.

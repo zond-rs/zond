@@ -109,6 +109,14 @@ pub(crate) enum Phase<'a> {
         /// stopped before it wrote a phase down. Saying nothing beats dating it
         /// to the moment it was read.
         started_at: Option<std::time::SystemTime>,
+        /// What produced the findings, as that scanner attributed itself.
+        ///
+        /// Passed whoever produced them, and named only where that was not this
+        /// engine — the renderer decides, so the one rule for telling those
+        /// apart stays in one place. A person reading somebody else's file has
+        /// no other way to see whose findings they are: the document says so and
+        /// the terminal did not.
+        produced_by: &'a str,
     },
     /// Reading a report that was folded out of documents rather than measured
     /// by one run.

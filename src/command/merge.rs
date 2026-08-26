@@ -63,7 +63,6 @@ use crate::command;
 use crate::diagnostics::Verbosity;
 use crate::error::Error;
 use crate::exit::Outcome;
-use crate::export::Destination;
 use crate::render::merge as render;
 use crate::render::style::{Palette, Style};
 use crate::render::{MergeSource, Phase, renderer};
@@ -80,11 +79,7 @@ pub(crate) fn run(
     // rather than after every document is in hand. `diff` does the same for its
     // two, and with eight the difference is one message against eight files'
     // worth of reading thrown away.
-    let destinations = Destination::resolve(
-        &args.export.output,
-        &args.export.output_as,
-        args.export.output_all.as_deref(),
-    )?;
+    let destinations = args.export.destinations()?;
 
     // Before the documents are read, since nothing about one of them decides
     // this. Refused here rather than by the grammar so the message can point at
@@ -136,22 +131,17 @@ pub(crate) fn run(
     }
     let report = merge.finish();
 
-    let written = if destinations.is_empty() {
-        renderer.finished(&report)?;
+    let written = command::deliver(&report, &destinations, redaction, renderer.as_mut())?;
 
-        // Only where the report reached a terminal. Somebody who redirected it
-        // has already answered the question this line asks.
-        if verbosity.narrates() && std::io::stdout().is_terminal() {
-            render::printed(
-                &mut std::io::stderr(),
-                Style::commentary(presentation, palette),
-            )?;
-        }
-        true
-    } else {
-        // Each file is named on standard error as it lands.
-        crate::export::write_all(&destinations, &report, redaction)
-    };
+    // Only where the report reached a terminal. Somebody who redirected it has
+    // already answered the question this line asks, and somebody who named a
+    // file has answered it twice over.
+    if destinations.is_empty() && verbosity.narrates() && std::io::stdout().is_terminal() {
+        render::printed(
+            &mut std::io::stderr(),
+            Style::commentary(presentation, palette),
+        )?;
+    }
 
     // The sources' own verdict, carried through. A fold of scans that left
     // ground uncovered describes a network nobody finished looking at, and

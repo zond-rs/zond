@@ -481,6 +481,14 @@ The same rule as everywhere else: a name that is a file on disk is read as one,
 and anything else is a record id. Nothing is probed. A scan still being recorded
 prints what it has committed so far, which is a little behind what it has found.
 
+A report another scanner produced says so, so a file a colleague sent you is
+never mistaken for one of your own scans:
+
+```
+$ zond read theirs.xml
+• reading theirs.xml, a scan by nmap 7.94 from 2026-08-17T20:53:20Z
+```
+
 Reading a merged report back is the only way to see what went into it:
 
 ```

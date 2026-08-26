@@ -1203,6 +1203,7 @@ mod tests {
             counting(Phase::Recorded {
                 id: "01AAA",
                 started_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                produced_by: "0.13.0",
             }),
             None,
             "a record read off disk has nothing running to count"

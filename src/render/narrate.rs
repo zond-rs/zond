@@ -157,15 +157,11 @@ impl Narrator {
             }
             // No exclusion line: what a record holds is what the scan covered,
             // and whatever it was kept out of was kept out at the time.
-            // A document that carries no phase has no date of its own, and
-            // reading it is not a reason to give it one.
-            Phase::Recorded { id, started_at } => (
-                match started_at {
-                    Some(at) => format!("reading {id}, a scan from {}", field::timestamp(at)),
-                    None => format!("reading {id}"),
-                },
-                None,
-            ),
+            Phase::Recorded {
+                id,
+                started_at,
+                produced_by,
+            } => (read_line(id, started_at, produced_by), None),
             Phase::Merged { .. } | Phase::Folded { .. } => unreachable!("answered above"),
         };
 
@@ -427,20 +423,57 @@ fn timing(report: &ScanReport) -> String {
     format!(", drawn from {} of scanning", field::span(span))
 }
 
+/// Whether an attribution names the scanner that produced it.
+///
+/// The one rule for telling a foreign report from this engine's, and the reason
+/// it is a rule rather than a comparison: a scanner that is not this one
+/// attributes itself with its name — `nmap 7.94` — and this engine records a
+/// bare crate version, because a document of its own has never needed telling
+/// apart from itself. Comparing against *this build's* version would answer
+/// wrongly for a record an older build of this engine left behind.
+fn names_its_scanner(engine_version: &str) -> bool {
+    engine_version.contains(' ')
+}
+
 /// What produced a source, in a form that names it.
 ///
-/// A foreign scanner attributes itself with its name — `nmap 7.94` — and this
-/// engine records a bare version, because a document of its own has never needed
-/// telling apart from itself. In a fold it does: `0.13.0` sitting beside
-/// `nmap 7.94` leaves a reader to work out which tool the bare number belongs
-/// to. So a version that already names its scanner is left alone, and one that
-/// does not is this engine's and is named as such.
+/// For a listing, where `0.13.0` sitting beside `nmap 7.94` would leave a reader
+/// to work out which tool the bare number belongs to. An attribution that
+/// already names its scanner is left alone; one that does not is this engine's
+/// and is named as such.
 fn produced_by(engine_version: &str) -> String {
-    if engine_version.contains(' ') {
+    if names_its_scanner(engine_version) {
         return engine_version.to_owned();
     }
 
     format!("{} {engine_version}", zond_engine::format::ENGINE_NAME)
+}
+
+/// The line that opens a document being read.
+///
+/// Three facts, each present only where the document has it: what is being read,
+/// who produced it, and when. This engine's own attribution is left off, because
+/// a reader of `zond read latest` knows what produced it and a line saying so on
+/// every read is furniture; another scanner's is the whole point, since nothing
+/// else on a terminal says whose findings these are.
+fn read_line(id: &str, started_at: Option<std::time::SystemTime>, produced_by: &str) -> String {
+    let by = if names_its_scanner(produced_by) {
+        format!(" by {produced_by}")
+    } else {
+        String::new()
+    };
+    let from = match started_at {
+        Some(at) => format!(" from {}", field::timestamp(at)),
+        None => String::new(),
+    };
+
+    // A document with neither is a document there is nothing to say about but
+    // its name, and "a scan" on its own is not worth a clause.
+    if by.is_empty() && from.is_empty() {
+        return format!("reading {id}");
+    }
+
+    format!("reading {id}, a scan{by}{from}")
 }
 
 // ╔════════════════════════════════════════════╗
@@ -456,7 +489,7 @@ fn produced_by(engine_version: &str) -> String {
 mod tests {
     use super::*;
 
-    use crate::render::test_support::{Capture, host, scoped};
+    use crate::render::test_support::{Capture, host, recorded_at, scoped};
 
     /// A run says nothing about ports it never probed.
     ///
@@ -562,7 +595,7 @@ mod tests {
         MergeSource {
             name,
             engine_version,
-            observed_at: crate::render::test_support::recorded_at(),
+            observed_at: recorded_at(),
             hosts: Some(hosts),
         }
     }
@@ -580,6 +613,51 @@ mod tests {
             .started(Phase::Merged { sources }, Redaction::None)
             .expect("a capture never fails");
         capture.text()
+    }
+
+    // -----------------------------------------------------------------------
+    // What a document being read says about itself
+    // -----------------------------------------------------------------------
+
+    /// Another scanner's report says whose it is.
+    ///
+    /// It did not, and nothing else on a terminal did either: the document knew,
+    /// the JSON said `produced_by`, the HTML colophon said it, and the one place
+    /// a person actually reads a scan said nothing at all.
+    #[test]
+    fn reading_another_scanners_report_names_the_scanner() {
+        let said = read_line("q1.xml", Some(recorded_at()), "nmap 7.94");
+        assert_eq!(
+            said,
+            format!(
+                "reading q1.xml, a scan by nmap 7.94 from {}",
+                field::timestamp(recorded_at())
+            )
+        );
+    }
+
+    /// This engine's own does not, because a bare version on every read is
+    /// furniture: whoever typed `zond read latest` knows what produced it.
+    #[test]
+    fn reading_this_engines_own_report_says_nothing_about_the_scanner() {
+        let said = read_line("latest", Some(recorded_at()), "0.13.0");
+
+        assert!(!said.contains("0.13.0"), "{said}");
+        assert!(said.starts_with("reading latest, a scan from"), "{said}");
+    }
+
+    /// A document with nothing to date it by is not dated, and one with nothing
+    /// to say at all is just named.
+    #[test]
+    fn a_document_saying_nothing_about_itself_is_only_named() {
+        assert_eq!(
+            read_line("q1.xml", None, "nmap 7.94"),
+            "reading q1.xml, a scan by nmap 7.94"
+        );
+        assert_eq!(
+            read_line("mystery.json", None, "0.13.0"),
+            "reading mystery.json"
+        );
     }
 
     // -----------------------------------------------------------------------

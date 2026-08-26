@@ -354,6 +354,34 @@ async fn drive(
     Ok(if written { outcome } else { Outcome::Partial })
 }
 
+/// Puts a finished report where the command was told to put it, and says
+/// whether it landed.
+///
+/// **The terminal, or the files, and never both.** A scan does both, because
+/// somebody is watching it happen and the file is for later. Nobody watches a
+/// document be read or folded, so naming a file there is saying where the report
+/// goes rather than asking for a second copy of it — and answering
+/// `zond read latest -o out.json` with the whole report on standard output as
+/// well means a shell full of a scan they asked to have put in a file.
+///
+/// Shared by [`read`] and [`merge`] because it is one rule, and a rule stated
+/// twice is a rule that drifts.
+pub(crate) fn deliver(
+    report: &ScanReport,
+    destinations: &[Destination],
+    redaction: Redaction,
+    renderer: &mut dyn Renderer,
+) -> Result<bool, Error> {
+    if destinations.is_empty() {
+        renderer.finished(report)?;
+        return Ok(true);
+    }
+
+    // Each file is named on standard error as it lands, which is the whole of
+    // what such a run says.
+    Ok(crate::export::write_all(destinations, report, redaction))
+}
+
 /// What the run amounted to.
 fn outcome(report: &ScanReport, stopped: bool) -> Outcome {
     if stopped {
