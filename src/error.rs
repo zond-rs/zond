@@ -74,6 +74,18 @@ pub(crate) enum Error {
         path: std::path::PathBuf,
     },
 
+    /// `zond merge` was given one scan. Folding needs something to fold against,
+    /// and a glob that matched a single file is the way this is usually reached.
+    ///
+    /// Refused here rather than by the grammar so the message can name the
+    /// command that does print one report, which is the thing the person
+    /// wanted.
+    #[error("one scan is not a merge; `zond read {named}` prints a single report")]
+    NotAFold {
+        /// What was named, so the remedy can be typed as it stands.
+        named: String,
+    },
+
     /// A journal could not be read or written.
     #[error("{0}")]
     Journal(#[from] zond_engine::journal::format::JournalError),
@@ -217,6 +229,7 @@ impl Error {
             | Error::UnknownFormatName { .. }
             | Error::FormatNotBuilt { .. }
             | Error::WrongPhase { .. }
+            | Error::NotAFold { .. }
             | Error::AmbiguousJournal { .. }
             // A plan that does not match, or a scan already running: both are
             // the caller asking for something that cannot be done, not a fault.

@@ -16,7 +16,7 @@
 //! A sweep is recorded like a port scan, and continued the same way: an address
 //! that answered, or that was asked as many times as it is going to be, is one
 //! a later sitting does not repeat. `zond journal` lists what is on record and
-//! `zond journal report` prints any of it back.
+//! `zond read` prints any of it back.
 
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::store::Journal;

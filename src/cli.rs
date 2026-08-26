@@ -73,6 +73,52 @@ pub(crate) enum Command {
 
     /// Fold several scans into one report.
     Merge(MergeArgs),
+
+    /// Print a scan that is already written down.
+    Read(ReadArgs),
+}
+
+/// Arguments to `zond read`.
+#[derive(Debug, Args)]
+#[command(after_help = read_help())]
+pub(crate) struct ReadArgs {
+    /// The scan to print: a file, or a record as `zond journal` lists them.
+    ///
+    /// Named the way either side of a comparison is. A name that is a file on
+    /// disk is read as one, taking this engine's JSON or nmap's XML from its
+    /// extension; anything else is taken for a record id, which may be shortened
+    /// to any prefix that names only one, or `latest`.
+    #[arg(value_name = "SCAN")]
+    pub source: String,
+
+    /// Where to write it, instead of the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
+}
+
+/// What `zond read --help` ends with.
+fn read_help() -> String {
+    "\
+Examples:
+  zond read latest              print what the last scan found
+  zond read merged.json         a folded report, and the documents it came from
+  zond read theirs.xml          an nmap file, drawn the way this tool draws one
+  zond read q1.xml -o q1.json   convert, since the writers are already there
+
+Nothing is probed:
+  Every one of these is already written down. A scan still being recorded prints
+  what it has committed so far, which is a little behind what it has found.
+
+Where it goes:
+  The terminal, unless -o names a file, and then only the file. A scan prints as
+  well as writes because you are watching it happen; nobody watches a document
+  being read.
+
+A folded report says what went into it:
+  `zond merge` writes the name of every document it folds into the report, and
+  those names survive being exported and folded again. Reading one back is what
+  shows them."
+        .to_string()
 }
 
 /// Arguments to `zond merge`.
@@ -90,7 +136,7 @@ pub(crate) struct MergeArgs {
     /// **The order they are given in does not matter.** A fold is ordered by
     /// each document's own clock, so there is no way to hand them over
     /// backwards.
-    #[arg(value_name = "SCAN", num_args = 2.., required = true)]
+    #[arg(value_name = "SCAN", num_args = 1.., required = true)]
     pub sources: Vec<String>,
 
     /// What makes two records the same host.
@@ -221,8 +267,8 @@ pub(crate) struct JournalArgs {
 /// spellings borrowed from there.
 ///
 /// Besides the terminal for a scan, and *instead of* it for
-/// [`Report`](JournalCommand::Report). The difference is whether anybody is
-/// watching the run that produces the report. See that command.
+/// [`Read`](Command::Read) and [`Merge`](Command::Merge). The difference is
+/// whether anybody is watching the run that produces the report.
 #[derive(Debug, Args, Default)]
 pub(crate) struct ExportArgs {
     /// Write the report to FILE, in the format its extension names.
@@ -289,39 +335,15 @@ pub(crate) enum JournalCommand {
     #[command(visible_alias = "ls")]
     List(PageArgs),
 
-    /// Show one scan in full.
+    /// Show one record's own details: where it is, how far it got, what is
+    /// holding it.
+    ///
+    /// The record, not the findings. `zond read <ID>` prints what the scan
+    /// found.
     Show {
         /// Which one, as `zond journal` lists it.
         #[arg(value_name = "ID")]
         id: String,
-    },
-
-    /// Print what one scan found, the way it was printed when it ran.
-    ///
-    /// The same output `zond discover` and `zond scan` end with, taken from the
-    /// record instead of from the network. Nothing is probed and nothing is
-    /// contacted, so a scan can be read back long after the terminal it ran in
-    /// is gone. A scan still running prints what it has written down so far,
-    /// which is a little behind what it has found.
-    ///
-    /// Naming a file with -o writes it there and prints nothing: `zond journal
-    /// report latest -o out.json` says which files it wrote and leaves your
-    /// terminal alone. A scan does both, because you are watching a scan.
-    ///
-    /// `zond journal show` is the record's own details: where it is, how far it
-    /// got, what is holding it.
-    Report {
-        /// Which one, as `zond journal` lists it, or `latest`.
-        #[arg(value_name = "ID")]
-        id: String,
-
-        /// Where to write it instead of the terminal.
-        ///
-        /// The same spellings a scan takes, so a record can be exported long
-        /// after the run that made it: `zond journal report latest -o out.json`.
-        /// Give none of these and the report is printed.
-        #[command(flatten)]
-        export: ExportArgs,
     },
 
     /// Delete records: the ones named, or the ones no longer worth keeping.
@@ -402,8 +424,8 @@ pub(crate) struct DiscoverArgs {
     /// Every sweep is recorded by default, because the moment you want to
     /// continue one is after it was cut short, and a flag you would have had to
     /// pass beforehand is a flag you did not pass. `zond journal` lists what is
-    /// on record, `zond journal report` prints one back, and
-    /// `zond journal prune` clears them out.
+    /// on record, `zond read <ID>` prints one back, and `zond journal prune`
+    /// clears them out.
     ///
     /// A record holds the addresses you swept and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one

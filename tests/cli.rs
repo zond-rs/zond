@@ -975,21 +975,21 @@ fn a_limit_that_is_not_a_count_or_unlimited_is_refused() {
     );
 }
 
-/// `zond journal report -o` writes the file and leaves the terminal alone.
+/// `zond read -o` writes the file and leaves the terminal alone.
 ///
 /// Somebody asking for a record in a file has said where they want it. A scan
 /// prints as well as writes because they are watching it happen; nothing is
 /// happening here but a read, so what they hear is which file was written.
 #[test]
 fn an_exported_report_does_not_also_print() {
-    let home = config_home("journal-report-export");
+    let home = config_home("read-export");
 
     let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
     assert_eq!(status(&scan), 0, "{}", stderr(&scan));
 
     let out = home.join("out.json");
     let path = out.to_str().expect("a printable path");
-    let exported = zond_in(&home, &["journal", "report", "latest", "-o", path]);
+    let exported = zond_in(&home, &["read", "latest", "-o", path]);
 
     assert_eq!(status(&exported), 0, "{}", stderr(&exported));
     assert!(
@@ -1010,20 +1010,107 @@ fn an_exported_report_does_not_also_print() {
     );
 }
 
-/// Naming no file still prints, which is what the subcommand is for.
+/// Naming no file still prints, which is what the command is for.
 #[test]
 fn a_report_asked_for_on_the_terminal_is_printed() {
-    let home = config_home("journal-report-print");
+    let home = config_home("read-print");
 
     let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1"]);
     assert_eq!(status(&scan), 0, "{}", stderr(&scan));
 
-    let printed = zond_in(&home, &["--pipe", "journal", "report", "latest"]);
+    let printed = zond_in(&home, &["--pipe", "read", "latest"]);
     assert_eq!(status(&printed), 0, "{}", stderr(&printed));
     assert!(
         stdout(&printed).contains("::1"),
         "the record should have been printed: {}",
         stdout(&printed)
+    );
+}
+
+/// A report written to a file is read back out of it, whichever command wrote
+/// it. This is the loop that was open: everything could write one and nothing
+/// could open one.
+#[test]
+fn a_report_written_to_a_file_can_be_read_back() {
+    let home = config_home("read-a-file");
+
+    let out = home.join("scan.json");
+    let path = out.to_str().expect("a printable path");
+    let scan = zond_in(
+        &home,
+        &["-q", "s", "::1", "-p", "1", "--no-journal", "-o", path],
+    );
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let printed = zond_in(&home, &["--pipe", "read", path]);
+    assert_eq!(status(&printed), 0, "{}", stderr(&printed));
+    assert!(
+        stdout(&printed).contains("::1"),
+        "the file should have been printed: {}",
+        stdout(&printed)
+    );
+}
+
+/// Reading a fold back names the documents it was made from.
+///
+/// `zond merge` writes the name of every source into the report, and until this
+/// command existed nothing would show them: the provenance was written and
+/// unreadable.
+#[test]
+fn reading_a_fold_back_names_what_went_into_it() {
+    let home = config_home("read-a-fold");
+    let (first, second) = (home.join("first.json"), home.join("second.json"));
+
+    for file in [&first, &second] {
+        let scan = zond_in(
+            &home,
+            &[
+                "-q",
+                "s",
+                "127.0.0.1",
+                "-p",
+                "7",
+                "--no-journal",
+                "-o",
+                file.to_str().expect("a utf-8 path"),
+            ],
+        );
+        assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    }
+
+    let merged = home.join("merged.json");
+    let folded = zond_in(
+        &home,
+        &[
+            "-q",
+            "merge",
+            first.to_str().expect("a utf-8 path"),
+            second.to_str().expect("a utf-8 path"),
+            "-o",
+            merged.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&folded), 0, "{}", stderr(&folded));
+
+    let read = zond_in(&home, &["read", merged.to_str().expect("a utf-8 path")]);
+    assert_eq!(status(&read), 0, "{}", stderr(&read));
+
+    let said = stderr(&read);
+    assert!(said.contains("folded from 2 sources"), "{said}");
+    assert!(said.contains("first.json"), "{said}");
+    assert!(said.contains("second.json"), "{said}");
+}
+
+/// One scan is not a merge, and the refusal names the command that prints one.
+#[test]
+fn merging_one_scan_points_at_read() {
+    let one = zond("merge-one-source", &["merge", "only.json"]);
+
+    assert_ne!(status(&one), 0);
+    assert!(
+        stderr(&one).contains("zond read only.json"),
+        "the refusal should name the remedy: {}",
+        stderr(&one)
     );
 }
 
@@ -1159,13 +1246,12 @@ fn a_fold_names_its_sources_on_standard_error() {
     );
 }
 
-/// One source is not a fold. Refused by the grammar, so `zond merge
-/// chunk*.json` cannot report success on a glob that matched a single file.
+/// Naming nothing at all is refused by the grammar.
+///
+/// Naming *one* is refused by the command instead, so the message can point at
+/// `zond read`: see `merging_one_scan_points_at_read`.
 #[test]
-fn folding_fewer_than_two_scans_is_a_usage_error() {
-    let one = zond("merge-arity", &["merge", "only.json"]);
-    assert_eq!(status(&one), 2, "{}", stderr(&one));
-
+fn folding_no_scans_at_all_is_a_usage_error() {
     let none = zond("merge-arity-none", &["merge"]);
     assert_eq!(status(&none), 2, "{}", stderr(&none));
 }
@@ -1212,7 +1298,7 @@ fn a_source_that_cannot_be_read_ends_the_fold() {
 }
 
 /// Naming a file replaces the terminal rather than adding to it, which is
-/// `zond journal report`'s rule: nobody is watching a fold happen.
+/// `zond read`'s rule: nobody is watching a fold happen.
 #[test]
 fn naming_a_file_is_where_the_merged_report_goes() {
     let home = config_home("merge-output");

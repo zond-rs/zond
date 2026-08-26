@@ -12,10 +12,10 @@
 //! wrote a file still prints, because the person watching it asked for a scan
 //! and the file is for later.
 //!
-//! `zond journal report` is the one place that is not so, and for the same
-//! reason: nobody is watching a record being fetched, so naming a file there is
-//! naming where the report goes rather than adding a copy of it. See
-//! [`journal`](crate::command::journal).
+//! `zond read` and `zond merge` are where that is not so, and for the same
+//! reason: nobody is watching a document be read or folded, so naming a file
+//! there is naming where the report goes rather than adding a copy of it. See
+//! [`read`](crate::command::read).
 //!
 //! ## Three ways to name a destination, and one that decides the format
 //!

@@ -18,15 +18,12 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use crate::cli::{ExportArgs, JournalArgs, JournalCommand, PageArgs};
-use crate::command;
+use crate::cli::{JournalArgs, JournalCommand, PageArgs};
 use crate::diagnostics::Verbosity;
 use crate::error::Error;
 use crate::exit::Outcome;
-use crate::export::Destination;
 use crate::render::journal as render;
 use crate::render::style::{Mark, Palette, Style};
-use crate::render::{Phase, renderer};
 use crate::settings::{self, EntryLimit, Presentation};
 use zond_engine::journal::paths;
 use zond_engine::journal::store::{self, Entry, Retention};
@@ -40,12 +37,6 @@ pub(crate) fn run(
     verbosity: Verbosity,
     palette: Palette,
 ) -> Result<Outcome, Error> {
-    // Before the lock below: `report` may write through a `Renderer`, which owns
-    // its own handle on standard output.
-    if let Some(JournalCommand::Report { id, export }) = args.what.as_ref() {
-        return report(id, export, presentation, verbosity, palette);
-    }
-
     let mut out = io::stdout().lock();
     // The record stream's answer, not standard error's: `zond journal | less`
     // redirects this one alone. Inert in every mode but `standard`, which is the
@@ -80,7 +71,6 @@ pub(crate) fn run(
         Some(JournalCommand::Prune { ids, dry_run, .. }) => {
             remove(ids, *dry_run, presentation, &mut out, style)
         }
-        Some(JournalCommand::Report { .. }) => unreachable!("handled above"),
     }
 }
 
@@ -298,74 +288,6 @@ fn show(
 
     render::show(entry, presentation, out, style)?;
     Ok(Outcome::Complete)
-}
-
-/// One scan, printed the way it was printed when it ran, or written to the files
-/// this was asked for and then not printed.
-///
-/// The record holds the hosts a scan found and a phase per sitting, which is
-/// everything the end of a run prints. So this rebuilds the report and hands it
-/// to the same renderer, and the output is the same output. Nothing is probed
-/// and the journal's lock is not taken, so this is safe to run against a scan
-/// that is still going; what comes back is then everything written down as of
-/// the last checkpoint.
-///
-/// **Naming a file replaces the terminal rather than adding to it.** A scan
-/// prints as well as writes, because the person who started it is watching it
-/// happen and the file is for later. Nobody is watching a record being fetched.
-/// `zond journal report latest -o out.json` is somebody saying where they want
-/// this, and answering it with the whole report on standard output as well means
-/// a shell full of a scan they asked to have put in a file. What they hear is
-/// which files were written.
-///
-/// The exit code follows the scan rather than the reading of it: a record of a
-/// scan that left ground uncovered reports as partial, the same as the scan did.
-fn report(
-    id: &str,
-    export: &ExportArgs,
-    presentation: Presentation,
-    verbosity: Verbosity,
-    palette: Palette,
-) -> Result<Outcome, Error> {
-    // Before the record is read, so a misspelt extension is answered at once
-    // rather than after the findings are in hand.
-    let destinations = Destination::resolve(
-        &export.output,
-        &export.output_as,
-        export.output_all.as_deref(),
-    )?;
-
-    let entries = read()?;
-    let entry = find(&entries, id)?;
-    let report = store::report(&entry.directory)?;
-
-    // From this machine's settings rather than from the record. A journal holds
-    // what the scan saw, and whether to mask it on the way out is a decision
-    // belonging to whoever is reading it now.
-    let redaction = command::redaction(&command::engine_settings(None)?.config);
-
-    let written = if destinations.is_empty() {
-        let mut renderer = renderer(presentation, verbosity, palette);
-        renderer.started(
-            Phase::Recorded {
-                id: &entry.manifest.id,
-                started_at: entry.manifest.created_at,
-            },
-            redaction,
-        )?;
-        renderer.finished(&report)?;
-        true
-    } else {
-        // Each file is named on standard error as it lands, which is the whole
-        // of what this run says.
-        crate::export::write_all(&destinations, &report, redaction)
-    };
-
-    let outcome = command::outcome(&report, false);
-
-    // A record that could not be written where it was asked is a request that
-    // half happened, whatever the scan it describes amounted to.
-    Ok(if written { outcome } else { Outcome::Partial })
 }
 
 /// Deletes the journals named, whatever their age.

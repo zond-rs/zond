@@ -11,9 +11,9 @@ Two phases, and they are two commands. `zond discover` finds which hosts on a
 network are alive; `zond scan` finds which of a host's ports are open.
 
 Three more read back what those left behind. `zond journal` lists the scans this
-machine has a record of, and continues one that stopped part way.
-`zond diff` says what changed between any two of them, and `zond merge` folds
-several into one report.
+machine has a record of, and continues one that stopped part way. `zond read`
+prints one, from a record or from any file. `zond diff` says what changed
+between any two of them, and `zond merge` folds several into one report.
 
 ## Installing
 
@@ -359,8 +359,8 @@ $ zond journal
 
 ```bash
 zond scan --resume 06G3JC          # continue it; a prefix is enough
-zond journal report latest         # print what it found, as the run printed it
-zond journal report latest -o out.json
+zond read latest                   # print what it found, as the run printed it
+zond read latest -o out.json
 zond journal show 06G3JC           # where it is, how far it got, what holds it
 zond journal prune --older-than 30d
 ```
@@ -467,6 +467,36 @@ is watching a merge happen the way they watch a scan.
 
 `--identity hardware` folds a machine across a DHCP lease, the same way it
 follows one in a comparison.
+
+## Reading a scan back
+
+```bash
+zond read latest              # what the last scan found, as the run printed it
+zond read merged.json         # a folded report, and the documents it came from
+zond read theirs.xml          # an nmap file, drawn the way this tool draws one
+zond read q1.xml -o q1.json   # convert, since the writers are already there
+```
+
+The same rule as everywhere else: a name that is a file on disk is read as one,
+and anything else is a record id. Nothing is probed. A scan still being recorded
+prints what it has committed so far, which is a little behind what it has found.
+
+Reading a merged report back is the only way to see what went into it:
+
+```
+$ zond read merged.json
+• reading merged.json, folded from 3 sources
+•   q1.xml         176d  nmap 7.94
+•   baseline.json  8d    zond-engine 0.12.1
+•   latest         4m    zond-engine 0.13.0
+```
+
+Those names are written into the report by `zond merge` and survive being
+exported and folded again. What does not survive is what each source held on its
+own — a fold puts every document's hosts into one set — so the counts the merge
+itself printed are not there to read back.
+
+As everywhere, naming a file replaces the terminal rather than adding to it.
 
 ## Scan settings
 

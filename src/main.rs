@@ -156,6 +156,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         }
         Command::Diff(args) => command::diff::run(args, presentation, palette),
         Command::Merge(args) => command::merge::run(args, presentation, verbosity, palette),
+        Command::Read(args) => command::read::run(args, presentation, verbosity, palette),
         Command::Journal(_) => unreachable!("handled above"),
     }
 }

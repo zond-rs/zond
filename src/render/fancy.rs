@@ -145,7 +145,7 @@ fn counting(phase: Phase<'_>) -> Option<Counting> {
     match phase {
         Phase::Discovery { .. } => Some(Counting::Hosts),
         Phase::PortScan { .. } => Some(Counting::Ports),
-        Phase::Recorded { .. } | Phase::Merged { .. } => None,
+        Phase::Recorded { .. } | Phase::Merged { .. } | Phase::Folded { .. } => None,
     }
 }
 
@@ -1202,7 +1202,7 @@ mod tests {
         assert_eq!(
             counting(Phase::Recorded {
                 id: "01AAA",
-                started_at: std::time::SystemTime::UNIX_EPOCH,
+                started_at: Some(std::time::SystemTime::UNIX_EPOCH),
             }),
             None,
             "a record read off disk has nothing running to count"

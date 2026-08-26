@@ -126,8 +126,10 @@ impl Narrator {
         // Its own shape. A fold has a line per source rather than one line and a
         // qualifier under it, and those lines are the whole of what lets a
         // reader check the report that follows.
-        if let Phase::Merged { sources } = phase {
-            return self.folding(sources);
+        match phase {
+            Phase::Merged { sources } => return self.folding(sources),
+            Phase::Folded { id, sources } => return self.folded(id, sources),
+            _ => {}
         }
 
         let (line, excluded) = match phase {
@@ -155,11 +157,16 @@ impl Narrator {
             }
             // No exclusion line: what a record holds is what the scan covered,
             // and whatever it was kept out of was kept out at the time.
+            // A document that carries no phase has no date of its own, and
+            // reading it is not a reason to give it one.
             Phase::Recorded { id, started_at } => (
-                format!("reading {id}, a scan from {}", field::timestamp(started_at)),
+                match started_at {
+                    Some(at) => format!("reading {id}, a scan from {}", field::timestamp(at)),
+                    None => format!("reading {id}"),
+                },
                 None,
             ),
-            Phase::Merged { .. } => unreachable!("answered above"),
+            Phase::Merged { .. } | Phase::Folded { .. } => unreachable!("answered above"),
         };
 
         self.remark(&line)?;
@@ -188,7 +195,30 @@ impl Narrator {
             "folding {count} {} into one report, oldest first",
             plural(count as u128, "source")
         ))?;
+        self.sources(sources)
+    }
 
+    /// The same, for a fold being read back rather than made.
+    ///
+    /// A merged report carries the name every phase was folded under, so what
+    /// went into it survives being written to a file and read again — including
+    /// through a second fold, which leaves the labels its sources were already
+    /// given alone. This is the only thing that shows them.
+    ///
+    /// What it cannot show is what each source held, because a fold puts every
+    /// document's hosts into one set and no source's own count comes back out.
+    /// See [`MergeSource::hosts`].
+    fn folded(&mut self, id: &str, sources: &[MergeSource<'_>]) -> io::Result<()> {
+        let count = sources.len();
+        self.remark(&format!(
+            "reading {id}, folded from {count} {}",
+            plural(count as u128, "source")
+        ))?;
+        self.sources(sources)
+    }
+
+    /// One line per source, in the order given, with the columns measured.
+    fn sources(&mut self, sources: &[MergeSource<'_>]) -> io::Result<()> {
         let name = sources
             .iter()
             .map(|source| source.name.len())
@@ -201,13 +231,17 @@ impl Narrator {
             .unwrap_or_default();
 
         for source in sources {
+            // The host count only where it is still knowable.
+            let held = match source.hosts {
+                Some(hosts) => format!(", {hosts} {}", plural(hosts as u128, "host")),
+                None => String::new(),
+            };
+
             self.remark(&format!(
-                "  {:name$}  {:age$}  {}, {} {}",
+                "  {:name$}  {:age$}  {}{held}",
                 source.name,
                 field::age(source.observed_at),
                 produced_by(source.engine_version),
-                source.hosts,
-                plural(source.hosts as u128, "host"),
             ))?;
         }
 
@@ -522,7 +556,7 @@ mod tests {
             name,
             engine_version,
             observed_at: crate::render::test_support::recorded_at(),
-            hosts,
+            hosts: Some(hosts),
         }
     }
 

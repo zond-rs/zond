@@ -100,10 +100,29 @@ pub(crate) enum Phase<'a> {
     /// announce. It is still a phase, because this is where a renderer is told
     /// the masking policy for what it is about to print.
     Recorded {
-        /// The record being read, as `zond journal` lists it.
+        /// What it was named on the command line: a path, or a record id.
         id: &'a str,
-        /// When the scan it holds began.
-        started_at: std::time::SystemTime,
+        /// When the scan it holds began, where the document says.
+        ///
+        /// `None` for one that carries no phase to date it by — a report from
+        /// another scanner that recorded no timing, or a record of a scan that
+        /// stopped before it wrote a phase down. Saying nothing beats dating it
+        /// to the moment it was read.
+        started_at: Option<std::time::SystemTime>,
+    },
+    /// Reading a report that was folded out of documents rather than measured
+    /// by one run.
+    ///
+    /// Told apart from [`Recorded`](Self::Recorded) because a fold has no single
+    /// scan to date it by, and because what it does have — which documents went
+    /// into it — is the thing a reader needs and the thing nothing else would
+    /// show them. It is in the file: every folded phase carries the name it was
+    /// folded under.
+    Folded {
+        /// What it was named on the command line.
+        id: &'a str,
+        /// The documents it was folded from, oldest first.
+        sources: &'a [MergeSource<'a>],
     },
     /// Folding several documents into one report, rather than running a scan.
     ///
@@ -134,7 +153,12 @@ pub(crate) struct MergeSource<'a> {
     /// The moment its findings are as of, which is what the fold orders by.
     pub(crate) observed_at: std::time::SystemTime,
     /// How many hosts it holds, before any of them are folded together.
-    pub(crate) hosts: usize,
+    ///
+    /// `None` where that can no longer be known, which is every source of a
+    /// report read back from disk: a fold puts the hosts of every document into
+    /// one set, and no source's own count survives that. Available only to the
+    /// command doing the folding, which still has the documents.
+    pub(crate) hosts: Option<usize>,
 }
 
 /// Everything a run shows, as it happens.

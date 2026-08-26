@@ -21,7 +21,9 @@
 //! [`merge`](zond_engine::merge) for what that costs.
 //!
 //! Two is the minimum. One source is not a fold, and accepting it would let
-//! `zond merge chunk*.json` report success on a glob that matched a single file.
+//! `zond merge chunk*.json` report success on a glob that matched a single
+//! file. What that person wanted is [`read`](super::read), and the refusal says
+//! so rather than restating the grammar at them.
 //!
 //! ## Each source may be a file or a record
 //!
@@ -42,10 +44,10 @@
 //! ## Where the report goes
 //!
 //! The terminal, unless a file is named, and then only the file. That is
-//! [`journal report`](super::journal)'s rule rather than a scan's, and for its
-//! reason: a scan prints as well as writes because somebody is watching it
-//! happen and the file is for later. Nobody watches a merge happen. Naming a
-//! file is saying where this goes.
+//! [`read`](super::read)'s rule rather than a scan's, and for its reason: a
+//! scan prints as well as writes because somebody is watching it happen and the
+//! file is for later. Nobody watches a merge happen. Naming a file is saying
+//! where this goes.
 //!
 //! What is said on standard error either way is which documents went in, in the
 //! order they were folded. A merged report is only as good as its sources, and
@@ -83,6 +85,15 @@ pub(crate) fn run(
         &args.export.output_as,
         args.export.output_all.as_deref(),
     )?;
+
+    // Before the documents are read, since nothing about one of them decides
+    // this. Refused here rather than by the grammar so the message can point at
+    // the command that prints a single report; see `Error::NotAFold`.
+    if args.sources.len() < 2 {
+        return Err(Error::NotAFold {
+            named: args.sources.first().cloned().unwrap_or_default(),
+        });
+    }
 
     // In the order they were named, and every one of them before any is folded.
     // A failure here is the whole command; see the module.
@@ -165,7 +176,7 @@ fn described(sources: &[(String, ScanReport)]) -> Vec<MergeSource<'_>> {
             name,
             engine_version: report.engine_version(),
             observed_at: report.observed_at(),
-            hosts: report.host_count(),
+            hosts: Some(report.host_count()),
         })
         .collect()
 }
@@ -311,10 +322,10 @@ mod tests {
             ),
         ];
 
-        let counts: Vec<usize> = described(&sources)
+        let counts: Vec<Option<usize>> = described(&sources)
             .iter()
             .map(|source| source.hosts)
             .collect();
-        assert_eq!(counts, [1, 2]);
+        assert_eq!(counts, [Some(1), Some(2)]);
     }
 }
