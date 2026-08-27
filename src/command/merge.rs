@@ -144,11 +144,8 @@ pub(crate) fn run(
         )?;
     }
 
-    // The sources' own verdict, carried through. A fold of scans that left
-    // ground uncovered describes a network nobody finished looking at, and
-    // saying otherwise because the fold itself went fine would be the merged
-    // report claiming more than its sources did.
-    let outcome = command::outcome(&report, false);
+    // The sources' own verdict, carried through; see `concluded`.
+    let outcome = command::concluded(&report);
 
     // A report that could not be written where it was asked is a request that
     // half happened, whatever the sources amounted to.

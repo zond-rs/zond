@@ -94,6 +94,18 @@ pub(crate) enum Phase<'a> {
         /// What was asked about, and on which ports.
         targets: &'a ScanTargets,
     },
+    /// Watching a link, having sent nothing.
+    ///
+    /// The links are the whole of the ground: a watch covers no address, so
+    /// there is no range to announce and no total to count towards. What a
+    /// reader wants before it starts is where it is standing and how long it
+    /// intends to stand there.
+    Listen {
+        /// The links being read.
+        links: &'a [zond_engine::model::ip::scoped::Zone],
+        /// How long it will run, or `None` for until it is stopped.
+        span: Option<std::time::Duration>,
+    },
     /// Reading a scan back out of the record it left, rather than running one.
     ///
     /// Nothing is probed, so there is no ground about to be covered to

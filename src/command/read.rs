@@ -98,7 +98,7 @@ pub(crate) fn run(
 
     // The scan's own verdict, carried through: a record of a run that left
     // ground uncovered reports as partial, the same as the run did.
-    let outcome = command::outcome(&report, false);
+    let outcome = command::concluded(&report);
 
     // A document that could not be written where it was asked is a request that
     // half happened, whatever the scan it describes amounted to.

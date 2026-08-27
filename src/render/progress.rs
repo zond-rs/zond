@@ -19,7 +19,18 @@
 //!
 //! ## It answers two different questions, in turn
 //!
-//! A tip, then the count, then a tip, every [`WINDOW`], from the first frame.
+//! The count and a tip take turns, and **each keeps the screen for its own
+//! length of time**: [`COUNT_WINDOW`] for a figure, [`INSIGHT_WINDOW`] for a
+//! sentence. Holding both for the same two seconds meant one of them was always
+//! wrong — a number sitting still for as long as it takes to read a line of
+//! prose, or a line of prose leaving before it had been.
+//!
+//! **Which half a run opens on is a coin flip.** Advice-first was the rule, on
+//! the grounds that the count is zero at the top of a run and the spinner has
+//! already said the only thing that number would. True, and it made every run
+//! open identically — and a scan that finds something in its first two seconds
+//! has a real figure to show. Half of runs still open on `0 hosts found so far`,
+//! which is the price of the mix.
 //!
 //! **Which tip is decided per run, not per turn.** Advancing through the list as
 //! a run goes on sounds right and is useless: a sweep of a `/24` is over inside
@@ -31,12 +42,16 @@
 //! There is no settling period, because there is nothing to settle into: a sweep
 //! of a `/24` is over in a couple of seconds, and a device that waits ten before
 //! it has anything to say would spend its whole life on a run that had already
-//! finished. Two seconds a turn means a scan that takes six shows three things
-//! rather than one.
+//! finished.
 //!
-//! Advice comes first for the same reason. At the top of a run the count is
-//! zero, the least interesting number it will ever hold, and the spinner has
-//! already said the only thing the count would have: something is happening.
+//! ## Space turns it over now
+//!
+//! Waiting out a five-second sentence to see a number is the one thing this
+//! device can do that is worse than saying nothing, so it does not have to be
+//! waited out: the space bar puts the other half up and starts its window
+//! afresh. Read by [`input`](crate::input) alongside `q`, and answered here
+//! rather than passed to the scan, which has no opinion about what the line
+//! says.
 //!
 //! ## The cursor is put away while it runs
 //!
@@ -75,11 +90,19 @@ use crate::render::style::Style;
 /// terminal being written to over ssh is not spending its bandwidth on it.
 const TICK: Duration = Duration::from_millis(125);
 
-/// How long each thing the line has to say stays on screen.
+/// How long the count keeps the screen.
 ///
-/// Two seconds: long enough to read a short sentence, short enough that a run
-/// which is over in five has still shown more than one of them.
-const WINDOW: Duration = Duration::from_secs(2);
+/// Two seconds. It is a figure, and a figure is read at a glance; longer would
+/// leave something motionless on the one line whose job is to look alive.
+const COUNT_WINDOW: Duration = Duration::from_secs(2);
+
+/// How long a tip keeps the screen.
+///
+/// Five, because it is a sentence rather than a figure. A sentence that leaves
+/// before it has been read is worse than no sentence at all: the reader knows
+/// they missed something and has no way to ask for it back — which is also why
+/// the space bar exists.
+const INSIGHT_WINDOW: Duration = Duration::from_secs(5);
 
 /// The turning thing on the left.
 ///
@@ -119,22 +142,60 @@ pub(crate) enum Counting {
     Ports,
 }
 
+/// Which of the line's two halves is up.
+///
+/// They are not interchangeable and the difference is why this is a type rather
+/// than a parity: one is a figure and the other is a sentence, they are read at
+/// different speeds, and each holds the screen for its own
+/// [`window`](Self::window).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Saying {
+    /// What the run has turned up: hosts, or open ports across hosts.
+    Count,
+    /// One of [`TIPS`].
+    Insight,
+}
+
+impl Saying {
+    /// How long this half keeps the screen before the line turns over.
+    fn window(self) -> Duration {
+        match self {
+            Saying::Count => COUNT_WINDOW,
+            Saying::Insight => INSIGHT_WINDOW,
+        }
+    }
+
+    /// The other half.
+    fn other(self) -> Self {
+        match self {
+            Saying::Count => Saying::Insight,
+            Saying::Insight => Saying::Count,
+        }
+    }
+}
+
 /// The line's state while it is running.
 struct Live {
     /// How many hosts have arrived.
     hosts: usize,
     /// How many open ports have been found on them.
     open: usize,
-    /// When the run started, which is what decides between counting and
-    /// advising.
-    since: Instant,
+    /// Which half is up.
+    saying: Saying,
+    /// When it went up.
+    ///
+    /// Held rather than derived from how long the run has been going, which is
+    /// what this was. Two windows of different lengths make that arithmetic
+    /// harder to read than the state it replaces — and the space bar moves the
+    /// line off a schedule the elapsed time knows nothing about.
+    turned_at: Instant,
     /// What is being counted.
     counting: Counting,
     /// How standard error may be drawn on.
     style: Style,
     /// Which frame the spinner is on.
     frame: usize,
-    /// Which tip this run opens with.
+    /// Which tip is up, and where this run entered the list.
     ///
     /// See the module note: a short run only ever shows its first, so the list
     /// has to be entered at a different place each time rather than walked from
@@ -174,14 +235,16 @@ pub(crate) fn start(counting: Counting, style: Style) {
         return;
     };
 
+    let (tip, saying) = opening();
     *live = Some(Live {
         hosts: 0,
         open: 0,
-        since: Instant::now(),
+        saying,
+        turned_at: Instant::now(),
         counting,
         style,
         frame: 0,
-        tip: opening_tip(),
+        tip,
         shown: false,
     });
     drop(live);
@@ -276,18 +339,74 @@ fn show_cursor() {
     let _ = stderr.flush();
 }
 
-/// Where in the list this run starts.
+/// Where in the list this run starts, and which half it opens on.
 ///
-/// From the clock rather than a random number generator: this picks a tip, and a
-/// dependency earning its place has to do more than that. The nanoseconds inside
-/// the current second are as unpredictable as anything a scan needs here, and
-/// two runs a second apart do not collide.
-fn opening_tip() -> usize {
+/// From the clock rather than a random number generator: this picks a tip and
+/// tosses a coin, and a dependency earning its place has to do more than that.
+/// The nanoseconds inside the current second are as unpredictable as anything a
+/// scan needs here, and two runs a second apart do not collide.
+///
+/// **The two answers come off different digits of one reading, deliberately.**
+/// `nanos % 6` and `nanos % 2` are the same coin: an even remainder from the
+/// first forces an even one from the second, so three of the six tips could only
+/// ever appear on a run that opened one way and the mix would be no mix at all.
+/// The tip comes off the bottom of the nanosecond and the coin off the
+/// millisecond above it, which turn over at rates a thousandfold apart.
+fn opening() -> (usize, Saying) {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.subsec_nanos());
 
-    nanos as usize % TIPS.len()
+    opening_from(nanos)
+}
+
+/// The arithmetic of [`opening`], over a reading handed in rather than taken.
+///
+/// Split out because the property worth pinning is about the two remainders and
+/// not about the clock, and a test that samples the clock in a loop measures its
+/// own sleep: at a fixed interval `nanos % 6` walks a cycle of three, which says
+/// nothing about what the function does with the arbitrary readings real runs
+/// give it.
+fn opening_from(nanos: u32) -> (usize, Saying) {
+    let saying = if (nanos / 1_000_000).is_multiple_of(2) {
+        Saying::Count
+    } else {
+        Saying::Insight
+    };
+
+    (nanos as usize % TIPS.len(), saying)
+}
+
+/// Puts the other half of the line up now, and starts its window afresh.
+///
+/// The space bar, and the only thing that moves this line off its own schedule.
+/// Nothing is drawn here: the next tick is at most [`TICK`] away and picks the
+/// change up, which is faster than a key can be pressed again and keeps every
+/// write to the terminal in one place.
+///
+/// A no-op when no line is running, which is what lets [`input`](crate::input)
+/// answer the key without knowing whether there is a terminal to draw on.
+pub(crate) fn advance() {
+    if let Some(mut live) = held()
+        && let Some(live) = live.as_mut()
+    {
+        turn(live);
+    }
+}
+
+/// Swaps the halves and restarts the window.
+///
+/// The tip moves on when a tip is what is *leaving*, so the one that is up stays
+/// put for the whole of its turn and the next insight is the next in the list —
+/// which is what lets a run enter the list wherever [`opening`] put it and still
+/// walk the whole thing.
+fn turn(live: &mut Live) {
+    if live.saying == Saying::Insight {
+        live.tip = (live.tip + 1) % TIPS.len();
+    }
+
+    live.saying = live.saying.other();
+    live.turned_at = Instant::now();
 }
 
 /// Erases whatever is on the current line and returns to its start.
@@ -321,36 +440,36 @@ fn draw() {
 /// permanent line's text sits: those open with a glyph and one space, and a
 /// spinner that shifted the column every time it turned would be the one moving
 /// thing on the screen that moved sideways.
-fn line(live: &Live) -> String {
+fn line(live: &mut Live) -> String {
     let style = live.style;
     let spinner = style.accent(FRAMES[live.frame]);
 
     format!("{spinner}  {}", said(live))
 }
 
-/// The count, or a tip, depending on how long this has been going.
-fn said(live: &Live) -> String {
-    let style = live.style;
-
-    // Alternating from the first frame, advice on the even turns. Measured in
-    // milliseconds rather than whole seconds so the switch lands where the
-    // window ends rather than at the next tick of the clock.
-    let turn = live
-        .since
-        .elapsed()
-        .as_millis()
-        .saturating_div(WINDOW.as_millis().max(1));
-
-    if turn % 2 == 1 {
-        return counted(live);
+/// Whichever half is up, turning the line over first if that half has had its
+/// time.
+///
+/// **The turn is here rather than a step beside it**, which is why this takes
+/// the line by mutable reference to answer a question about what it says.
+/// Nothing can render this line without the half that is up having been given
+/// its window, because rendering it is what asks. A separate call is one a
+/// future edit to [`draw`] can leave out, and the failure that produces — a
+/// line that comes up and never changes again — reads exactly like a scan that
+/// finished in the first two seconds.
+fn said(live: &mut Live) -> String {
+    if live.turned_at.elapsed() >= live.saying.window() {
+        turn(live);
     }
 
-    // A run long enough to overflow this has been going rather longer than the
-    // universe, so the wrap is theatre. A silent truncation on a thirty-two bit
-    // target is the kind of theatre that becomes a bug report.
-    let along = usize::try_from(turn / 2).unwrap_or(0);
-    let tip = TIPS[(live.tip + along) % TIPS.len()];
-    format!("{} {}", style.faint("tip"), style.plain(tip))
+    match live.saying {
+        Saying::Count => counted(live),
+        Saying::Insight => {
+            let style = live.style;
+            let tip = TIPS[live.tip % TIPS.len()];
+            format!("{} {}", style.faint("tip"), style.plain(tip))
+        }
+    }
 }
 
 /// The count, with the figures carrying the weight and the words around them
@@ -389,13 +508,12 @@ fn tally(style: Style, count: usize, singular: &str, plural: &str) -> String {
 mod tests {
     use super::*;
 
-    fn live(hosts: usize, counting: Counting, elapsed: Duration) -> Live {
+    fn live(hosts: usize, counting: Counting, saying: Saying) -> Live {
         Live {
             hosts,
             open: 0,
-            since: Instant::now()
-                .checked_sub(elapsed)
-                .expect("the machine has been up longer than the test pretends"),
+            saying,
+            turned_at: Instant::now(),
             counting,
             style: Style::bare(),
             frame: 0,
@@ -404,22 +522,64 @@ mod tests {
         }
     }
 
-    /// The same, opened at a chosen place in the list.
-    fn live_from(tip: usize, elapsed: Duration) -> Live {
-        Live {
-            tip,
-            ..live(0, Counting::Hosts, elapsed)
-        }
+    /// The same, with its current turn already `elapsed` old.
+    fn aged(mut live: Live, elapsed: Duration) -> Live {
+        live.turned_at = Instant::now()
+            .checked_sub(elapsed)
+            .expect("the machine has been up longer than the test pretends");
+        live
     }
 
-    /// The line opens with advice, because at the top of a run the count is zero
-    /// and the spinner has already said the only thing that number would.
-    #[test]
-    fn a_run_opens_with_advice() {
-        let opening = said(&live(0, Counting::Hosts, Duration::from_millis(1)));
+    /// What is up after the line has been asked what it says.
+    ///
+    /// Through `said` rather than a copy of its rule, so that a turn the drawing
+    /// path stopped taking is a turn these tests stop seeing.
+    fn after_drawing(mut live: Live) -> Saying {
+        let _ = said(&mut live);
+        live.saying
+    }
 
-        assert!(opening.starts_with("tip "), "{opening}");
-        assert!(opening.contains(TIPS[0]), "{opening}");
+    /// What a line says, asked the way the drawing path asks it.
+    fn says(mut live: Live) -> String {
+        said(&mut live)
+    }
+
+    /// How many of each remainder inside a millisecond the sweep below walks.
+    ///
+    /// A multiple of [`TIPS`]`.len()`, so every tip is reached the same number
+    /// of times within each millisecond and neither figure below is an artefact
+    /// of where the sweep stopped.
+    const PER_MILLISECOND: u32 = 600;
+
+    /// Every shape of clock reading that matters, as a nanosecond within a
+    /// second.
+    ///
+    /// The coin comes off the millisecond and the tip off the whole reading, so
+    /// a sweep has to move both. A flat range of a million holds the millisecond
+    /// at zero and proves only that the coin has one side — which is what the
+    /// first draft of this did.
+    fn readings() -> impl Iterator<Item = u32> {
+        (0..1_000u32).flat_map(|ms| (0..PER_MILLISECOND).map(move |rest| ms * 1_000_000 + rest))
+    }
+
+    /// Which half a run opens on is a coin flip, and it comes up both ways
+    /// equally often.
+    ///
+    /// The line used to open on advice every time; always opening the same way
+    /// is what this replaces. Swept over the readings a clock can give rather
+    /// than sampled from one, for the reason [`opening_from`] gives.
+    #[test]
+    fn a_run_opens_on_either_half_half_the_time() {
+        let total = readings().count();
+        let counts = readings()
+            .filter(|nanos| opening_from(*nanos).1 == Saying::Count)
+            .count();
+
+        assert_eq!(
+            counts * 2,
+            total,
+            "the coin is not even: {counts} of {total} open on the count"
+        );
     }
 
     /// One is one. A count that says `1 hosts` is a count nobody wrote on
@@ -433,20 +593,68 @@ mod tests {
         assert_eq!(tally(bare, 2, "host", "hosts"), "2 hosts");
     }
 
-    /// Advice and the count take turns from the first frame. A run that lasts
-    /// six seconds, which is most of them, shows three things rather than one.
+    /// The two halves take turns, and each keeps the screen for its own length
+    /// of time.
+    ///
+    /// A figure is read at a glance and a sentence is not, so holding both for
+    /// the same window meant one of them was always wrong. The boundaries are
+    /// pinned from both sides: a half that leaves early is a sentence nobody
+    /// finished, and one that stays late is the line standing still.
     #[test]
-    fn advice_and_the_count_take_turns_from_the_start() {
-        let at = |millis| said(&live(7, Counting::Hosts, Duration::from_millis(millis)));
+    fn each_half_keeps_the_screen_for_its_own_window() {
+        let still_up = |saying, millis| {
+            let line = aged(
+                live(7, Counting::Hosts, saying),
+                Duration::from_millis(millis),
+            );
+            after_drawing(line) == saying
+        };
 
-        assert!(at(500).starts_with("tip "), "{}", at(500));
-        assert_eq!(at(2_500), "7 hosts found so far", "the count never came");
-        assert!(at(4_500).starts_with("tip "), "advice came only once");
-        assert_eq!(at(6_500), "7 hosts found so far", "the count was retired");
+        assert!(still_up(Saying::Count, 1_900), "the count left early");
+        assert!(!still_up(Saying::Count, 2_100), "the count stayed late");
 
-        // The turn is two seconds, not one and not three.
-        assert!(at(1_900).starts_with("tip "), "the turn ended early");
-        assert_eq!(at(2_100), "7 hosts found so far", "the turn ran long");
+        assert!(still_up(Saying::Insight, 4_900), "the tip left early");
+        assert!(!still_up(Saying::Insight, 5_100), "the tip stayed late");
+    }
+
+    /// A turn puts the other half up and gives it the whole of its own window,
+    /// rather than whatever was left of the last one.
+    #[test]
+    fn a_half_that_has_just_come_up_gets_its_full_turn() {
+        let mut line = aged(
+            live(7, Counting::Hosts, Saying::Insight),
+            Duration::from_millis(5_100),
+        );
+        let _ = said(&mut line);
+        assert_eq!(line.saying, Saying::Count, "the tip had had its five");
+
+        // Its predecessor was four seconds over its window; none of that is
+        // charged to the half that replaced it.
+        let _ = said(&mut line);
+        assert_eq!(line.saying, Saying::Count, "the count was cut short");
+    }
+
+    /// Space puts the other half up now, and again, and back.
+    ///
+    /// Waiting out a five-second sentence to see a number is the one thing this
+    /// line can do that is worse than saying nothing.
+    #[test]
+    fn the_space_bar_turns_the_line_over_now() {
+        let mut line = live(7, Counting::Hosts, Saying::Insight);
+        assert!(said(&mut line).starts_with("tip "));
+
+        turn(&mut line);
+        assert_eq!(said(&mut line), "7 hosts found so far", "space did nothing");
+
+        turn(&mut line);
+        assert!(
+            said(&mut line).starts_with("tip "),
+            "and back again: {}",
+            said(&mut line)
+        );
+
+        // Not the tip that was up before, since that one has had its turn.
+        assert!(said(&mut line).contains(TIPS[1]), "{}", said(&mut line));
     }
 
     /// A sweep asks who is there. A port scan was told who is there, so what it
@@ -454,35 +662,36 @@ mod tests {
     /// one host and nine on nine are different findings.
     #[test]
     fn each_run_counts_what_it_is_for() {
-        let mid = Duration::from_millis(2_500);
-
         assert_eq!(
-            said(&live(12, Counting::Hosts, mid)),
+            says(live(12, Counting::Hosts, Saying::Count)),
             "12 hosts found so far"
         );
 
-        let mut scanning = live(2, Counting::Ports, mid);
+        let mut scanning = live(2, Counting::Ports, Saying::Count);
         scanning.open = 9;
-        assert_eq!(said(&scanning), "9 open ports on 2 hosts");
+        assert_eq!(says(scanning), "9 open ports on 2 hosts");
 
-        let mut alone = live(1, Counting::Ports, mid);
+        let mut alone = live(1, Counting::Ports, Saying::Count);
         alone.open = 1;
-        assert_eq!(said(&alone), "1 open port on 1 host");
+        assert_eq!(says(alone), "1 open port on 1 host");
 
-        let nothing = live(3, Counting::Ports, mid);
-        assert_eq!(said(&nothing), "0 open ports on 3 hosts");
+        let nothing = live(3, Counting::Ports, Saying::Count);
+        assert_eq!(says(nothing), "0 open ports on 3 hosts");
     }
 
     /// A long run works through the whole list from wherever it started.
     #[test]
     fn a_long_run_works_through_the_whole_list() {
         for opening in 0..TIPS.len() {
+            let mut line = live(0, Counting::Hosts, Saying::Insight);
+            line.tip = opening;
+
             let mut seen = Vec::new();
-            for turn in 0..TIPS.len() {
-                // Advice falls on the even turns; half a window in is
-                // comfortably inside one.
-                let step = u32::try_from(turn).expect("a handful of tips");
-                seen.push(said(&live_from(opening, WINDOW * (2 * step) + WINDOW / 2)));
+            for _ in 0..TIPS.len() {
+                seen.push(said(&mut line));
+                // Off to the count and back, which is the only way round.
+                turn(&mut line);
+                turn(&mut line);
             }
 
             for tip in TIPS {
@@ -501,10 +710,12 @@ mod tests {
     /// top would show the first tip and retire the other five.
     #[test]
     fn a_short_run_shows_a_different_tip_each_time() {
-        let opening = Duration::from_millis(500);
-
         let first: Vec<String> = (0..TIPS.len())
-            .map(|tip| said(&live_from(tip, opening)))
+            .map(|tip| {
+                let mut line = live(0, Counting::Hosts, Saying::Insight);
+                line.tip = tip;
+                said(&mut line)
+            })
             .collect();
 
         for tip in TIPS {
@@ -520,7 +731,7 @@ mod tests {
     fn the_opening_tip_moves_between_runs() {
         let mut seen = std::collections::HashSet::new();
         for _ in 0..200 {
-            seen.insert(opening_tip());
+            seen.insert(opening().0);
             std::thread::sleep(Duration::from_micros(50));
         }
 
@@ -529,6 +740,30 @@ mod tests {
             "every run would open on the same tip: {seen:?}"
         );
         assert!(seen.iter().all(|tip| *tip < TIPS.len()));
+    }
+
+    /// Which tip a run opens on does not decide which half it opens with.
+    ///
+    /// They come off one reading of the clock, and the obvious way to take both
+    /// — `nanos % 6` and `nanos % 2` — is one coin twice: an even remainder from
+    /// the first forces an even one from the second, so three of the six tips
+    /// could only ever appear on a run that opened on a count, and the mix would
+    /// be no mix at all.
+    #[test]
+    fn the_opening_tip_and_the_opening_half_are_not_the_same_coin() {
+        let pairs: std::collections::HashSet<(usize, Saying)> =
+            readings().map(opening_from).collect();
+
+        for tip in 0..TIPS.len() {
+            assert!(
+                pairs.contains(&(tip, Saying::Count)),
+                "tip {tip} never opens on a count"
+            );
+            assert!(
+                pairs.contains(&(tip, Saying::Insight)),
+                "tip {tip} never opens on a tip"
+            );
+        }
     }
 
     /// The whole line has to fit a narrow terminal. The erase sequence takes
@@ -542,9 +777,9 @@ mod tests {
             assert!(tip.chars().count() + 6 <= 64, "too long to draw: {tip}");
         }
 
-        let mut crowded = live(65_535, Counting::Ports, Duration::from_millis(2_500));
+        let mut crowded = live(65_535, Counting::Ports, Saying::Count);
         crowded.open = 1_000_000;
-        let widest = said(&crowded);
+        let widest = says(crowded);
         assert!(widest.chars().count() + 3 <= 64, "{widest}");
     }
 
@@ -555,6 +790,9 @@ mod tests {
     fn the_line_is_inert_when_it_was_never_started() {
         clear();
         seen(1, 1);
+        // Including the key: `input` reads it wherever stdin is a terminal, and
+        // that is not the same question as whether stderr is one.
+        advance();
         stop();
         clear();
 

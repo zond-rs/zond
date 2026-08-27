@@ -481,6 +481,7 @@ mod tests {
         let phase = |kind| {
             let mut targets = to_set(&["192.0.2.0/24"], None, None).expect("a range");
             ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
                 kind,
                 started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
                 elapsed: Duration::from_secs(1),

@@ -406,6 +406,88 @@ fn the_engines_settings_file_is_honoured() {
     assert!(stderr(&run).contains("engine.toml"), "{}", stderr(&run));
 }
 
+// ── zond listen ──────────────────────────────────────────────────────────────
+//
+// The grammar only. A watch opens a capture on every link that is up, and one
+// with no `--for` runs until it is stopped — so a test that got as far as
+// listening would need root to be meaningful and would hang where it had it.
+// Every case here is refused, or fails looking for a record, before a capture is
+// opened.
+//
+// What a watch concludes is tested where it can be: against a synthetic segment
+// in the engine's own `tests/listening.rs`.
+
+/// A watch may be given days, which is the span this phase is actually for.
+///
+/// `--for` and `--older-than` read one unit table now, and they did not: this
+/// spelling was refused as "not a length of time" by the one command documented
+/// as running for days. Paired with a record that does not exist, so the run
+/// stops at the lookup rather than going on to open a capture — reaching that
+/// far is itself the proof the span parsed.
+#[test]
+fn a_watch_may_be_asked_for_days() {
+    let refused = zond(
+        "listen-days",
+        &["l", "--for", "2d", "--resume", "nosuchrecord"],
+    );
+
+    assert!(
+        !stderr(&refused).contains("not a length of time"),
+        "2d is a length of time: {}",
+        stderr(&refused)
+    );
+    assert_eq!(
+        status(&refused),
+        2,
+        "it got past the span and stopped at the record: {}",
+        stderr(&refused)
+    );
+}
+
+/// A span this program cannot read is named as a span, before anything is
+/// opened.
+#[test]
+fn a_span_that_is_not_a_span_is_a_usage_error() {
+    for written in ["banana", "0", "10w"] {
+        let refused = zond(&format!("listen-span-{written}"), &["l", "--for", written]);
+        assert_eq!(
+            status(&refused),
+            2,
+            "--for {written} should be refused: {}",
+            stderr(&refused)
+        );
+    }
+}
+
+/// The links come from the record, so naming both says two different things
+/// about what to watch. Likewise a run that asks to continue a record while
+/// refusing to keep one.
+#[test]
+fn resuming_a_watch_conflicts_with_naming_links_or_declining_a_record() {
+    let with_links = zond("listen-resume-links", &["l", "en0", "--resume", "abc"]);
+    assert_eq!(status(&with_links), 2, "{}", stderr(&with_links));
+
+    let without_journal = zond(
+        "listen-resume-nojournal",
+        &["l", "--resume", "abc", "--no-journal"],
+    );
+    assert_eq!(status(&without_journal), 2, "{}", stderr(&without_journal));
+}
+
+/// A record this machine does not have is a usage error naming how many it does
+/// have, not a failed watch.
+#[test]
+fn resuming_a_watch_that_is_not_on_record_says_so() {
+    let refused = zond("listen-resume-missing", &["l", "--resume", "nosuchrecord"]);
+
+    assert_eq!(status(&refused), 2, "{}", stderr(&refused));
+    assert!(
+        stderr(&refused).contains("nosuchrecord"),
+        "the id that was not found is named: {}",
+        stderr(&refused)
+    );
+}
+
 // ── zond scan ────────────────────────────────────────────────────────────────
 //
 // Loopback answers even on a closed port, since the kernel sends a reset, so

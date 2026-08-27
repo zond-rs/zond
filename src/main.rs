@@ -160,6 +160,9 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         Command::Scan(args) => {
             command::scan::run(args, recording(args.no_journal), renderer.as_mut()).await
         }
+        Command::Listen(args) => {
+            command::listen::run(args, recording(args.no_journal), renderer.as_mut()).await
+        }
         Command::Diff(args) => command::diff::run(args, presentation, palette),
         Command::Merge(args) => {
             command::merge::run(args, presentation, verbosity, palette, reasons)

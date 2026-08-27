@@ -173,7 +173,11 @@ impl FancyRenderer {
 /// so there is nothing for a line at the bottom to say about it.
 fn counting(phase: Phase<'_>) -> Option<Counting> {
     match phase {
-        Phase::Discovery { .. } => Some(Counting::Hosts),
+        // One arm, because a watch is asking the sweep's question — who is
+        // there — and only asks it differently, by waiting rather than probing.
+        // What the line at the bottom counts follows from the question and not
+        // from how it was put.
+        Phase::Discovery { .. } | Phase::Listen { .. } => Some(Counting::Hosts),
         Phase::PortScan { .. } => Some(Counting::Ports),
         Phase::Recorded { .. } | Phase::Merged { .. } | Phase::Folded { .. } => None,
     }

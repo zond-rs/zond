@@ -143,6 +143,21 @@ impl Narrator {
                     withheld(targets.exclusions(), targets.excluded()),
                 )
             }
+            // No exclusion line, and no count of ground: a watch covers no
+            // address. Where it is standing and how long it means to stand
+            // there is the whole of what can be said before it starts.
+            Phase::Listen { links, span } => {
+                let names: Vec<&str> = links.iter().map(zond_engine::Zone::name).collect();
+                (
+                    format!(
+                        "listening on {} {}, {}",
+                        names.len(),
+                        plural(names.len() as u128, "link"),
+                        crate::command::listen::spoken_span(span),
+                    ),
+                    None,
+                )
+            }
             Phase::PortScan { targets } => {
                 let hosts = targets.hosts();
                 let probes = targets.probes();
@@ -711,6 +726,7 @@ mod tests {
         let phase = &report.phases()[0];
 
         let rebuilt = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
             kind: phase.kind(),
             started_at: phase.started_at(),
             elapsed: phase.elapsed(),

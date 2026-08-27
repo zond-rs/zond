@@ -521,6 +521,20 @@ pub(crate) fn answered(host: &Host) -> Option<String> {
 /// as surely as the host's own does and redaction that stopped at the header
 /// would not be redaction.
 pub(crate) fn answered_in_detail(reader: Reader, host: &Host) -> Vec<String> {
+    // Where nothing is qualified, the long form *is* the short form with line
+    // breaks in it. A local sweep records every reason through
+    // `StatusReason::basic`, which carries neither details nor a source, so
+    // `--reason` on one turned `ARP  DHCP  ICMP_echo  NDP` into four lines
+    // saying the same four words. A flag that costs four lines has to buy
+    // something with them.
+    if !host
+        .reasons()
+        .iter()
+        .any(|reason| reason.details.is_some() || reason.source.is_some())
+    {
+        return answered(host).into_iter().collect();
+    }
+
     let mut lines: Vec<String> = host
         .reasons()
         .iter()
@@ -1842,6 +1856,67 @@ mod tests {
         assert!(attributed.contains("via 192.0.2.254"), "{attributed}");
     }
 
+    /// `--reason` on a local sweep used to cost four lines and buy nothing.
+    ///
+    /// A sweep records every reason through `StatusReason::basic`, which carries
+    /// neither details nor a source — so the long form rendered exactly the
+    /// short form's four tokens, one per line. A flag that costs four lines has
+    /// to buy something with them.
+    #[test]
+    fn the_long_form_stays_compact_when_it_has_nothing_to_add() {
+        use zond_engine::model::host::status::{StatusProtocol, StatusReason};
+
+        let mut host = host(1);
+        for protocol in [
+            StatusProtocol::Arp,
+            StatusProtocol::Dhcp,
+            StatusProtocol::IcmpEcho,
+            StatusProtocol::Ndp,
+        ] {
+            host.record_evidence(
+                zond_engine::HostStatus::Up,
+                StatusReason::basic(protocol),
+            );
+        }
+
+        let lines = answered_in_detail(Reader::default(), &host);
+
+        assert_eq!(
+            lines,
+            vec![answered(&host).expect("the compact form")],
+            "one row, and the same row the short form draws"
+        );
+        assert_eq!(lines[0], "ARP  DHCP  ICMP_echo  NDP");
+    }
+
+    /// And it expands the moment one reason has something the short form drops.
+    ///
+    /// The fallback above must not swallow the case the flag exists for: one
+    /// qualified reason is enough to make every line worth its own row, because
+    /// a reader comparing them needs them aligned.
+    #[test]
+    fn one_qualified_reason_is_enough_to_open_the_long_form() {
+        use zond_engine::model::host::status::{StatusProtocol, StatusReason};
+
+        let mut host = host(1);
+        host.record_evidence(
+            zond_engine::HostStatus::Up,
+            StatusReason::basic(StatusProtocol::Arp),
+        );
+        host.record_evidence(
+            zond_engine::HostStatus::Up,
+            StatusReason::new(StatusProtocol::Tcp, "a segment overheard from this host"),
+        );
+
+        let lines = answered_in_detail(Reader::default(), &host);
+
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("overheard")),
+            "{lines:?}"
+        );
+    }
+
     /// Evidence the host gave for itself carries no `via`, because there is
     /// nobody in between to name.
     #[test]
@@ -2473,6 +2548,7 @@ mod tests {
 
         let mut scope = to_set(&["192.0.2.1"], None, None).expect("an address");
         let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
             elapsed: Duration::from_secs(1),

@@ -24,7 +24,7 @@ use zond_engine::model::ip::set::IpSet;
 use zond_engine::{ZondConfig, discover, discover_with_journal};
 
 use crate::cli::DiscoverArgs;
-use crate::command::{self, Recording};
+use crate::command::{self, Recording, Stopping};
 use crate::error::Error;
 use crate::exit::Outcome;
 use crate::render::{Phase, Renderer};
@@ -63,7 +63,16 @@ pub(crate) async fn run(
         None => discover(ips, &config).await?,
     };
 
-    command::drive(session, task, &destinations, redaction, renderer).await
+    command::drive(
+        session,
+        task,
+        &destinations,
+        redaction,
+        // A plan half-walked: stopping leaves ground uncovered.
+        Stopping::CutsShort,
+        renderer,
+    )
+    .await
 }
 
 /// A sweep of what the command line asked for.

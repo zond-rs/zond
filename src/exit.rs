@@ -42,6 +42,18 @@
 //! find. That result is narrower than what was asked for and dangerous to read
 //! as though it were not. A script that does not care writes
 //! `zond discover lan || true`.
+//!
+//! **A watch that was stopped is not a watch that was interrupted.** `zond
+//! listen en0` was asked to run until somebody stopped it, so `Ctrl-C` and `q`
+//! are how it finishes and it exits `0`. Under `--for` it has an end of its own
+//! again: reaching that end exits `0`, and being stopped before it exits `130`.
+//! That distinction is the whole reason a sensor can be wrapped in a script at
+//! all — the other reading leaves an untimed watch with no way to succeed — and
+//! it is drawn in [`Stopping`](crate::command::Stopping).
+//!
+//! Codes `1` and `3` mean for a watch what they mean everywhere else: a capture
+//! that would not open is a run that could not be carried out, and one that hit
+//! its ceiling on how many machines it will hold reports the inventory as short.
 
 /// The process exit status, and the whole set of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

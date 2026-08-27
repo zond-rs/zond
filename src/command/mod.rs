@@ -22,6 +22,7 @@
 pub(crate) mod diff;
 pub(crate) mod discover;
 pub(crate) mod journal;
+pub(crate) mod listen;
 pub(crate) mod merge;
 pub(crate) mod read;
 pub(crate) mod scan;
@@ -153,7 +154,11 @@ fn record(plan: &Plan, summary: String, limit: settings::EntryLimit) -> Option<J
         return None;
     };
 
-    if let Err(e) = std::fs::create_dir_all(&root) {
+    // Not `create_dir_all`: under `sudo` that leaves the directory owned by
+    // root, and every later run that needs no privileges — a listening phase
+    // needs none at all — then finds a journal directory it cannot write to and
+    // silently records nothing. The engine creates it and gives it away.
+    if let Err(e) = store::prepare_root(&root) {
         tracing::warn!(
             "not recording this run: {} is not writable ({e})",
             root.display()
@@ -250,9 +255,11 @@ pub(crate) struct Resumed {
 
 /// Reopens the record `id` names, ready to be continued.
 ///
-/// `counted` is the unit this phase measures in, for the line that says what is
+/// `counted` is the unit the phase measures in, for the line that says what is
 /// being continued. A sweep counts addresses and a port scan counts targets,
-/// and "targets" reads as address-and-port pairs, which a sweep has none of.
+/// and "targets" reads as address-and-port pairs, which a sweep has none of. A
+/// watch counts in nothing at all and is announced differently; see
+/// [`continuation`].
 ///
 /// The directory is looked for here rather than left to
 /// [`Journal::reopen`](zond_engine::journal::store::Journal::reopen), because a
@@ -275,7 +282,10 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
 
     let total = journal.manifest().total_targets;
     let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
-    tracing::info!("continuing {id}: {settled} of {total} {counted} already settled");
+    tracing::info!(
+        "continuing {id}: {}",
+        continuation(&plan, &journal, settled, total, counted)
+    );
 
     Ok(Resumed {
         id,
@@ -285,16 +295,75 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
     })
 }
 
+/// What continuing this record means, in the terms its own phase has.
+///
+/// **A watch settles nothing, so it cannot be announced as though it had.** The
+/// arithmetic the other two are continued by — a cursor, a watermark, a total —
+/// is arithmetic over an enumeration, and a listener enumerates nothing: it was
+/// pointed at a link, and the link carries what it carries. Every one of those
+/// numbers is therefore zero for it, and the line reading
+/// `0 of 0 links already settled` said the opposite of what the phase is, on
+/// every resume, in the one place a person is checking they named the right
+/// record.
+///
+/// What a watch has instead is what its earlier sittings heard, which is the
+/// whole of what reopening one buys: the findings are restored first, so the
+/// report describes the week rather than tonight.
+fn continuation(
+    plan: &Plan,
+    journal: &Journal,
+    settled: u128,
+    total: u128,
+    counted: &'static str,
+) -> String {
+    if plan.links().is_some() {
+        let machines = journal.restored().len();
+        return match machines {
+            0 => String::from("adding a sitting to a watch that has heard nobody yet"),
+            1 => String::from("adding a sitting to a watch, with 1 machine already on record"),
+            many => format!("adding a sitting to a watch, with {many} machines already on record"),
+        };
+    }
+
+    format!("{settled} of {total} {counted} already settled")
+}
+
+/// What it means for the user to stop this particular run.
+///
+/// **The answer is not the same for every phase**, and the exit status is part
+/// of this program's interface, so it is stated rather than assumed.
+///
+/// A sweep and a port scan have a plan and are working through it: stopping one
+/// leaves ground uncovered, which is what code 130 is for. A watch asked to run
+/// until it is stopped has no ground and no end of its own — being stopped is
+/// the only way it can finish, and reporting that as an interruption would leave
+/// `zond listen en0` with no way to succeed at all, so `zond listen en0 || alert`
+/// would fire every time somebody pressed `q`.
+///
+/// A watch given `--for` is back in the first case. It was asked for ten minutes
+/// and stopped at three, so it really was cut short, and a script sampling a
+/// segment on a timer wants to know the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stopping {
+    /// The run had work left, so stopping it cut it short.
+    CutsShort,
+    /// The run was asked to continue until stopped, so stopping it is how it
+    /// ends.
+    Completes,
+}
+
 /// Runs a scan the engine has already been asked for, and reports it.
 ///
 /// Watches the run happen so a person sees hosts as they are found rather than
 /// after a silence, stops cleanly when they ask it to, and says what the run
-/// amounted to. See [`input`] for what counts as asking.
+/// amounted to. See [`input`] for what counts as asking, and [`Stopping`] for
+/// what this run takes that to mean.
 async fn drive(
     session: ScanSession,
     task: ScanTask,
     destinations: &[Destination],
     redaction: Redaction,
+    stopping: Stopping,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
     // Taken apart because holding the whole session would borrow it twice in
@@ -331,6 +400,10 @@ async fn drive(
             }
             _ = stops.recv() => {
                 if announced {
+                    // Asked twice: leave now, giving up whatever is still in
+                    // flight. Interrupted whatever the phase is, because this is
+                    // the one path that abandons the run rather than winding it
+                    // down — there are findings still unwritten either way.
                     return Ok(Outcome::Interrupted);
                 }
                 announced = true;
@@ -350,7 +423,7 @@ async fn drive(
     // random between ready branches, and an abort closes the event stream, so
     // the loop can break before the request that caused it is ever read. The run
     // would then call itself complete having been cut short.
-    let outcome = outcome(&report, handle.should_stop());
+    let outcome = outcome(&report, handle.should_stop(), stopping);
     Ok(if written { outcome } else { Outcome::Partial })
 }
 
@@ -383,10 +456,37 @@ pub(crate) fn deliver(
 }
 
 /// What the run amounted to.
-fn outcome(report: &ScanReport, stopped: bool) -> Outcome {
-    if stopped {
-        Outcome::Interrupted
-    } else if report.is_partial() {
+///
+/// The order matters and is not obvious. A run that was stopped may also have
+/// had a strategy fail, and "interrupted" is the more useful of the two answers:
+/// it says the results are short because somebody said so, which is actionable,
+/// where "partial" invites the reader to look for a fault there was not.
+///
+/// The exception is a run whose stop *was* its ending — see [`Stopping`]. That
+/// one is not interrupted at all, so a failure it did have is the only thing
+/// left to report, and a watch that hit its host ceiling or could not open a
+/// capture still exits `3` rather than `0`.
+fn outcome(report: &ScanReport, stopped: bool, stopping: Stopping) -> Outcome {
+    if stopped && stopping == Stopping::CutsShort {
+        return Outcome::Interrupted;
+    }
+
+    concluded(report)
+}
+
+/// What a report amounts to for a command that ran no scan.
+///
+/// [`read`] and [`merge`] are handed reports somebody else measured. Nothing
+/// there can have been interrupted, because nothing there was running — so the
+/// only question left is the one the report answers about itself, which is
+/// whether its own coverage fell short.
+///
+/// Its own and not this command's: a fold of scans that left ground uncovered
+/// describes a network nobody finished looking at, and reporting otherwise
+/// because the fold itself went fine would have the merged report claim more
+/// than its sources did.
+pub(crate) fn concluded(report: &ScanReport) -> Outcome {
+    if report.is_partial() {
         Outcome::Partial
     } else {
         Outcome::Complete

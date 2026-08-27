@@ -29,7 +29,7 @@ use zond_engine::system::privilege;
 use zond_engine::{PortSet, ZondConfig, scan};
 
 use crate::cli::ScanArgs;
-use crate::command::{self, Recording};
+use crate::command::{self, Recording, Stopping};
 use crate::error::Error;
 use crate::exit::Outcome;
 use crate::render::{Phase, Renderer};
@@ -87,7 +87,16 @@ pub(crate) async fn run(
         None => scan(plan, &config).await?,
     };
 
-    command::drive(session, task, &destinations, redaction, renderer).await
+    command::drive(
+        session,
+        task,
+        &destinations,
+        redaction,
+        // A plan half-walked: stopping leaves ground uncovered.
+        Stopping::CutsShort,
+        renderer,
+    )
+    .await
 }
 
 /// A scan of what the command line asked for.

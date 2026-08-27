@@ -141,6 +141,7 @@ pub(crate) fn scoped_at(
 
     let mut targets = to_set(&[covered], None, None).expect("a parseable range");
     let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
         kind: ScanKind::Discovery,
         started_at,
         elapsed: Duration::from_secs(1),

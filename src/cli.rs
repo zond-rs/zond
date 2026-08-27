@@ -64,6 +64,10 @@ pub(crate) enum Command {
     #[command(visible_alias = "s")]
     Scan(ScanArgs),
 
+    /// Watch a link and record what it carries. Sends nothing.
+    #[command(visible_alias = "l")]
+    Listen(ListenArgs),
+
     /// Look at the scans this machine has a record of.
     #[command(visible_alias = "j")]
     Journal(JournalArgs),
@@ -397,12 +401,35 @@ pub(crate) enum JournalCommand {
     },
 }
 
-/// Parses an age as a count and a unit: `30d`, `12h`, `90m`, `45s`.
+/// The seconds one unit suffix stands for, or `None` for a suffix this program
+/// does not know.
+///
+/// **One table, because a program with two answers about what `d` means has a
+/// bug waiting in it.** `--older-than` and `--for` are both a count and a unit,
+/// and they diverged: one took days and the other refused them, on a flag whose
+/// own documentation talks about watches that run for days.
 ///
 /// Written out rather than pulled in, on the same reasoning the engine gives for
 /// its own small parsers: a dependency for four suffixes costs more than it
-/// saves. Bare digits are refused, because `--older-than 30` reads as thirty of
-/// something and there is no honest way to guess which.
+/// saves.
+fn unit_seconds(unit: &str) -> Option<u64> {
+    match unit {
+        "s" => Some(1),
+        "m" => Some(60),
+        "h" => Some(60 * 60),
+        "d" => Some(24 * 60 * 60),
+        _ => None,
+    }
+}
+
+/// Every unit suffix, for the message a rejected one gets.
+const UNITS: &str = "s, m, h, d";
+
+/// Parses an age as a count and a unit: `30d`, `12h`, `90m`, `45s`.
+///
+/// Bare digits are refused, unlike [`parse_duration`], because `--older-than 30`
+/// reads as thirty of something and there is no honest way to guess which. A
+/// watch's `--for` has an obvious default and this has none.
 fn age(input: &str) -> Result<std::time::Duration, String> {
     let (count, unit) = input.split_at(
         input
@@ -414,15 +441,109 @@ fn age(input: &str) -> Result<std::time::Duration, String> {
         .parse()
         .map_err(|_| format!("'{input}' does not start with a number"))?;
 
-    let seconds = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 60 * 60,
-        "d" => 24 * 60 * 60,
-        _ => return Err(format!("'{unit}' is not one of s, m, h, d")),
+    let seconds = unit_seconds(unit).ok_or_else(|| format!("'{unit}' is not one of {UNITS}"))?;
+
+    let seconds = count
+        .checked_mul(seconds)
+        .ok_or_else(|| format!("'{input}' is longer than this program can count"))?;
+
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
+/// Arguments to `zond listen`.
+#[derive(Debug, Args)]
+pub(crate) struct ListenArgs {
+    /// Which link to listen on: an interface name, `%en0`, or `lan`.
+    ///
+    /// Several may be given. With none, every interface that is up.
+    #[arg(value_name = "LINK", num_args = 0..)]
+    pub links: Vec<String>,
+
+    /// Stop after this long, rather than waiting to be told.
+    ///
+    /// Accepts a plain number of seconds, or a suffix: `30s`, `10m`, `4h`, `2d`.
+    /// Without it the watch runs until `Ctrl-C` or `q`, which is what a sensor
+    /// wants and what a bounded sample does not.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub r#for: Option<std::time::Duration>,
+
+    /// Record every machine heard, not only the ones attached to these links.
+    ///
+    /// A link carrying traffic to anywhere else carries evidence about
+    /// everywhere else: on a mirror port, every server a laptop connects to is
+    /// a real host with a real open port. True, and not an inventory of this
+    /// network — so by default it is left out. This asks for it, which is the
+    /// question "what does this network depend on" rather than "what is on it".
+    #[arg(long)]
+    pub everything: bool,
+
+    /// Do not write down what this watch hears.
+    ///
+    /// A watch is recorded by default, on the same reasoning a scan is: the
+    /// moment you want what it heard is after it stopped. A watch's record is
+    /// appended to rather than resumed — there is no progress to continue, so
+    /// `--resume` adds another sitting to the same record.
+    #[arg(long, conflicts_with = "resume")]
+    pub no_journal: bool,
+
+    /// Add a sitting to the watch with this id.
+    ///
+    /// The links come from the record. Nothing is skipped, because a watch
+    /// settles nothing: what this buys is that the earlier sittings' findings
+    /// are restored first, so the report describes the whole watch.
+    #[arg(long, value_name = "ID", conflicts_with = "links")]
+    pub resume: Option<String>,
+
+    /// Settings that change what the watch reads.
+    #[command(flatten)]
+    pub engine: EngineArgs,
+
+    /// Where to write the report, besides the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
+}
+
+/// How long a watch runs, as it is written on the command line.
+///
+/// Seconds by default, so a bare number means what a person expects. The
+/// suffixes are [`unit_seconds`]', which is the same table `--older-than` reads
+/// — including `d`, because a watch left running for days is what this phase is
+/// for and `--for 2d` used to be refused as not a length of time.
+pub(crate) fn parse_duration(text: &str) -> Result<std::time::Duration, String> {
+    let text = text.trim();
+
+    // Split on the first thing that is not a digit, so an unknown suffix is
+    // named rather than swallowed: taking only the last character read `4hh` as
+    // a bare number and then failed to parse `4h` as one, which reported a
+    // typo in the unit as a number that is not a number.
+    let (digits, unit) = match text.find(|c: char| !c.is_ascii_digit()) {
+        Some(at) => (&text[..at], &text[at..]),
+        None => (text, ""),
     };
 
-    Ok(std::time::Duration::from_secs(count * seconds))
+    let value: u64 = digits
+        .parse()
+        .map_err(|_| format!("'{text}' is not a length of time: try 30s, 10m or 4h"))?;
+
+    let multiplier = if unit.is_empty() {
+        1
+    } else {
+        unit_seconds(unit)
+            .ok_or_else(|| format!("'{unit}' is not one of {UNITS}: try 30s, 10m or 4h"))?
+    };
+
+    if value == 0 {
+        return Err(String::from("a watch of no time at all hears nothing"));
+    }
+
+    // A span nobody will reach, and the arithmetic below would wrap into a
+    // short one: `--for 99999999999999999999d` should be refused rather than
+    // quietly become a watch of nine minutes.
+    let seconds = value
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("'{text}' is longer than this program can count"))?;
+
+    Ok(std::time::Duration::from_secs(seconds))
 }
 
 /// Arguments to `zond discover`.
@@ -1197,5 +1318,91 @@ mod tests {
             panic!("that is the diff command");
         };
         assert_eq!(args.identity, Some(Identity::Hardware));
+    }
+
+    /// Both flags that take a length of time read the same units.
+    ///
+    /// They did not, and the divergence was in the direction that matters: a
+    /// watch is the one phase documented as running for days, and `--for 2d` was
+    /// the one spelling refused — reported as "not a length of time", which is
+    /// the least helpful thing to say about a unit the program next door
+    /// accepts. One table now answers for both, and this is what stops a unit
+    /// being added to one of them again.
+    #[test]
+    fn a_length_of_time_means_the_same_thing_to_every_flag_that_takes_one() {
+        for (written, expected) in [("45s", 45), ("10m", 600), ("4h", 14_400), ("2d", 172_800)] {
+            assert_eq!(
+                parse_duration(written).map(|d| d.as_secs()),
+                Ok(expected),
+                "--for {written}"
+            );
+            assert_eq!(
+                age(written).map(|d| d.as_secs()),
+                Ok(expected),
+                "--older-than {written}"
+            );
+        }
+    }
+
+    /// A bare number is seconds for a watch and refused for an age, which is the
+    /// one place the two are meant to differ.
+    ///
+    /// `--for 30` reads as thirty seconds and there is nothing else it could
+    /// sensibly be. `--older-than 30` reads as thirty of *something*, and
+    /// guessing would silently delete records on a scale nobody asked for.
+    #[test]
+    fn a_bare_number_is_a_watchs_seconds_and_never_an_age() {
+        assert_eq!(parse_duration("30").map(|d| d.as_secs()), Ok(30));
+        assert!(
+            age("30").is_err(),
+            "thirty of what? there is no honest guess"
+        );
+    }
+
+    /// A unit this program does not know is named, rather than reported as a
+    /// number that is not a number.
+    ///
+    /// Which is what splitting on the last character produced: `4hh` had its
+    /// final `h` taken as the unit, leaving `4h` to be parsed as digits, so a
+    /// typo in the suffix came back as "'4hh' is not a length of time". The
+    /// split is on the first non-digit now, so the whole suffix is what gets
+    /// quoted back.
+    #[test]
+    fn an_unknown_unit_is_named_rather_than_blamed_on_the_number() {
+        let refused = parse_duration("4hh").expect_err("hh is not a unit");
+        assert!(
+            refused.contains("'hh'"),
+            "the suffix is what was wrong: {refused}"
+        );
+
+        let refused = parse_duration("10w").expect_err("weeks are not a unit here");
+        assert!(refused.contains("'w'"), "{refused}");
+    }
+
+    /// Neither a watch of no time nor one longer than the arithmetic holds.
+    ///
+    /// The overflow is the one worth the line, and it is not the obvious one. A
+    /// count too large to be a number at all is refused when it is parsed; a
+    /// count that *is* a number and overflows only once its unit is applied gets
+    /// that far, and `value * multiplier` wraps — so `--for 1000000000000000000d`
+    /// would quietly become a watch of a few hours. Both flags do the same
+    /// multiplication and both are checked.
+    #[test]
+    fn a_span_of_zero_or_of_more_than_can_be_counted_is_refused() {
+        assert!(parse_duration("0").is_err());
+        assert!(parse_duration("0m").is_err(), "nor zero of a larger unit");
+
+        // Fits in the count, does not fit once it is days.
+        let refused = parse_duration("1000000000000000000d").expect_err("that is not a span");
+        assert!(
+            refused.contains("longer than"),
+            "refused for the right reason: {refused}"
+        );
+        let refused = age("1000000000000000000d").expect_err("nor is it an age");
+        assert!(refused.contains("longer than"), "{refused}");
+
+        // And a count that is not a number at all is still refused, just
+        // earlier and for a different reason.
+        assert!(parse_duration("99999999999999999999999d").is_err());
     }
 }

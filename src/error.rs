@@ -34,6 +34,15 @@ pub(crate) enum Error {
     #[error("{0}")]
     Target(#[from] TargetError),
 
+    /// A link expression named nothing on this machine to listen on.
+    ///
+    /// Its own variant rather than folded into [`Target`](Self::Target), because
+    /// a link is not a target: the two accept different vocabularies and fail
+    /// for different reasons, and the engine's refusal already names what this
+    /// machine does have.
+    #[error("{0}")]
+    Link(#[from] zond_engine::resolve::LinkError),
+
     /// The scan did not run to completion, meaning the task behind it panicked
     /// or was killed rather than a strategy inside it failing.
     #[error("the scan did not run to completion: {0}")]
@@ -219,6 +228,7 @@ impl Error {
     pub(crate) fn code(&self) -> Code {
         match self {
             Error::Target(_)
+            | Error::Link(_)
             | Error::Settings(_)
             | Error::NoSuchJournal { .. }
             | Error::NoSuchPage { .. }

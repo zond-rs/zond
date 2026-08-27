@@ -14,6 +14,14 @@
 //! still reported and the report records that the run was cut short. Asking
 //! twice leaves immediately, giving up the probes still in flight.
 //!
+//! ## And one that asks nothing of the scan
+//!
+//! Space turns the running line over to its other half — the count, or a tip —
+//! rather than waiting for it to turn over on its own. It is answered in
+//! [`progress`](crate::render::progress) and the scan never hears about it: what
+//! the bottom line says is a question about the terminal, and a scan that had an
+//! opinion about it would be a scan that behaved differently when watched.
+//!
 //! ## Reading a single keypress
 //!
 //! A terminal is line-buffered, so `q` would not arrive until Enter followed it.
@@ -37,6 +45,9 @@ use zond_engine::ScanHandle;
 
 /// The keys that stop a scan.
 const QUIT: [u8; 2] = *b"qQ";
+
+/// The key that turns the running line over to its other half.
+const SWITCH: u8 = b' ';
 
 /// The user's requests to stop the run.
 ///
@@ -95,7 +106,7 @@ fn watch_signals(requests: mpsc::Sender<()>, handle: ScanHandle) {
     });
 }
 
-/// Asks the scan to stop when `q` is pressed.
+/// Asks the scan to stop when `q` is pressed, and turns the line over on space.
 ///
 /// An ordinary thread, not `spawn_blocking`: a blocking read of stdin cannot be
 /// cancelled, and tokio waits for its blocking pool before shutting down. A
@@ -118,7 +129,14 @@ fn watch_keys(requests: mpsc::Sender<()>, handle: ScanHandle) {
                         break;
                     }
                 }
-                // Timed out with nothing typed, or a key that is not the one.
+                // Answered here and now. The scan is not told, because what the
+                // bottom line says is nothing to do with it, and the line's own
+                // state is a static for exactly this reason. A press with no
+                // line running does nothing.
+                Ok(read) if read > 0 && typed[0] == SWITCH => {
+                    crate::render::progress::advance();
+                }
+                // Timed out with nothing typed, or a key that is neither.
                 Ok(_) => {}
                 Err(_) => break,
             }
