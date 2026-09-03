@@ -21,14 +21,18 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 use zond_engine::Host;
-use zond_engine::export::{Redaction, redact};
+use zond_engine::export::Redaction;
+use zond_engine::model::finding::{Reference, Severity};
+use zond_engine::model::host::Filtering;
 use zond_engine::model::host::NetworkRole;
+use zond_engine::model::host::protocol::{IpProtocolState, ip_protocol_name};
 use zond_engine::model::host::status::{StatusProtocol, StatusReason};
 use zond_engine::model::ip::scoped::ScopedIp;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::discovery::ScanResponse;
 use zond_engine::record::wire;
-use zond_engine::scanner::report::{ScanKind, ScanPhase};
+use zond_engine::report::{ScanKind, ScanPhase};
+use zond_engine::system::privilege::Privilege;
 use zond_engine::{HostStatus, Port, PortState, Protocol, ScanReport, ScanSummary};
 
 /// What a field shows when the scan did not learn it.
@@ -259,20 +263,29 @@ fn non_primary(host: &Host) -> impl Iterator<Item = IpAddr> + '_ {
 ///
 /// A link-local address derives its host part from the hardware address, so
 /// masking the name and the MAC while printing the address in full would hand
-/// back the MAC anyway. That is the branch that matters.
+/// back the MAC anyway. That is the branch that matters, and it keeps the two
+/// segments that say which link the address is on.
 ///
-/// The unique-local branch is kept for what it says, not for what it does: the
-/// engine's `unique_local` and `global_unicast` currently produce the same
-/// string, so no output can tell the two apart.
+/// Everything else keeps its first segment and loses the rest, which is enough
+/// to say `2a02:` or `fd12:` without saying which site or which machine.
+///
+/// This program's own, and deliberately not the engine's. [`Redaction`] masks a
+/// hostname and a hardware address and leaves addresses alone on purpose: a
+/// report is a list of hosts, and one that hides which host is which is not a
+/// report. A terminal draws a *scan*, where the address is already in the
+/// header and the reader is watching it happen, so masking the host part of a
+/// v6 address costs nothing there and closes the EUI-64 leak the engine's own
+/// documentation names.
 fn mask(ip: &Ipv6Addr) -> String {
-    let leading = ip.segments()[0];
+    let segments = ip.segments();
 
-    if leading & 0xffc0 == 0xfe80 {
-        redact::link_local(ip)
-    } else if leading & 0xfe00 == 0xfc00 {
-        redact::unique_local(ip)
+    if segments[0] & 0xffc0 == 0xfe80 {
+        format!(
+            "{:x}::{:x}:{:x}:XXXX:XXXX",
+            segments[0], segments[4], segments[5]
+        )
     } else {
-        redact::global_unicast(ip)
+        format!("{:x}::XXXX", segments[0])
     }
 }
 
@@ -483,6 +496,83 @@ pub(crate) fn packed_roles(host: &Host) -> Option<String> {
     let names: Vec<&str> = ordered(host).map(wire::network_role_name).collect();
 
     (!names.is_empty()).then(|| names.join(","))
+}
+
+/// What the scan concluded is standing between it and this host, if anything.
+///
+/// A characterisation pass, or the stateless-filter probe, marks the filter in
+/// front of a host: a middlebox answering on its behalf, a stateful filter that
+/// passes an ACK but drops a SYN. Reported in the engine's declared order so two
+/// runs agree, and spelled for a person rather than in the underscored form a
+/// record carries. `None` where nothing was concluded, which is every host on a
+/// scan that did not ask.
+pub(crate) fn filtering(host: &Host) -> Option<String> {
+    let conclusions = host.filtering();
+    if conclusions.is_empty() {
+        return None;
+    }
+
+    // Through the engine's declared order rather than the set's own, which is a
+    // `HashSet` and would draw in whatever order it hashed to.
+    let spoken: Vec<&str> = Filtering::ALL
+        .iter()
+        .filter(|conclusion| conclusions.contains(conclusion))
+        .map(|conclusion| spoken_filtering(*conclusion))
+        .collect();
+
+    (!spoken.is_empty()).then(|| spoken.join("  "))
+}
+
+/// One filtering conclusion as a person reads it.
+///
+/// The wire spells these `stateful_filter`; this is the same list as words. A
+/// conclusion a newer engine draws and this build has no phrase for falls back
+/// to the wire name rather than being dropped, so a scan never loses a
+/// conclusion to a build that is merely behind.
+fn spoken_filtering(conclusion: Filtering) -> &'static str {
+    match conclusion {
+        Filtering::InlineMiddlebox => "inline middlebox",
+        Filtering::StatefulFilter => "stateful filter",
+        Filtering::PortTrustingAcl => "port-trusting ACL",
+        Filtering::StatelessFilter => "stateless filter",
+        other => wire::filtering_name(other),
+    }
+}
+
+/// Which IP protocols a host's stack takes delivery of, one line each.
+///
+/// From `--ip-protocols`: a datagram per protocol, and what came back. Each line
+/// is the number, the protocol's name where this build knows one, and the
+/// verdict — `accepted`, `filtered`, `open|filtered`. Ordered by number, so two
+/// runs draw the same list. Empty where none were asked.
+pub(crate) fn ip_protocols(host: &Host) -> Vec<String> {
+    host.ip_protocols()
+        .iter()
+        .map(|(number, state)| {
+            let verdict = spoken_ip_protocol_state(*state);
+            match ip_protocol_name(*number) {
+                Some(name) => format!("{number} {name}  {verdict}"),
+                None => format!("{number}  {verdict}"),
+            }
+        })
+        .collect()
+}
+
+/// One IP-protocol verdict as a person reads it.
+///
+/// The states mirror a port's, and read as one: a stack that answered accepts
+/// the protocol, one that sent an unreachable does not, and silence is the same
+/// open-or-filtered ambiguity a UDP port has. A state a newer engine records and
+/// this build has no word for falls back to the wire spelling.
+fn spoken_ip_protocol_state(state: IpProtocolState) -> &'static str {
+    match state {
+        IpProtocolState::Open => "accepted",
+        IpProtocolState::Closed => "not accepted",
+        IpProtocolState::Filtered => "filtered",
+        IpProtocolState::OpenFiltered => "open|filtered",
+        IpProtocolState::Unasked => "not asked",
+        other => wire::ip_protocol_state_name(other),
+    }
 }
 
 /// What proved the host alive, in the casing the protocols are written in.
@@ -1243,6 +1333,122 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
     detail
 }
 
+/// One finding, spelled for a person and kept apart from how a mode draws it.
+///
+/// A finding is a claim about what is wrong with a host or a port: a known
+/// vulnerability the service matches, a detection that fired. The engine produces
+/// them and the file formats carry every field; this is the terminal's compact
+/// view, which leads with how bad it is and how sure, and keeps the rest for
+/// `-v`.
+///
+/// The severity is kept unformatted so a presentation colours it by rank rather
+/// than matching on the word. `subject` is the port a finding is about, `None`
+/// for one about the host itself, so a listing can say *where* without the
+/// caller re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FindingView {
+    /// `443/tcp`, where the finding is about a port; `None` for a host finding.
+    pub subject: Option<String>,
+    /// How bad it is if true, unformatted so a mode can colour it.
+    pub severity: Severity,
+    /// How sure it is true, one word: `probable`, `certain`.
+    pub confidence: &'static str,
+    /// The title and any external references, already joined: `Log4Shell
+    /// remote code execution  CVE-2021-44228`.
+    pub headline: String,
+    /// What to do about it, where the detection carried advice. Shown under
+    /// `-v`, since a person triaging wants the finding and a person acting on it
+    /// wants this.
+    pub remediation: Option<String>,
+}
+
+/// How a severity reads as an urgency, so a finding borrows the same colours a
+/// certificate's expiry does rather than inventing a second scale.
+///
+/// Critical and high are the two that read as a problem now; medium is a
+/// caution; the two below it are neither, and colouring them would spend the
+/// eye's attention where the finding does not ask for it.
+pub(crate) fn severity_urgency(severity: Severity) -> Urgency {
+    match severity {
+        Severity::Critical | Severity::High => Urgency::Alarm,
+        Severity::Low | Severity::Info => Urgency::None,
+        // Medium, and a severity a newer engine ranks that this build has no
+        // place for: a caution. Drawn rather than hidden or made to shout, since
+        // an unrankable finding is still a real one and neither silence nor an
+        // alarm is honest about it.
+        _ => Urgency::Caution,
+    }
+}
+
+/// The findings a host carries, its own and its ports', worst first.
+///
+/// One list rather than two, because a person reading it wants the worst finding
+/// first whether it is about the host or one of its ports, and `subject` says
+/// which without splitting the list. Sorted by severity descending and then by
+/// subject, so two runs of the same scan draw the same order.
+///
+/// Empty for the ordinary host, which carries no findings at all: nothing here
+/// draws a heading for a host that has nothing wrong with it.
+pub(crate) fn findings(host: &Host) -> Vec<FindingView> {
+    let mut views: Vec<FindingView> = Vec::new();
+
+    for finding in host.findings() {
+        views.push(view(None, finding));
+    }
+
+    for port in host.ports() {
+        let endpoint = format!("{}/{}", port.number(), protocol(port.protocol()));
+        for finding in port.findings() {
+            views.push(view(Some(endpoint.clone()), finding));
+        }
+    }
+
+    // Worst first. `Severity` orders weakest-to-strongest, so the comparison is
+    // reversed; the subject breaks a tie so the order is total and stable.
+    views.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then_with(|| a.subject.cmp(&b.subject))
+    });
+
+    views
+}
+
+/// One finding as a [`FindingView`], with its title and references joined.
+fn view(subject: Option<String>, finding: &zond_engine::model::finding::Finding) -> FindingView {
+    let mut headline = finding.title().to_owned();
+    for reference in finding.references() {
+        headline.push_str("  ");
+        headline.push_str(&reference_text(reference));
+    }
+
+    FindingView {
+        subject,
+        severity: finding.severity(),
+        confidence: wire::confidence_name(finding.confidence()),
+        headline,
+        remediation: finding.remediation().map(ToOwned::to_owned),
+    }
+}
+
+/// A reference as the short identifier a reader recognises.
+///
+/// A CVE and a CWE are their own names; a URL is shown as written, and escaped
+/// like any other value a document carried when it reaches a presentation. The
+/// bare number a `Cwe` carries is spelled back into `CWE-79`, since the number
+/// alone is not the identifier.
+fn reference_text(reference: &Reference) -> String {
+    match reference {
+        Reference::Cve(id) => id.clone(),
+        Reference::Cwe(number) => format!("CWE-{number}"),
+        Reference::Url(url) => url.clone(),
+        // A reference kind a newer engine carries and this build has no spelling
+        // for. Named the way the wire names it rather than dropped, so a finding
+        // never loses a citation to a build that is merely behind.
+        other => wire::reference_kind_name(other).to_owned(),
+    }
+}
+
 /// How long a certificate has left, and how much that matters.
 ///
 /// Days rather than a date: the question this line answers is "do I have to do
@@ -1589,6 +1795,24 @@ pub(crate) fn unroutable(report: &ScanReport) -> u128 {
     seen.len() as u128
 }
 
+/// How many hosts a time budget left before they were finished.
+///
+/// From `--host-timeout` and `--scan-timeout`: a host still outstanding when its
+/// budget expired is recorded as timed out, and its results are whatever the
+/// scan had reached, which is narrower than what was asked. Counted across
+/// phases and deduplicated, the way [`unroutable`] is, so a host cut short in
+/// two phases is one host cut short.
+pub(crate) fn timed_out(report: &ScanReport) -> u128 {
+    let mut seen: Vec<IpAddr> = report
+        .phases()
+        .iter()
+        .flat_map(|phase| phase.timed_out().iter().copied())
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen.len() as u128
+}
+
 /// What the run was for.
 ///
 /// The *last* phase. A port scan records two, the liveness pass that established
@@ -1598,23 +1822,50 @@ pub(crate) fn kind(report: &ScanReport) -> Option<ScanKind> {
     report.phases().last().map(ScanPhase::kind)
 }
 
-/// Whether the run this report describes held raw-socket privileges.
+/// What the run this report describes held.
 ///
 /// Read from the report rather than asked of the process: the two can disagree,
 /// and what matters is what the scan actually had.
 ///
 /// `None` where the report cannot say, which is every report another scanner
 /// produced. Whether *these* strategies held the sockets they need is not a
-/// question an nmap document answers, and reading its silence as `false` put
-/// this program's advice about running as root under a sweep performed over ARP
-/// by a process that already was.
-pub(crate) fn was_privileged(report: &ScanReport) -> Option<bool> {
-    report.phases().last().and_then(ScanPhase::privileged)
+/// question an nmap document answers, and reading its silence as
+/// [`Connect`](Privilege::Connect) put this program's advice about running as
+/// root under a sweep performed over ARP by a process that already was.
+pub(crate) fn privilege(report: &ScanReport) -> Option<Privilege> {
+    report.phases().last().and_then(ScanPhase::privilege)
 }
 
 /// The counts a summary line is drawn from.
 pub(crate) fn summary(report: &ScanReport) -> ScanSummary {
     report.summary()
+}
+
+/// How many findings a report carries, and how many of those are serious.
+///
+/// A finding is a claim about what is wrong, so the count belongs on the summary
+/// line the way the open-port count does: a run that turned up two critical
+/// vulnerabilities should say so where a reader is already looking rather than
+/// only inside a host's block.
+///
+/// `serious` is the count at [`High`](Severity::High) or above, the ones that
+/// ask for action tonight rather than at the next review. `None` when the report
+/// carries no findings at all, so a clean scan draws no line about them.
+pub(crate) fn findings_tally(report: &ScanReport) -> Option<(usize, usize)> {
+    let mut total = 0usize;
+    let mut serious = 0usize;
+
+    for host in report.hosts() {
+        let all = host.findings().chain(host.ports().flat_map(Port::findings));
+        for finding in all {
+            total += 1;
+            if finding.severity() >= Severity::High {
+                serious += 1;
+            }
+        }
+    }
+
+    (total > 0).then_some((total, serious))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1873,10 +2124,7 @@ mod tests {
             StatusProtocol::IcmpEcho,
             StatusProtocol::Ndp,
         ] {
-            host.record_evidence(
-                zond_engine::HostStatus::Up,
-                StatusReason::basic(protocol),
-            );
+            host.record_evidence(zond_engine::HostStatus::Up, StatusReason::basic(protocol));
         }
 
         let lines = answered_in_detail(Reader::default(), &host);
@@ -2513,12 +2761,11 @@ mod tests {
         use zond_engine::ZondConfig;
         use zond_engine::model::exclusion::Exclusions;
         use zond_engine::model::parse::ip::to_set;
-        use zond_engine::scanner::pacing::congestion::WindowSummary;
-        use zond_engine::scanner::report::{
+        use zond_engine::report::{
             ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, PhaseParts, ProbeStats, ProbeStatsParts, ScanKind,
-            ScanPhase, ScanReport, ScanSettings, StopReason, TargetScope,
+            ScanPhase, ScanReport, ScanSettings, ScannerKind, StopReason, TargetScope,
+            WindowSummary,
         };
-        use zond_engine::scanner::session::ScannerKind;
 
         let probes = ProbeStats::from_parts(ProbeStatsParts {
             scanner: ScannerKind::SynPort,
@@ -2552,11 +2799,13 @@ mod tests {
             kind: ScanKind::PortScan,
             started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
             elapsed: Duration::from_secs(1),
-            privileged: Some(true),
+            privilege: Some(Privilege::Raw),
             targets: TargetScope::from_ip_set(&mut scope, &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
+            refusals: Vec::new(),
             unroutable: Vec::new(),
+            timed_out: Vec::new(),
             probes: vec![probes],
             origin: None,
         });

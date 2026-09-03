@@ -202,6 +202,10 @@ fn write_host(
         ("read", working),
         ("rtt", field::rtt_human(host)),
         ("via", field::via(host)),
+        // What the scan concluded is in front of the host, where it drew a
+        // conclusion. A tagged line like the rest, so a filter reads the same
+        // whether it came from `--characterise` or the stateless-filter probe.
+        ("filter", field::filtering(host)),
     ] {
         if let Some(value) = value {
             tag(out, name, &value)?;
@@ -219,8 +223,44 @@ fn write_host(
         "port",
         &field::ports(host, silence_means_something, evidence),
     )?;
+    // Which IP protocols the host's stack takes delivery of, from
+    // `--ip-protocols`: what the host speaks, one line each, apart from the
+    // ports because it is not about what listens.
+    tagged_list(out, "ip", &field::ip_protocols(host))?;
+
+    // After the ports, because a finding is a conclusion drawn from them: a
+    // known vulnerability the service matches, or a detection that fired. One
+    // line each, worst first, carrying the port it is about where it has one, so
+    // the tag stays `risk` whether the subject is the host or one of its ports.
+    // The terse mode says what and how bad and how sure, and leaves the
+    // remediation to the modes that hang detail: a person acting on a fix is not
+    // reading it out of a tagged block.
+    tagged_list(out, "risk", &risk_lines(host))?;
 
     Ok(())
+}
+
+/// A host's findings as one line each, for the `risk` tag.
+///
+/// The severity leads, then the subject where the finding is about a port, then
+/// the headline, with the confidence bracketed after it. No colour: this stream
+/// is drawn bare, and the severity is a word a reader reads rather than a hue.
+fn risk_lines(host: &Host) -> Vec<String> {
+    field::findings(host)
+        .into_iter()
+        .map(|view| {
+            let subject = match &view.subject {
+                Some(subject) => format!("{subject} "),
+                None => String::new(),
+            };
+            format!(
+                "[{}] {subject}{}  [{}]",
+                view.severity.label(),
+                view.headline,
+                view.confidence
+            )
+        })
+        .collect()
 }
 
 /// One tagged line.
@@ -375,6 +415,63 @@ mod tests {
         ));
         host.record_hop(Hop::silent(2));
         host
+    }
+
+    /// A finding is a `risk:` line, worst first, carrying its port where it has
+    /// one and nothing where it does not.
+    #[test]
+    fn a_finding_is_a_tagged_risk_line() {
+        use zond_engine::model::confidence::Confidence;
+        use zond_engine::model::finding::{
+            DetectionClass, DetectionId, Finding, Reference, Severity, Version,
+        };
+
+        let finding = |id: &str, title: &str, severity| {
+            let detection = DetectionId::new(id, Version::new(1, 0, 0), "").expect("a valid id");
+            Finding::new(
+                detection,
+                title,
+                severity,
+                Confidence::Probable,
+                DetectionClass::Passive,
+            )
+            .expect("a valid finding")
+        };
+
+        let mut host = host(7);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:cve/CVE-2021-44228",
+                "Log4Shell remote code execution",
+                Severity::Critical,
+            )
+            .with_reference(Reference::cve("CVE-2021-44228").expect("a valid CVE")),
+        );
+        host.add_finding(finding(
+            "zond:host/telnet-exposed",
+            "Telnet is reachable",
+            Severity::Medium,
+        ));
+
+        let text = block(&host);
+
+        assert!(
+            text.contains("risk: [Critical] 443/tcp Log4Shell remote code execution")
+                && text.contains("CVE-2021-44228"),
+            "the port finding is a risk line carrying its endpoint: {text}"
+        );
+        assert!(
+            text.contains("[Medium] Telnet is reachable"),
+            "the host finding carries no endpoint: {text}"
+        );
+        assert!(
+            text.find("Critical").expect("critical drawn")
+                < text.find("Medium").expect("medium drawn"),
+            "the worse finding leads: {text}"
+        );
     }
 
     /// The working behind an operating-system finding is shown only when a

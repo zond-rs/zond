@@ -501,11 +501,9 @@ fn host_context() -> TargetContext<'static> {
     const KEYWORDS: ResolverFn<'static> = &interface::resolve_keyword;
     const ZONES: ZoneResolverFn<'static> = &interface::resolve_zone;
 
-    TargetContext {
-        keywords: Some(KEYWORDS),
-        zones: Some(ZONES),
-        hosts: None,
-    }
+    TargetContext::new()
+        .with_keywords(KEYWORDS)
+        .with_zones(ZONES)
 }
 
 /// Resolves target expressions into addresses and the ports to try on each.
@@ -828,10 +826,8 @@ mod tests {
     /// rather than only when true.
     #[test]
     fn targets_that_name_no_network_turn_the_sweep_off_again() {
-        let mut config = ZondConfig {
-            segment_sweep: true,
-            ..ZondConfig::default()
-        };
+        let mut config = ZondConfig::default();
+        config.segment_sweep = true;
 
         Asked::new(&["10.0.0.1"], false, Exclusions::none()).apply_to(&mut config);
         assert!(!config.segment_sweep);

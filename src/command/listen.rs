@@ -189,9 +189,9 @@ pub(crate) fn spoken_span(span: Option<Duration>) -> String {
         }
     }
 
-    // Only reachable for a zero span, which the parser refuses — `--for 0` is
-    // "a watch of no time at all hears nothing". Answered anyway rather than
-    // returning `for `, since this formats an `Option` somebody else filled in.
+    // Only reachable for a zero span, which the parser refuses. Answered anyway
+    // rather than returning `for `, since this formats an `Option` somebody else
+    // filled in.
     if parts.is_empty() {
         return String::from("for no time at all");
     }

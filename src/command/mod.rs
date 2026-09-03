@@ -34,7 +34,7 @@ use crate::export::Destination;
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
 use zond_engine::journal::store::{self, Journal, Retention};
-use zond_engine::system::privilege;
+use zond_engine::system::privilege::Privilege;
 use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ScopedIp, ZondConfig};
 
 use std::collections::HashMap;
@@ -166,7 +166,7 @@ fn record(plan: &Plan, summary: String, limit: settings::EntryLimit) -> Option<J
         return None;
     }
 
-    match Journal::create(&root, plan, privilege::is_elevated(), summary) {
+    match Journal::create(&root, plan, Privilege::current(), summary) {
         Ok(journal) => {
             // To stderr: where a scan is writing is commentary on the run, and
             // somebody piping its results should still be told.
@@ -278,7 +278,7 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
         });
     }
 
-    let (journal, checkpoint, plan) = Journal::reopen(&directory, privilege::is_elevated())?;
+    let (journal, checkpoint, plan) = Journal::reopen(&directory, Privilege::current())?;
 
     let total = journal.manifest().total_targets;
     let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
@@ -486,11 +486,41 @@ fn outcome(report: &ScanReport, stopped: bool, stopping: Stopping) -> Outcome {
 /// because the fold itself went fine would have the merged report claim more
 /// than its sources did.
 pub(crate) fn concluded(report: &ScanReport) -> Outcome {
-    if report.is_partial() {
-        Outcome::Partial
-    } else {
+    if fully_covered(report) {
         Outcome::Complete
+    } else {
+        Outcome::Partial
     }
+}
+
+/// Whether the report covers everything the run was asked to cover.
+///
+/// Three ways it can fall short, and the engine records them apart: a strategy
+/// that failed ([`is_partial`](ScanReport::is_partial)), ground it refused
+/// before sending because the scan as written had no strategy to walk it, and a
+/// host a time budget cut short. Any of the three narrows the result below what
+/// was asked, which is exactly what a `3` warns a script about, so any of them
+/// is enough to make the run partial.
+///
+/// A [`Refusal`](zond_engine::report::Refusal) counts here where a
+/// [`ScannerFailure`](zond_engine::report::ScannerFailure) does because the two
+/// are the two halves of the same shortfall: `is_partial` sees only the fault,
+/// and a range too large for an unprivileged sweep is a refusal rather than a
+/// fault. The engine drew that line between them; this is where the line stops
+/// mattering, because either way the scan did not cover the ground.
+///
+/// An address with no route is deliberately *not* one of the three. The engine
+/// keeps [`unroutable`](zond_engine::report::ScanPhase::unroutable) apart from
+/// all of them, as ground that was never coverable rather than coverage that
+/// fell short, and a sweep of any range with a gap in it would otherwise never
+/// exit `0`.
+fn fully_covered(report: &ScanReport) -> bool {
+    !report.is_partial()
+        && report.refusals().next().is_none()
+        && report
+            .phases()
+            .iter()
+            .all(|phase| phase.timed_out().is_empty())
 }
 
 /// What a run has turned up so far, counted as its events arrive.
@@ -618,5 +648,73 @@ mod tests {
         tally.record(ip(1), 5);
         assert_eq!(tally.record(ip(1), 1), (1, 1));
         assert_eq!(tally.record(ip(1), 0), (1, 0));
+    }
+
+    /// A report of one discovery phase, with whatever shortfalls the caller
+    /// builds into it. The parts a coverage decision reads and nothing else.
+    fn report_with(
+        refusals: Vec<zond_engine::report::Refusal>,
+        unroutable: Vec<IpAddr>,
+        timed_out: Vec<IpAddr>,
+    ) -> ScanReport {
+        use zond_engine::model::exclusion::Exclusions;
+        use zond_engine::model::parse::ip::to_set;
+        use zond_engine::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, TargetScope};
+
+        let mut scope = to_set(&["192.0.2.0/30"], None, None).expect("a range");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::Discovery,
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            elapsed: std::time::Duration::from_secs(1),
+            privilege: Some(Privilege::Connect),
+            targets: TargetScope::from_ip_set(&mut scope, &Exclusions::none()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals,
+            unroutable,
+            timed_out,
+            probes: Vec::new(),
+            origin: None,
+        });
+        ScanReport::recorded("test", vec![phase], Vec::<zond_engine::Host>::new())
+    }
+
+    /// The three-way distinction the engine draws, mapped to the one bit a shell
+    /// reads. A refusal and a timed-out host each narrow the coverage and so are
+    /// partial; an unroutable address is ground that was never coverable and is
+    /// not, which is the line 0.13 drew and this keeps.
+    #[test]
+    fn a_refusal_or_a_time_budget_is_partial_but_a_missing_route_is_not() {
+        use zond_engine::report::{Refusal, ScannerKind};
+
+        let clean = report_with(Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(concluded(&clean), Outcome::Complete);
+
+        let refused = report_with(
+            vec![Refusal::new(ScannerKind::Connect, "too large to sweep")],
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            concluded(&refused),
+            Outcome::Partial,
+            "a refusal narrows the coverage"
+        );
+
+        let unreachable = "192.0.2.9".parse::<IpAddr>().expect("an address");
+        let no_route = report_with(Vec::new(), vec![unreachable], Vec::new());
+        assert_eq!(
+            concluded(&no_route),
+            Outcome::Complete,
+            "an address with no route was never coverable"
+        );
+
+        let cut_short = report_with(Vec::new(), Vec::new(), vec![unreachable]);
+        assert_eq!(
+            concluded(&cut_short),
+            Outcome::Partial,
+            "a host a budget cut short is narrower than what was asked"
+        );
     }
 }

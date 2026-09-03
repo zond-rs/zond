@@ -304,7 +304,13 @@ pub(super) fn sentence(change: &ChangeDto, reader: Reader) -> String {
 
     // A change to one member of a set already says which way it went. "lost
     // 2a02:…" needs no ", now none" after it, and reads as a mistake with one.
-    let directional = change.kind.ends_with("_gained") || change.kind.ends_with("_lost");
+    // A finding that appeared or resolved is one-sided the same way: it is a
+    // whole claim arriving or going, not a field moving from one value to
+    // another, so ", now none" after a resolved one would read as a slip.
+    let directional = change.kind.ends_with("_gained")
+        || change.kind.ends_with("_lost")
+        || change.kind == "finding_appeared"
+        || change.kind == "finding_resolved";
 
     match (before, after) {
         (Some(before), Some(after)) => format!("{lead}{before} -> {after}"),
@@ -357,9 +363,10 @@ pub(super) fn readable(kind: &str, value: Option<&str>, reader: Reader) -> Optio
 pub(super) fn label(kind: &'static str) -> &'static str {
     match kind {
         "status" => "status",
-        // A hostname and an operating system are their own subject, so a
-        // lead-in in front of one would say what the value already says.
-        "hostname" | "os" => "",
+        // Their own subject, so a lead-in would say what the value already says.
+        // A hostname and an operating system name themselves; a reassessed
+        // finding carries its severity and title on both sides of the arrow.
+        "hostname" | "os" | "finding_reassessed" => "",
         "vendor" => "vendor",
         "address_gained" | "mac_gained" => "gained",
         "address_lost" | "mac_lost" => "lost",
@@ -383,6 +390,18 @@ pub(super) fn label(kind: &'static str) -> &'static str {
         "certificate_rotated" => "certificate rotated,",
         "certificate_expiring" => "certificate expires",
         "certificate_expired" => "certificate expired",
+        // The value already carries the severity and title, as `high: Log4Shell
+        // remote code execution`, so the lead-in only has to say which way the
+        // claim went. Reassessed reads for itself and takes no lead — it shares
+        // the empty arm with `hostname` and `os` above.
+        "finding_appeared" => "found",
+        "finding_resolved" => "resolved",
+        "filtering_gained" => "filtering gained",
+        "filtering_lost" => "filtering lost",
+        // One IP protocol its stack takes delivery of, or no longer does. The
+        // value carries the number, the name and the verdict, so this only names
+        // the axis.
+        "ip_protocol" => "ip protocol",
         other => other,
     }
 }

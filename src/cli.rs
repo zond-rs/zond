@@ -19,10 +19,15 @@
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
-use zond_engine::PortSet;
-use zond_engine::ZondConfig;
-use zond_engine::config::{OsDetection, ScanEffort, SendMode, ServiceDetection};
-use zond_engine::model::technique::TcpScanTechnique;
+use std::num::{NonZeroU8, NonZeroU32};
+
+use zond_engine::config::{
+    DetectionEnvelope, IdleScan, OsDetection, ScanEffort, ServiceDetection, TimeoutScale,
+};
+use zond_engine::evasion::EvasionProfile;
+use zond_engine::model::mac::MacAddr;
+use zond_engine::model::technique::{SctpScanTechnique, TcpScanTechnique};
+use zond_engine::{PortSet, SendMode, ZondConfig};
 
 use crate::diagnostics::Verbosity;
 use crate::render::style::ColourChoice;
@@ -533,7 +538,9 @@ pub(crate) fn parse_duration(text: &str) -> Result<std::time::Duration, String> 
     };
 
     if value == 0 {
-        return Err(String::from("a watch of no time at all hears nothing"));
+        return Err(String::from(
+            "zero is not a length of time: try 30s, 10m or 4h",
+        ));
     }
 
     // A span nobody will reach, and the arithmetic below would wrap into a
@@ -595,6 +602,12 @@ pub(crate) struct DiscoverArgs {
 }
 
 /// Arguments to `zond scan`.
+///
+// Several independent on/off flags — `--assume-up`, `--tls-enum`,
+// `--characterise` — so the count trips the bool-heavy-struct lint. Each is one
+// switch a caller sets in any combination, and clap derives the parser from
+// exactly these fields, the same shape [`EngineArgs`] carries.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 #[command(after_help = scan_help())]
 pub(crate) struct ScanArgs {
@@ -609,11 +622,12 @@ pub(crate) struct ScanArgs {
     #[arg(value_name = "TARGET", required_unless_present = "resume", num_args = 1..)]
     pub targets: Vec<String>,
 
-    /// Which ports to probe: `22,80,443`, `1-1024`, `u:53` for UDP.
+    /// Which ports to probe: `22,80,443`, `1-1024`, `u:53` for UDP, `s:2905` for
+    /// SCTP.
     ///
     /// A range may leave off either end. `-p-` is every port there is, `-p-1024`
     /// is everything up to 1024, and `-p9000-` is everything from it. The forms
-    /// compose with the rest: `-p 22,u:-,9000-`.
+    /// compose with the rest: `-p 22,u:-,s:2905,9000-`.
     ///
     /// Defaults to `default_ports` in the settings file, and to the thousand
     /// ports most likely to be listening when that says nothing either.
@@ -690,11 +704,79 @@ pub(crate) struct ScanArgs {
     ///
     /// Only `syn` identifies an open port positively, and only `syn` has an
     /// unprivileged fallback; the rest need root and are refused without it
-    /// rather than quietly substituted.
+    /// rather than quietly substituted. `window` reads an ACK's reset for its
+    /// window field, which some stacks set differently on an open port.
     ///
-    /// [possible values: syn, fin, null, xmas, maimon, ack]
+    /// [possible values: syn, fin, null, xmas, maimon, ack, window]
     #[arg(long, value_name = "TECHNIQUE")]
     pub tcp_technique: Option<TcpScanTechnique>,
+
+    /// Which SCTP probe carries the scan, for the ports named `s:`.
+    ///
+    /// `init` attempts an association and is the only one that confirms a
+    /// listener positively; `cookie-echo` sends an unminted cookie, which a
+    /// closed port answers and an open one ignores. Both need root. Only the
+    /// ports written as SCTP, `-p s:2905`, are probed this way.
+    ///
+    /// [possible values: init, cookie-echo]
+    #[arg(long, value_name = "TECHNIQUE")]
+    pub sctp_technique: Option<SctpScanTechnique>,
+
+    /// Enumerate the TLS versions and cipher suites each HTTPS port accepts.
+    ///
+    /// A pass of its own after service detection, one handshake per version
+    /// offered, so it costs several connections per TLS port. What it turns up
+    /// that is wrong — a protocol version long deprecated, a suite nobody should
+    /// still accept — is reported as a finding against the port.
+    #[arg(long)]
+    pub tls_enum: bool,
+
+    /// Characterise the filter in front of each host that answered.
+    ///
+    /// A last pass against the hosts that answered, sending a bad-checksum probe
+    /// to an open port and a comparative one to a filtered port: what answers,
+    /// and what it answers with, tells a stateful filter from a stateless one
+    /// and a middlebox from the host itself. Needs root. Records its conclusion
+    /// on the host rather than opening or closing any port.
+    #[arg(long)]
+    pub characterise: bool,
+
+    /// Ask each host which IP protocols its stack takes delivery of.
+    ///
+    /// A comma-separated list of protocol numbers, as in `1,6,17,132` for ICMP,
+    /// TCP, UDP and SCTP. Each host is sent one datagram per protocol and its
+    /// answer — a reply, a protocol-unreachable, or silence — says whether the
+    /// stack accepts it. Independent of the port scan: this asks what the host
+    /// speaks, not what listens on it. Needs root.
+    #[arg(long, value_name = "LIST", value_parser = ip_protocols)]
+    pub ip_protocols: Option<std::collections::BTreeSet<u8>>,
+
+    /// How intrusive a detection the scan may run against what it identifies.
+    ///
+    /// After a service is named, the detection corpus can probe it further for
+    /// what is wrong with it, and this is the ceiling on how far that goes.
+    /// `passive` reads only what the scan already gathered; `active-benign`, the
+    /// default, may exchange bytes with a port to decide; the classes above it —
+    /// `active-mutating`, `exploit`, `dos` — change or degrade the target and
+    /// run only when an operator names them here.
+    ///
+    /// [possible values: passive, active-benign, active-mutating, exploit, dos]
+    #[arg(long, value_name = "CLASS")]
+    pub detection: Option<DetectionEnvelope>,
+
+    /// Read the target's TCP ports off a third party's IP-ID counter.
+    ///
+    /// The idle, or zombie, scan: every probe is forged to come from the zombie,
+    /// so the target never sees this host, and the ports it finds open are read
+    /// from how the zombie's IP-ID moved. The zombie must be a host with a
+    /// predictable counter and next to no other traffic. Name it as an address,
+    /// or `IP:PORT` to say which of its ports to poll.
+    ///
+    /// Needs root, and forges nothing the target can trace back here. A loud,
+    /// slow scan whose whole point is that the target learns the zombie's
+    /// address and not this one.
+    #[arg(long = "idle-scan", value_name = "ZOMBIE", value_parser = idle_scan)]
+    pub idle_scan: Option<IdleScan>,
 
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
@@ -713,10 +795,91 @@ impl ScanArgs {
         if self.assume_up {
             config.assume_up = true;
         }
+        if self.tls_enum {
+            config.tls_enumeration = true;
+        }
+        if self.characterise {
+            config.characterise = true;
+        }
         if let Some(technique) = self.tcp_technique {
             config.tcp_technique = technique;
         }
+        if let Some(technique) = self.sctp_technique {
+            config.sctp_technique = technique;
+        }
+        if let Some(protocols) = &self.ip_protocols {
+            config.ip_protocols.clone_from(protocols);
+        }
+        if let Some(envelope) = self.detection {
+            config.detection = envelope;
+        }
+        if let Some(idle) = self.idle_scan {
+            config.idle_scan = Some(idle);
+        }
     }
+}
+
+/// Reads a zombie for the idle scan: an address, or `IP:PORT`.
+///
+/// The port is optional, and where it is given it says which of the zombie's own
+/// ports to poll for the IP-ID; without it the engine picks one. An IPv6 zombie
+/// with a port is written the way a target is, `[2001:db8::1]:80`, so the colons
+/// in the address are not read as the separator.
+fn idle_scan(text: &str) -> Result<IdleScan, String> {
+    let text = text.trim();
+
+    // `[addr]:port` first, so an IPv6 zombie's own colons are not mistaken for
+    // the one that introduces the port.
+    if let Some(rest) = text.strip_prefix('[') {
+        let (addr, port) = rest
+            .split_once("]:")
+            .ok_or_else(|| format!("'{text}' is not a bracketed zombie: try [2001:db8::1]:80"))?;
+        let zombie = parse_zombie_addr(addr)?;
+        let port = parse_zombie_port(port)?;
+        return Ok(IdleScan::new(zombie).with_port(port));
+    }
+
+    // A bare address with a trailing `:port`, told apart from an IPv6 address by
+    // there being exactly one colon in it.
+    if let Some((addr, port)) = text.rsplit_once(':')
+        && addr.parse::<std::net::Ipv4Addr>().is_ok()
+    {
+        let zombie = std::net::IpAddr::V4(addr.parse().expect("just parsed as v4"));
+        return Ok(IdleScan::new(zombie).with_port(parse_zombie_port(port)?));
+    }
+
+    Ok(IdleScan::new(parse_zombie_addr(text)?))
+}
+
+/// One zombie address, refused if it is not one.
+fn parse_zombie_addr(text: &str) -> Result<std::net::IpAddr, String> {
+    text.parse::<std::net::IpAddr>()
+        .map_err(|_| format!("'{text}' is not an address a zombie can be"))
+}
+
+/// One zombie probe port.
+fn parse_zombie_port(text: &str) -> Result<u16, String> {
+    text.parse::<u16>()
+        .map_err(|_| format!("'{text}' is not a port (0 to 65535)"))
+}
+
+/// Reads a comma-separated list of IP protocol numbers into a set.
+///
+/// Numbers rather than names, the way `-sO` and the IANA registry name a
+/// protocol: `1,6,17,132` is ICMP, TCP, UDP and SCTP. A name-to-number table
+/// would be one this program had to keep in step with a registry it does not
+/// own, and a misremembered name is a worse failure than a number a reader can
+/// look up.
+fn ip_protocols(text: &str) -> Result<std::collections::BTreeSet<u8>, String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            entry
+                .parse::<u8>()
+                .map_err(|_| format!("'{entry}' is not an IP protocol number (0 to 255)"))
+        })
+        .collect()
 }
 
 /// The target grammar, shown under both subcommands.
@@ -883,15 +1046,15 @@ pub(crate) struct EngineArgs {
     /// Replace the attempt budget outright, whatever --effort implies.
     ///
     /// 1 disables retransmission.
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(1..))]
-    pub max_attempts: Option<u8>,
+    #[arg(long, value_name = "N")]
+    pub max_attempts: Option<NonZeroU8>,
 
     /// Multiply how long the scan is willing to wait.
     ///
     /// Does not touch the shortest timeout a protocol allows. That floor is not
     /// a preference, it is what the protocol costs.
-    #[arg(long, value_name = "FACTOR", value_parser = positive)]
-    pub timeout_scale: Option<f64>,
+    #[arg(long, value_name = "FACTOR", value_parser = timeout_scale)]
+    pub timeout_scale: Option<TimeoutScale>,
 
     /// Spend the full probe budget on hosts that answer nothing at all.
     ///
@@ -904,8 +1067,34 @@ pub(crate) struct EngineArgs {
     ///
     /// A coverage control before it is a politeness one: on a policed path a
     /// burst loses most of its first attempt, so a lower rate buys coverage.
-    #[arg(long, value_name = "PPS", value_parser = clap::value_parser!(u32).range(1..))]
-    pub max_probe_rate: Option<u32>,
+    #[arg(long, value_name = "PPS")]
+    pub max_probe_rate: Option<NonZeroU32>,
+
+    /// The slowest discovery may fall to, in probes per second.
+    ///
+    /// A floor, not a ceiling: it lifts a scan that pacing has slowed below it,
+    /// and never speeds one past what `--max-probe-rate` allows. For a link whose
+    /// round trips are long enough that the adaptive window crawls, where the
+    /// operator would rather spend packets than wait.
+    #[arg(long, value_name = "PPS")]
+    pub min_probe_rate: Option<NonZeroU32>,
+
+    /// Give up on a host that is still answering after this long.
+    ///
+    /// A wall-clock budget per host, spent across every phase it is in. A host
+    /// that reaches it is left where it stands and named in the report as one
+    /// the budget cut short, so a slow host cannot hold a scan open. Accepts a
+    /// plain number of seconds or a suffix: `30s`, `10m`, `4h`.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub host_timeout: Option<std::time::Duration>,
+
+    /// Give up on the whole scan after this long.
+    ///
+    /// The same budget for the run as a whole. Every host still outstanding when
+    /// it expires is left where it stands and named in the report. Accepts a
+    /// plain number of seconds or a suffix: `30s`, `10m`, `4h`.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub scan_timeout: Option<std::time::Duration>,
 
     /// How raw probes are placed on the wire.
     ///
@@ -983,22 +1172,212 @@ pub(crate) struct EngineArgs {
     /// Profiles are defined in `engine.toml` and layer on top of its defaults.
     #[arg(long, value_name = "NAME")]
     pub profile: Option<String>,
+
+    /// What the scan is allowed to change about the packets it sends.
+    #[command(flatten)]
+    pub evasion: EvasionArgs,
 }
 
-/// Reads a positive, finite multiplier.
+/// What a scan may change about the packets it sends, to get past a filter or to
+/// hide which host is asking.
+///
+/// A group of its own because they share a purpose and a caveat: every one of
+/// them needs raw sockets, and a scan that cannot build its own packets cannot
+/// honour any of them. The engine refuses a profile no strategy in the plan
+/// could carry when the scan is asked for, rather than sending something weaker
+/// and not saying so, so a flag here that the run cannot honour is an error and
+/// not a silent downgrade.
+///
+/// Layered onto the profile the settings produced, each flag speaking only about
+/// what was written, the way [`EngineArgs`] is.
+#[derive(Debug, Args)]
+#[command(next_help_heading = "Evasion")]
+pub(crate) struct EvasionArgs {
+    /// Set the outgoing hop limit, rather than this host's default.
+    ///
+    /// A probe crafted to expire in the path, or one built to look like traffic
+    /// from a particular distance. Refused at zero, which is a packet that never
+    /// leaves the first hop.
+    #[arg(long, value_name = "HOPS")]
+    pub ttl: Option<u8>,
+
+    /// Send every probe from this source port.
+    ///
+    /// A filter that trusts a port such as 53 or 88 lets a probe wearing it back
+    /// in. One port for the whole scan, since the answers must come back to it.
+    #[arg(long = "source-port", visible_alias = "g", value_name = "PORT")]
+    pub source_port: Option<u16>,
+
+    /// Mingle the real probes with decoys from these addresses.
+    ///
+    /// Repeat the flag or comma-join them. The target sees probes from every
+    /// address at once and cannot tell which one is asking, at the cost of one
+    /// full scan's traffic per decoy. Addresses that are alive make better cover
+    /// than empty ones, which a defender can rule out.
+    #[arg(long = "decoy", value_name = "IP", value_delimiter = ',', action = ArgAction::Append)]
+    pub decoys: Vec<std::net::IpAddr>,
+
+    /// Fragment every crafted probe to this MTU, in bytes.
+    ///
+    /// A stateless filter that judges only the first fragment can be slipped a
+    /// probe whose flags land in a later one. A multiple of eight, and no
+    /// smaller than one IP header plus the transport's first bytes, which the
+    /// engine enforces and refuses below.
+    #[arg(long = "mtu", value_name = "MTU")]
+    pub fragment: Option<u16>,
+
+    /// Append this many bytes of padding to each crafted probe.
+    ///
+    /// A blunt shape change: a scan whose every packet is a fixed odd length is
+    /// less like the fingerprint a signature is looking for.
+    #[arg(long = "data-length", value_name = "LEN")]
+    pub padding: Option<u16>,
+
+    /// Give every crafted TCP probe a deliberately wrong checksum.
+    ///
+    /// A conformant host drops it unread, so anything that answers was not the
+    /// host: a middlebox in the path replying without validating. A probe rather
+    /// than an evasion, and it shares the machinery, which is why it is here.
+    #[arg(long = "badsum")]
+    pub bad_checksum: bool,
+
+    /// Send crafted frames from this hardware address.
+    ///
+    /// Only reaches the wire on the local segment, where the scan builds its own
+    /// Ethernet frames; a routed probe carries this host's real address whatever
+    /// is set here.
+    #[arg(long = "spoof-mac", value_name = "MAC")]
+    pub spoof_mac: Option<MacAddr>,
+
+    /// Set the TCP flags on every port probe by name or number.
+    ///
+    /// Names concatenated or joined by `+`, as in `SYNFIN` or `SYN+FIN`, from
+    /// `FIN SYN RST PSH ACK URG ECE CWR`; or a number, decimal or `0x`-hex. What
+    /// a reply means is read the way the closest standard technique reads it, so
+    /// an answer is still a verdict rather than a raw packet.
+    #[arg(long = "scanflags", value_name = "FLAGS", value_parser = scan_flags)]
+    pub flags: Option<u8>,
+}
+
+impl EvasionArgs {
+    /// Lays these flags over the evasion profile the settings produced.
+    ///
+    /// Each is optional or a `bool` whose absence says nothing, so a flag left
+    /// off never cancels one a profile set. The builder is folded rather than
+    /// rebuilt, so a value from the settings file that no flag here touches
+    /// survives.
+    fn apply_to(&self, evasion: &mut EvasionProfile) {
+        let mut built = evasion.clone();
+
+        if let Some(ttl) = self.ttl {
+            built = built.with_ttl(ttl);
+        }
+        if let Some(port) = self.source_port {
+            built = built.with_source_port(port);
+        }
+        if !self.decoys.is_empty() {
+            built = built.with_decoys(self.decoys.clone());
+        }
+        if let Some(mtu) = self.fragment {
+            built = built.with_fragment(mtu);
+        }
+        if let Some(length) = self.padding {
+            built = built.with_padding(length);
+        }
+        if self.bad_checksum {
+            built = built.with_bad_tcp_checksum(true);
+        }
+        if let Some(mac) = self.spoof_mac {
+            built = built.with_spoof_mac(mac);
+        }
+        if let Some(flags) = self.flags {
+            built = built.with_flags(flags);
+        }
+
+        *evasion = built;
+    }
+}
+
+/// Reads a set of TCP flags, by name or by number.
+///
+/// A number, decimal or `0x`-hex, is taken as the byte itself. Otherwise the
+/// input is read as flag names — concatenated like `SYNFIN` or joined by `+`,
+/// `,` or spaces — each a three-letter abbreviation from the eight a TCP header
+/// carries. The two forms cover the two kinds of person who reach for this: one
+/// who knows the bit they want, and one who knows the flags by name.
+fn scan_flags(text: &str) -> Result<u8, String> {
+    let trimmed = text.trim();
+
+    // A number wins where the whole input is one, hex or decimal, so `0x12` and
+    // `18` reach the same byte the names `SYNFIN` do.
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return u8::from_str_radix(hex, 16)
+            .map_err(|_| format!("'{trimmed}' is not a byte in hex (0x00 to 0xff)"));
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return trimmed
+            .parse::<u8>()
+            .map_err(|_| format!("'{trimmed}' is not a flag byte (0 to 255)"));
+    }
+
+    // Names. Every TCP flag abbreviates to three letters, so the input is read
+    // three at a time once its separators are gone, and each chunk is one flag.
+    let bit = |flag: &str| match flag {
+        "FIN" => Some(0x01),
+        "SYN" => Some(0x02),
+        "RST" => Some(0x04),
+        "PSH" => Some(0x08),
+        "ACK" => Some(0x10),
+        "URG" => Some(0x20),
+        "ECE" => Some(0x40),
+        "CWR" => Some(0x80),
+        _ => None,
+    };
+
+    let cleaned: String = trimmed
+        .to_ascii_uppercase()
+        .chars()
+        .filter(|c| !matches!(c, '+' | ',' | ' ' | '-'))
+        .collect();
+
+    if cleaned.is_empty() || !cleaned.len().is_multiple_of(3) {
+        return Err(format!(
+            "'{text}' is not a set of TCP flags: name them like SYNFIN, or give a number"
+        ));
+    }
+
+    let mut flags = 0u8;
+    for chunk in cleaned.as_bytes().chunks(3) {
+        let name = std::str::from_utf8(chunk).expect("ascii uppercase stays utf-8");
+        match bit(name) {
+            Some(value) => flags |= value,
+            None => {
+                return Err(format!(
+                    "'{name}' is not a TCP flag: expected one of FIN SYN RST PSH ACK URG ECE CWR"
+                ));
+            }
+        }
+    }
+
+    Ok(flags)
+}
+
+/// Reads a positive, finite multiplier into the engine's [`TimeoutScale`].
 ///
 /// Zero asks the scan to wait no time at all and a negative asks for less than
-/// that. Refused here rather than discovered as a scan that finds nothing.
-fn positive(text: &str) -> Result<f64, String> {
+/// that; a NaN compares false against every bound. [`TimeoutScale::new`] is the
+/// engine's own gate for exactly these, so refusing them here means the value
+/// that reaches the config is one the engine promised it could honour, refused
+/// at the edge rather than discovered as a scan that finds nothing.
+fn timeout_scale(text: &str) -> Result<TimeoutScale, String> {
     let value: f64 = text
         .parse()
         .map_err(|_| format!("'{text}' is not a number"))?;
 
-    if value.is_finite() && value > 0.0 {
-        Ok(value)
-    } else {
-        Err(format!("'{text}' must be greater than zero"))
-    }
+    TimeoutScale::new(value).ok_or_else(|| format!("'{text}' must be greater than zero"))
 }
 
 impl EngineArgs {
@@ -1046,6 +1425,15 @@ impl EngineArgs {
         if let Some(rate) = self.max_probe_rate {
             config.max_probe_rate = Some(rate);
         }
+        if let Some(rate) = self.min_probe_rate {
+            config.min_probe_rate = Some(rate);
+        }
+        if let Some(budget) = self.host_timeout {
+            config.host_timeout = Some(budget);
+        }
+        if let Some(budget) = self.scan_timeout {
+            config.scan_timeout = Some(budget);
+        }
         if let Some(mode) = self.send_mode {
             config.send_mode = mode;
         }
@@ -1064,6 +1452,7 @@ impl EngineArgs {
         if let Some(detection) = self.os_detection {
             config.os_detection = detection;
         }
+        self.evasion.apply_to(&mut config.evasion);
     }
 }
 
@@ -1250,10 +1639,8 @@ mod tests {
             panic!("d is the discover alias");
         };
 
-        let mut from_file = ZondConfig {
-            no_dns: true,
-            ..ZondConfig::default()
-        };
+        let mut from_file = ZondConfig::default();
+        from_file.no_dns = true;
         args.engine.apply_to(&mut from_file);
         assert!(from_file.no_dns, "the flag was not given and said nothing");
     }
@@ -1404,5 +1791,126 @@ mod tests {
         // And a count that is not a number at all is still refused, just
         // earlier and for a different reason.
         assert!(parse_duration("99999999999999999999999d").is_err());
+    }
+
+    /// The scan-flag reader answers to a name, a concatenation and a number, and
+    /// the three that mean the same byte agree.
+    #[test]
+    fn scan_flags_read_by_name_or_by_number() {
+        let syn_fin = 0x02 | 0x01;
+        assert_eq!(scan_flags("SYNFIN"), Ok(syn_fin));
+        assert_eq!(scan_flags("syn+fin"), Ok(syn_fin));
+        assert_eq!(scan_flags("18"), Ok(0x12));
+        assert_eq!(scan_flags("0x12"), Ok(0x12));
+
+        // A three-letter chunk that is not a flag is named, and a length that is
+        // not a whole number of flags is refused rather than half-read.
+        assert!(scan_flags("SYNXYZ").is_err());
+        assert!(scan_flags("SY").is_err());
+    }
+
+    /// The zombie reader tells an IPv4 port apart from an IPv6 address's colons,
+    /// and keeps the probe port where one is given.
+    #[test]
+    fn an_idle_zombie_reads_its_address_and_optional_port() {
+        let bare = idle_scan("192.0.2.9").expect("a bare v4 zombie");
+        assert_eq!(
+            bare.zombie,
+            "192.0.2.9".parse::<std::net::IpAddr>().unwrap()
+        );
+        assert_eq!(bare.zombie_port, None);
+
+        let ported = idle_scan("192.0.2.9:80").expect("a v4 zombie with a port");
+        assert_eq!(ported.zombie_port, Some(80));
+
+        // An IPv6 zombie's colons are its own; a port needs the bracket form.
+        let v6 = idle_scan("2001:db8::1").expect("a bare v6 zombie");
+        assert_eq!(
+            v6.zombie,
+            "2001:db8::1".parse::<std::net::IpAddr>().unwrap()
+        );
+        assert_eq!(v6.zombie_port, None);
+
+        let v6_ported = idle_scan("[2001:db8::1]:443").expect("a bracketed v6 zombie");
+        assert_eq!(
+            v6_ported.zombie,
+            "2001:db8::1".parse::<std::net::IpAddr>().unwrap()
+        );
+        assert_eq!(v6_ported.zombie_port, Some(443));
+    }
+
+    /// An evasion flag reaches the config, and an absent one leaves what a
+    /// profile set alone.
+    #[test]
+    fn evasion_flags_layer_onto_the_profile() {
+        let cli = Cli::try_parse_from([
+            "zond",
+            "s",
+            "192.0.2.1",
+            "--ttl",
+            "7",
+            "--decoy",
+            "10.0.0.5,10.0.0.6",
+            "--badsum",
+        ])
+        .expect("should parse");
+        let Command::Scan(args) = cli.command else {
+            panic!("s is the scan alias");
+        };
+
+        let mut config = ZondConfig::default();
+        args.apply_to(&mut config);
+
+        assert_eq!(config.evasion.ttl, Some(7));
+        assert_eq!(config.evasion.decoys.len(), 2);
+        assert!(config.evasion.bad_tcp_checksum);
+        // Nothing touched the source port, so it stays unset rather than zeroed.
+        assert_eq!(config.evasion.source_port, None);
+    }
+
+    /// The scan-only knobs reach the config they name.
+    #[test]
+    fn the_scan_knobs_reach_the_config() {
+        let cli = Cli::try_parse_from([
+            "zond",
+            "s",
+            "192.0.2.1",
+            "--tls-enum",
+            "--characterise",
+            "--sctp-technique",
+            "cookie-echo",
+            "--ip-protocols",
+            "1,6,132",
+            "--detection",
+            "exploit",
+            "--min-probe-rate",
+            "50",
+            "--scan-timeout",
+            "10m",
+        ])
+        .expect("should parse");
+        let Command::Scan(args) = cli.command else {
+            panic!("s is the scan alias");
+        };
+
+        let mut config = ZondConfig::default();
+        args.apply_to(&mut config);
+
+        assert!(config.tls_enumeration);
+        assert!(config.characterise);
+        assert_eq!(config.sctp_technique, SctpScanTechnique::CookieEcho);
+        assert_eq!(config.ip_protocols, [1u8, 6, 132].into_iter().collect());
+        assert_eq!(
+            config.detection,
+            DetectionEnvelope::up_to(zond_engine::model::finding::DetectionClass::Exploit)
+        );
+        assert_eq!(
+            config.min_probe_rate,
+            Some(std::num::NonZeroU32::new(50).unwrap())
+        );
+        assert_eq!(
+            config.scan_timeout,
+            Some(std::time::Duration::from_secs(600))
+        );
     }
 }

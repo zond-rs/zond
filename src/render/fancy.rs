@@ -281,6 +281,16 @@ fn children(
         children.push(Child::one("system", style.plain(&os)));
     }
 
+    // What the scan concluded is in front of the host, where it drew a
+    // conclusion. Beside `system` because the two answer neighbouring
+    // questions — what this box is, and what stands between it and the scan —
+    // and cautioned, because a filter is why a port reads as it does. Drawn from
+    // `--characterise` and from the stateless-filter probe alike; this shows
+    // whatever the host carries, whichever produced it.
+    if let Some(filtering) = field::filtering(host) {
+        children.push(Child::one("filter", style.caution(&filtering)));
+    }
+
     // Directly under `system` because it is that line's working: the shape of
     // each reply the verdict was drawn from. Only under detail, because a person
     // using the finding wants the finding and a person checking it wants this.
@@ -353,7 +363,71 @@ fn children(
         children.push(ports(style, &listing));
     }
 
+    // Which IP protocols the host's stack takes delivery of, from
+    // `--ip-protocols`. Beside the ports rather than among them, because it
+    // answers a different question — what the host speaks, not what listens on
+    // it — and one line per protocol, the way `also` and `path` list their
+    // members.
+    let protocols = field::ip_protocols(host);
+    if !protocols.is_empty() {
+        children.push(Child::many(
+            "ip",
+            protocols.iter().map(|line| style.plain(line)).collect(),
+        ));
+    }
+
+    // Last, and under everything the scan measured, because a finding is a
+    // conclusion drawn from all of it: what a known vulnerability or a detection
+    // says is wrong with this host or one of its ports. The severity carries the
+    // colour, so the eye lands on the worst line first; the rest of the line is
+    // plain, the subject included, so nothing competes with the verdict.
+    let risks = field::findings(host);
+    if !risks.is_empty() {
+        children.push(findings(style, &risks, verbosity));
+    }
+
     children
+}
+
+/// The `risks` child: one line per finding, worst first, each coloured by how
+/// bad it is.
+///
+/// A child like any other. The severity word leads and is the only part
+/// coloured; the subject, where a finding is about a port rather than the host,
+/// is faint and sits before the headline so a reader sees *where* without it
+/// competing with *what*. Remediation hangs off the line under `-v`, the way a
+/// certificate's working does, because a person triaging wants the finding and a
+/// person acting on it wants the fix.
+fn findings(style: Style, views: &[field::FindingView], verbosity: Verbosity) -> Child {
+    let mut rows = Vec::new();
+
+    for view in views {
+        let severity = style.by_urgency(
+            field::severity_urgency(view.severity),
+            view.severity.label(),
+        );
+
+        let mut line = String::new();
+        if let Some(subject) = &view.subject {
+            line.push_str(&style.faint(subject));
+            line.push_str("  ");
+        }
+        line.push_str(&severity);
+        line.push_str("  ");
+        line.push_str(&style.plain(&view.headline));
+        line.push_str(&style.faint(&format!("  [{}]", view.confidence)));
+
+        let mut detail = Vec::new();
+        if verbosity.explains()
+            && let Some(remediation) = &view.remediation
+        {
+            detail.push(Detail::new("fix", style.plain(remediation)));
+        }
+
+        rows.push(Row::with_detail(line, detail));
+    }
+
+    Child::rows("risks", rows)
 }
 
 /// The `ports` child: a table, and whatever hangs off one of its rows.
@@ -505,6 +579,10 @@ mod tests {
 
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::Duration;
+    use zond_engine::model::confidence::Confidence;
+    use zond_engine::model::finding::{
+        DetectionClass, DetectionId, Finding, Reference, Severity, Version,
+    };
     use zond_engine::model::host::OsFingerprint;
     use zond_engine::model::host::path::Hop;
     use zond_engine::model::host::status::{StatusProtocol, StatusReason};
@@ -650,6 +728,132 @@ mod tests {
                 ),
         );
         host
+    }
+
+    /// A finding of `severity` about `title`, from a detection named `id`.
+    fn finding(id: &str, title: &str, severity: Severity) -> Finding {
+        let detection = DetectionId::new(id, Version::new(1, 0, 0), "")
+            .expect("a non-empty id is a valid detection id");
+        Finding::new(
+            detection,
+            title,
+            severity,
+            Confidence::Probable,
+            DetectionClass::Passive,
+        )
+        .expect("a non-empty title is a valid finding")
+    }
+
+    /// A host carrying a critical port finding and a medium host finding, for
+    /// the block that draws risks.
+    fn at_risk() -> Host {
+        let mut host = host(7);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:cve/CVE-2021-44228",
+                "Log4Shell remote code execution",
+                Severity::Critical,
+            )
+            .with_reference(Reference::cve("CVE-2021-44228").expect("a well-formed CVE id")),
+        );
+        host.add_finding(finding(
+            "zond:host/telnet-exposed",
+            "Telnet is reachable",
+            Severity::Medium,
+        ));
+        host
+    }
+
+    /// The worst finding leads, its severity and subject in the line, and its
+    /// reference beside the title.
+    #[test]
+    fn a_finding_is_drawn_worst_first_with_its_subject_and_reference() {
+        let text = block(&at_risk());
+
+        let risks: Vec<&str> = text
+            .lines()
+            .skip_while(|line| !line.contains("risks"))
+            .collect();
+
+        assert!(
+            risks[0].contains("Critical")
+                && risks[0].contains("443/tcp")
+                && risks[0].contains("Log4Shell")
+                && risks[0].contains("CVE-2021-44228"),
+            "the critical port finding should lead, with its subject and CVE: {text}"
+        );
+        assert!(
+            risks.iter().any(|line| line.contains("Medium")
+                && line.contains("Telnet")
+                && !line.contains("/tcp")),
+            "the host finding carries no port subject: {text}"
+        );
+        assert!(
+            text.find("Critical").expect("critical is drawn")
+                < text.find("Medium").expect("medium is drawn"),
+            "the worse finding comes first: {text}"
+        );
+    }
+
+    /// The severity, and only the severity, carries the colour.
+    #[test]
+    fn only_the_severity_of_a_finding_is_painted() {
+        let text = painted(&at_risk());
+        let alarm = painting().alarm("Critical");
+
+        assert!(text.contains(&alarm), "the severity is coloured: {text}");
+        assert!(
+            !text.contains(&painting().alarm("Log4Shell")),
+            "nothing but the severity is coloured: {text}"
+        );
+    }
+
+    /// Remediation waits for detail, the way a certificate's working does.
+    #[test]
+    fn a_findings_fix_appears_only_under_detail() {
+        let mut host = host(8);
+        host.add_finding(
+            finding(
+                "zond:host/telnet-exposed",
+                "Telnet is reachable",
+                Severity::Medium,
+            )
+            .with_remediation("disable telnet and use ssh"),
+        );
+
+        assert!(!block(&host).contains("disable telnet"), "{}", block(&host));
+        assert!(
+            explained(&host).contains("disable telnet"),
+            "{}",
+            explained(&host)
+        );
+    }
+
+    /// A filtering conclusion and the IP protocols a stack accepts each draw
+    /// their own line, spelled for a person rather than in the wire's casing.
+    #[test]
+    fn a_filter_and_the_ip_protocols_a_stack_accepts_are_drawn() {
+        use zond_engine::model::host::Filtering;
+        use zond_engine::model::host::protocol::IpProtocolState;
+
+        let mut host = host(9);
+        host.add_filtering(Filtering::StatefulFilter);
+        host.record_ip_protocol(6, IpProtocolState::Open);
+        host.record_ip_protocol(132, IpProtocolState::Filtered);
+
+        let text = block(&host);
+
+        assert!(
+            text.contains("filter") && text.contains("stateful filter"),
+            "the filter conclusion is spelled for a person: {text}"
+        );
+        assert!(
+            text.contains("6 tcp  accepted") && text.contains("132 sctp  filtered"),
+            "each IP protocol reads as number, name and verdict: {text}"
+        );
     }
 
     /// The shape the whole design rests on. If this drifts, everything else in

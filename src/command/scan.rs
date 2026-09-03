@@ -21,11 +21,12 @@
 //! That is the caller's trade to make. `zond discover` answers which hosts are
 //! there, and its output feeds straight back in.
 
+use zond_engine::detect::Detections;
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::store::Journal;
 use zond_engine::model::target::TargetMap;
 use zond_engine::scanner::scan_with_journal;
-use zond_engine::system::privilege;
+use zond_engine::system::privilege::Privilege;
 use zond_engine::{PortSet, ZondConfig, scan};
 
 use crate::cli::ScanArgs;
@@ -82,9 +83,16 @@ pub(crate) async fn run(
     renderer.started(Phase::PortScan { targets: &targets }, redaction)?;
 
     let plan = targets.into_map();
+
+    // The corpus the scan runs against a service it identifies, held to the
+    // ceiling `config.detection` names. The built-in one: nothing on the
+    // command line names a detection file yet, and the engine ships the
+    // catalogue a scan has when a caller supplies none.
+    let detections = Detections::embedded();
+
     let (session, task) = match journal {
-        Some(journal) => scan_with_journal(plan, &config, journal).await?,
-        None => scan(plan, &config).await?,
+        Some(journal) => scan_with_journal(plan, &config, detections, journal).await?,
+        None => scan(plan, &config, detections).await?,
     };
 
     command::drive(
@@ -169,7 +177,7 @@ async fn continued(
         let manifest = resumed.journal.manifest();
         manifest.covers(
             &Plan::port_scan(named.map(), &config.exclusions, manifest.technique()),
-            privilege::is_elevated(),
+            Privilege::current(),
         )?;
     }
 

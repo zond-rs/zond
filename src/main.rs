@@ -119,7 +119,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     tracing::info!(
         "zond-cli {} \u{b7} zond-engine {} \u{b7} {}",
         env!("CARGO_PKG_VERSION"),
-        zond_engine::scanner::report::ENGINE_VERSION,
+        zond_engine::report::ENGINE_VERSION,
         render::field::moment(std::time::SystemTime::now())
     );
 

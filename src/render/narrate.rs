@@ -20,7 +20,8 @@
 use std::io::{self, Write};
 
 use zond_engine::export::Redaction;
-use zond_engine::scanner::report::ScanKind;
+use zond_engine::report::ScanKind;
+use zond_engine::system::privilege::Privilege;
 use zond_engine::{Exclusions, ScanReport};
 
 use crate::diagnostics::Verbosity;
@@ -296,6 +297,20 @@ impl Narrator {
             ))?;
         }
 
+        // What the scan concluded is wrong, where it concluded anything. Said on
+        // the summary line because a run that turned up a critical vulnerability
+        // should not make a reader open every block to find out; the count at
+        // high or above is called out separately, since that is the part that
+        // asks for action rather than a note in a review.
+        if let Some((total, serious)) = field::findings_tally(report) {
+            let head = format!("{total} {}", plural(total as u128, "finding"));
+            let line = match serious {
+                0 => head,
+                _ => format!("{head} ({serious} high or above)"),
+            };
+            self.remark(&line)?;
+        }
+
         // After the count rather than before the scan: both notes say the count
         // is an undercount, which matters when somebody is looking at it. The
         // engine already announced the privilege level; this adds the remedy.
@@ -308,10 +323,10 @@ impl Narrator {
         // having nothing to say here and the one that read worst: an nmap sweep
         // performed over ARP as root was told it had run without raw sockets and
         // advised to use sudo, on the same page as the ARP replies that answered
-        // it. `Some(false)` and nothing else, so silence is never read as a
+        // it. `Some(Connect)` and nothing else, so silence is never read as a
         // finding.
         if let Some(kind) = field::kind(report)
-            && field::was_privileged(report) == Some(false)
+            && field::privilege(report) == Some(Privilege::Connect)
         {
             self.note(match kind {
                 ScanKind::PortScan => {
@@ -354,6 +369,21 @@ impl Narrator {
                 plural(skipped, "address"),
                 if skipped == 1 { "was" } else { "were" },
                 if skipped == 1 { "it" } else { "them" },
+            ))?;
+        }
+
+        // A host a time budget left where it stood. Its results are whatever the
+        // scan had reached, which is narrower than what was asked, so a reader
+        // acting on the count should know it was cut short rather than finished.
+        let timed_out = field::timed_out(report);
+        if timed_out > 0 {
+            self.note(&format!(
+                "{timed_out} {} still outstanding when a time budget expired and {} left \
+                 where {} stood. Raise --host-timeout or --scan-timeout to finish {}.",
+                plural(timed_out, "host"),
+                if timed_out == 1 { "was" } else { "were" },
+                if timed_out == 1 { "it" } else { "they" },
+                if timed_out == 1 { "it" } else { "them" },
             ))?;
         }
 
@@ -709,32 +739,34 @@ mod tests {
     }
 
     /// A scan of this engine's whose phase said nothing, on the same rule: the
-    /// note follows a recorded `false` and never an absence.
+    /// note follows a recorded privilege and never an absence.
     fn unprivileged() -> ScanReport {
-        rebuilt(Some(false))
+        rebuilt(Some(Privilege::Connect))
     }
 
     fn foreign() -> ScanReport {
         rebuilt(None)
     }
 
-    /// The test fixture's report with its phase's privilege set to `privileged`.
-    fn rebuilt(privileged: Option<bool>) -> ScanReport {
-        use zond_engine::scanner::report::{PhaseParts, ScanPhase};
+    /// The test fixture's report with its phase's privilege set to `privilege`.
+    fn rebuilt(privilege: Option<Privilege>) -> ScanReport {
+        use zond_engine::report::{PhaseParts, ScanPhase};
 
         let report = scoped(vec![host(1)], "192.0.2.0/24");
         let phase = &report.phases()[0];
 
         let rebuilt = ScanPhase::from_parts(PhaseParts {
-            attachments: Vec::new(),
+            attachments: phase.attachments().to_vec(),
             kind: phase.kind(),
             started_at: phase.started_at(),
             elapsed: phase.elapsed(),
-            privileged,
+            privilege,
             targets: phase.targets().clone(),
-            settings: *phase.settings(),
+            settings: phase.settings().clone(),
             failures: phase.failures().to_vec(),
+            refusals: phase.refusals().to_vec(),
             unroutable: phase.unroutable().to_vec(),
+            timed_out: phase.timed_out().to_vec(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });

@@ -79,7 +79,7 @@ use std::io::{self, Write};
 
 use zond_engine::diff::ScanDiff;
 use zond_engine::export::ExportOptions;
-use zond_engine::scanner::report::ScanKind;
+use zond_engine::report::ScanKind;
 
 use crate::render::field;
 use crate::render::style::{Mark, Style};
@@ -246,6 +246,21 @@ fn summary(diff: &ScanDiff, out: &mut dyn Write, style: Style) -> io::Result<()>
         )));
     }
 
+    // Findings that appeared and resolved, counted from the deltas rather than
+    // the summary: the engine's `DiffSummary` counts hosts, ports, services and
+    // certificates, and a finding moving is none of those. A new one is alarming
+    // and a resolved one is good, the two colours the marks up in the listing
+    // already carry. Reassessed severities are left to the listing, where the
+    // before and after can be read; a bare count of them would not say which way
+    // any went.
+    let (appeared, resolved) = finding_counts(diff);
+    if appeared > 0 {
+        parts.push(style.alarm(&change::counted(appeared, "finding appeared")));
+    }
+    if resolved > 0 {
+        parts.push(style.good(&change::counted(resolved, "finding resolved")));
+    }
+
     // A blank line first: the summary is about the listing rather than part of
     // it, and butted against the last block it reads as one more finding.
     writeln!(out)?;
@@ -253,6 +268,51 @@ fn summary(diff: &ScanDiff, out: &mut dyn Write, style: Style) -> io::Result<()>
     // given, as it must, since most of what reaches it came off a network. The
     // parts here are this program's own and already painted.
     writeln!(out, "{} {}", style.mark(Mark::Info), parts.join(", "))
+}
+
+/// How many findings appeared and resolved across a comparison, host and port
+/// alike.
+///
+/// Walked here because the engine's [`DiffSummary`](zond_engine::diff::DiffSummary)
+/// does not carry it: a finding is not a host, a port, a service or a
+/// certificate, and those are what it counts. Both enums are matched with a
+/// wildcard, so a change a newer engine adds is passed over here rather than
+/// stopping this from compiling — the listing still draws it.
+fn finding_counts(diff: &ScanDiff) -> (usize, usize) {
+    use zond_engine::diff::host::HostChange;
+    use zond_engine::diff::port::PortChange;
+
+    let mut appeared = 0usize;
+    let mut resolved = 0usize;
+
+    for host in diff.hosts() {
+        for change in host.changes() {
+            if let HostChange::Findings {
+                appeared: a,
+                resolved: r,
+                ..
+            } = change
+            {
+                appeared += a.len();
+                resolved += r.len();
+            }
+        }
+        for port in host.ports() {
+            for change in port.changes() {
+                if let PortChange::Findings {
+                    appeared: a,
+                    resolved: r,
+                    ..
+                } = change
+                {
+                    appeared += a.len();
+                    resolved += r.len();
+                }
+            }
+        }
+    }
+
+    (appeared, resolved)
 }
 
 // ╔════════════════════════════════════════════╗
@@ -265,14 +325,16 @@ fn summary(diff: &ScanDiff, out: &mut dyn Write, style: Style) -> io::Result<()>
 // ╚════════════════════════════════════════════╝
 #[cfg(test)]
 mod tests {
-    use zond_engine::scanner::report::ScanKind;
+    use zond_engine::diff::change::Change;
+    use zond_engine::diff::host::HostChange;
+    use zond_engine::export::diff::schema::ChangeDto;
+    use zond_engine::report::ScanKind;
     use zond_engine::{Port, PortState, Protocol};
 
     use super::change::{readable, sentence};
     use super::pipe::{FIELDS, SEPARATOR};
     use super::*;
     use crate::render::test_support::{Capture, host, scoped};
-    use zond_engine::export::diff::schema::ChangeDto;
 
     /// What both presentations wrote, as `(records, narration)`.
     fn drawn(diff: &ScanDiff, presentation: Presentation) -> (String, String) {
@@ -474,22 +536,23 @@ mod tests {
         use zond_engine::ZondConfig;
         use zond_engine::model::exclusion::Exclusions;
         use zond_engine::model::parse::ip::to_set;
-        use zond_engine::scanner::report::{
-            PhaseParts, ScanPhase, ScanReport, ScanSettings, TargetScope,
-        };
+        use zond_engine::report::{PhaseParts, ScanPhase, ScanReport, ScanSettings, TargetScope};
+        use zond_engine::system::privilege::Privilege;
 
         let phase = |kind| {
             let mut targets = to_set(&["192.0.2.0/24"], None, None).expect("a range");
             ScanPhase::from_parts(PhaseParts {
-            attachments: Vec::new(),
+                attachments: Vec::new(),
                 kind,
                 started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
                 elapsed: Duration::from_secs(1),
-                privileged: Some(true),
+                privilege: Some(Privilege::Raw),
                 targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
                 settings: ScanSettings::from(&ZondConfig::default()),
                 failures: Vec::new(),
+                refusals: Vec::new(),
                 unroutable: Vec::new(),
+                timed_out: Vec::new(),
                 probes: Vec::new(),
                 origin: None,
             })
@@ -550,25 +613,97 @@ mod tests {
     /// a mistake, and a real segment produced exactly that line.
     #[test]
     fn a_set_member_that_went_is_not_also_said_to_be_none() {
-        let lost = ChangeDto {
-            kind: "address_lost",
-            before: Some("2a02:908:8c1:b880::b99a".to_string()),
-            after: None,
+        // Through the engine's own lowering rather than a hand-written DTO, so
+        // the `kind` these assertions read is the one a real comparison emits.
+        let options = ExportOptions::default();
+        let dto = |change| {
+            ChangeDto::of_host(&change, &options)
+                .pop()
+                .expect("the change lowers to one fact")
         };
+
+        let lost = dto(HostChange::Addresses {
+            gained: Vec::new(),
+            lost: vec!["2a02:908:8c1:b880::b99a".parse().expect("an address")],
+        });
         assert_eq!(
             sentence(&lost, field::Reader::default()),
             "lost   2a02:908:8c1:b880::b99a"
         );
 
         // A field that genuinely emptied still says so.
-        let emptied = ChangeDto {
-            kind: "vendor",
+        let emptied = dto(HostChange::Vendor(Change {
             before: Some("Arris Group, Inc".to_string()),
             after: None,
-        };
+        }));
         assert_eq!(
             sentence(&emptied, field::Reader::default()),
             "vendor Arris Group, Inc, now none"
+        );
+    }
+
+    /// A finding that appeared or resolved reads as one-sided, and reaches a
+    /// word for it rather than the raw `finding_appeared` the wire spells.
+    #[test]
+    fn a_finding_that_moved_reads_as_a_finding_and_not_a_wire_name() {
+        use zond_engine::diff::host::{HostChange, Reassessment};
+        use zond_engine::model::confidence::Confidence;
+        use zond_engine::model::finding::{
+            DetectionClass, DetectionId, Finding, Severity, Version,
+        };
+
+        let finding = |severity| {
+            let detection = DetectionId::new("zond:host/telnet", Version::new(1, 0, 0), "")
+                .expect("a valid id");
+            Finding::new(
+                detection,
+                "Telnet is reachable",
+                severity,
+                Confidence::Probable,
+                DetectionClass::Passive,
+            )
+            .expect("a valid finding")
+        };
+
+        let options = ExportOptions::default();
+        let lower = |change| ChangeDto::of_host(&change, &options);
+
+        let appeared = lower(HostChange::Findings {
+            appeared: vec![finding(Severity::High)],
+            resolved: Vec::new(),
+            reassessed: Vec::new(),
+        });
+        assert_eq!(
+            sentence(&appeared[0], field::Reader::default()),
+            "found  high: Telnet is reachable"
+        );
+
+        let resolved = lower(HostChange::Findings {
+            appeared: Vec::new(),
+            resolved: vec![finding(Severity::High)],
+            reassessed: Vec::new(),
+        });
+        assert_eq!(
+            sentence(&resolved[0], field::Reader::default()),
+            "resolved high: Telnet is reachable",
+        );
+
+        // A severity that moved is a transition and reads for itself, no lead-in
+        // and no ", now none" tail.
+        let reassessed = lower(HostChange::Findings {
+            appeared: Vec::new(),
+            resolved: Vec::new(),
+            reassessed: vec![Reassessment {
+                finding: finding(Severity::Critical),
+                severity: Change {
+                    before: Severity::High,
+                    after: Severity::Critical,
+                },
+            }],
+        });
+        assert_eq!(
+            sentence(&reassessed[0], field::Reader::default()),
+            "high: Telnet is reachable -> critical: Telnet is reachable"
         );
     }
 

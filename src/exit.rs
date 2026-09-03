@@ -38,10 +38,18 @@
 //! ignore it. See [`diff`](zond_engine::diff).
 //!
 //! **Code 3 is the one worth explaining.** A scan whose raw scanner would not
-//! start, or whose range no strategy could walk, still returns every host it did
-//! find. That result is narrower than what was asked for and dangerous to read
-//! as though it were not. A script that does not care writes
+//! start, whose range no strategy could walk, or whose host or scan time budget
+//! expired with ground still outstanding, still returns every host it did find.
+//! That result is narrower than what was asked for and dangerous to read as
+//! though it were not. A script that does not care writes
 //! `zond discover lan || true`.
+//!
+//! The engine records those three apart — a strategy that failed, ground it
+//! refused before sending, a host a budget cut short — because their remedies
+//! differ, and [`command::concluded`](crate::command::concluded) is where that
+//! distinction stops mattering: any of them means the scan did not cover the
+//! ground. An address with no route is not among them; it was never coverable,
+//! and a sweep of any range with a gap would otherwise never exit `0`.
 //!
 //! **A watch that was stopped is not a watch that was interrupted.** `zond
 //! listen en0` was asked to run until somebody stopped it, so `Ctrl-C` and `q`

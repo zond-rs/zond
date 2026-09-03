@@ -135,21 +135,24 @@ pub(crate) fn scoped_at(
     use zond_engine::ZondConfig;
     use zond_engine::model::exclusion::Exclusions;
     use zond_engine::model::parse::ip::to_set;
-    use zond_engine::scanner::report::{
+    use zond_engine::report::{
         PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope,
     };
+    use zond_engine::system::privilege::Privilege;
 
     let mut targets = to_set(&[covered], None, None).expect("a parseable range");
     let phase = ScanPhase::from_parts(PhaseParts {
-            attachments: Vec::new(),
+        attachments: Vec::new(),
         kind: ScanKind::Discovery,
         started_at,
         elapsed: Duration::from_secs(1),
-        privileged: Some(true),
+        privilege: Some(Privilege::Raw),
         targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
         settings: ScanSettings::from(&ZondConfig::default()),
         failures: Vec::new(),
+        refusals: Vec::new(),
         unroutable: Vec::new(),
+        timed_out: Vec::new(),
         probes: Vec::new(),
         origin: None,
     });

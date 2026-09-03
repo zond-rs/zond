@@ -40,7 +40,7 @@ use std::io::{self, Write};
 
 use zond_engine::journal::lock::LockState;
 use zond_engine::journal::store::{Entry, Pruned};
-use zond_engine::scanner::report::ScanKind;
+use zond_engine::report::ScanKind;
 
 use crate::render::block::{self, Block, Child, Header};
 use crate::render::field;
@@ -380,11 +380,12 @@ mod tests {
     use std::time::{Duration, SystemTime};
     use zond_engine::Exclusions;
     use zond_engine::journal::cursor::Checkpoint;
-    use zond_engine::journal::manifest::{Manifest, Plan};
+    use zond_engine::journal::manifest::{JournalManifest, Plan};
     use zond_engine::model::ip::set::IpSet;
     use zond_engine::model::port::PortSet;
     use zond_engine::model::target::{TargetMap, TargetSet};
     use zond_engine::model::technique::TcpScanTechnique;
+    use zond_engine::system::privilege::Privilege;
 
     /// A record of a port scan, at whatever point through it the caller wants.
     fn entry(id: &str, settled: u64, total: u128, lock: LockState) -> Entry {
@@ -394,10 +395,10 @@ mod tests {
             "80".parse::<PortSet>().expect("ports"),
         ));
 
-        let manifest = Manifest::new(
+        let manifest = JournalManifest::new(
             id,
             &Plan::port_scan(&plan, &Exclusions::none(), TcpScanTechnique::Syn),
-            true,
+            Privilege::Raw,
             "192.0.2.0/24 on 1000 ports",
         );
 
@@ -407,10 +408,10 @@ mod tests {
     /// A record of a sweep, at whatever point through it the caller wants.
     fn sweep(id: &str, settled: u64, addresses: u128, lock: LockState) -> Entry {
         let ips = "192.0.2.0/24".parse::<IpSet>().expect("a range");
-        let manifest = Manifest::new(
+        let manifest = JournalManifest::new(
             id,
             &Plan::discovery(&ips, &Exclusions::none(), false),
-            true,
+            Privilege::Raw,
             "192.0.2.0/24",
         );
 
@@ -421,7 +422,7 @@ mod tests {
     /// timestamp does not move between runs.
     fn assemble(
         id: &str,
-        mut manifest: Manifest,
+        mut manifest: JournalManifest,
         total: u128,
         settled: Option<u64>,
         lock: LockState,
