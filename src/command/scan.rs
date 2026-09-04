@@ -21,7 +21,6 @@
 //! That is the caller's trade to make. `zond discover` answers which hosts are
 //! there, and its output feeds straight back in.
 
-use zond_engine::detect::Detections;
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::store::Journal;
 use zond_engine::model::target::TargetMap;
@@ -85,10 +84,11 @@ pub(crate) async fn run(
     let plan = targets.into_map();
 
     // The corpus the scan runs against a service it identifies, held to the
-    // ceiling `config.detection` names. The built-in one: nothing on the
-    // command line names a detection file yet, and the engine ships the
-    // catalogue a scan has when a caller supplies none.
-    let detections = Detections::embedded();
+    // ceiling `config.detection` names. The built-in catalogue unless
+    // `--detections` named more, and every one of them compiled before the scan
+    // starts: a detection that will not build is a mistake made before the run
+    // and the end of one is the worst moment to be told.
+    let detections = command::detections::corpus(&args.detections)?;
 
     let (session, task) = match journal {
         Some(journal) => scan_with_journal(plan, &config, detections, journal).await?,

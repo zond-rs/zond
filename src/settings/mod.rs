@@ -167,6 +167,8 @@ pub(crate) struct Settings {
     colour: Option<ColourChoice>,
     accent_colour: Option<Accent>,
     reason: Option<bool>,
+    remedy: Option<bool>,
+    evidence: Option<bool>,
     identity: Option<Identity>,
     journal: Option<bool>,
     journal_entry_limit: Option<EntryLimit>,
@@ -189,6 +191,18 @@ impl Settings {
     #[must_use]
     pub(crate) fn reason(self) -> Option<bool> {
         self.reason
+    }
+
+    /// Whether these settings ask for the advice a finding carries.
+    #[must_use]
+    pub(crate) fn remedy(self) -> Option<bool> {
+        self.remedy
+    }
+
+    /// Whether these settings ask for what each detection saw.
+    #[must_use]
+    pub(crate) fn evidence(self) -> Option<bool> {
+        self.evidence
     }
 
     /// Whether these settings ask for colour, if they say.
@@ -252,6 +266,12 @@ impl Settings {
         if let Some(accent) = other.accent_colour {
             self.accent_colour = Some(accent);
         }
+        if let Some(remedy) = other.remedy {
+            self.remedy = Some(remedy);
+        }
+        if let Some(evidence) = other.evidence {
+            self.evidence = Some(evidence);
+        }
         if let Some(reason) = other.reason {
             self.reason = Some(reason);
         }
@@ -288,6 +308,8 @@ struct Document {
     accent_color: Option<String>,
     identity: Option<String>,
     reason: Option<bool>,
+    remedy: Option<bool>,
+    evidence: Option<bool>,
     journal: Option<bool>,
     // Left as it was written, because this key takes a count or a word and the
     // message for anything else should be able to quote what was there.
@@ -361,6 +383,8 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
             colour,
             accent_colour,
             reason: document.reason,
+            remedy: document.remedy,
+            evidence: document.evidence,
             identity,
             journal: document.journal,
             journal_entry_limit,
@@ -857,6 +881,8 @@ mod tests {
             colour: Some(ColourChoice::Never),
             accent_colour: Some(Accent::VIOLET),
             reason: Some(true),
+            remedy: None,
+            evidence: None,
             identity: Some(Identity::Hardware),
             journal: Some(false),
             journal_entry_limit: Some(EntryLimit::Unlimited),
@@ -898,6 +924,8 @@ mod tests {
             colour: None,
             accent_colour: None,
             reason: None,
+            remedy: None,
+            evidence: None,
             identity: None,
             journal: None,
             journal_entry_limit: None,

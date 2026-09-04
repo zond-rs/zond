@@ -96,18 +96,23 @@ pub(crate) struct FancyRenderer {
     /// Decides whether a block shows the working behind its operating-system
     /// finding and behind a certificate.
     verbosity: Verbosity,
-    /// Whether a block shows the packet behind each verdict, from `--reason`.
+    /// What this run asked to be shown beyond the basics.
     ///
-    /// Apart from `verbosity` because they answer different readers: the one
-    /// above is for somebody auditing a configuration, this is for somebody
-    /// deciding whether to believe a verdict.
-    reasons: bool,
+    /// Apart from `verbosity` because the axes answer different readers, and
+    /// resolved by the caller rather than derived here: the flags and the
+    /// settings file layer in one place, and a renderer that worked any of it
+    /// out again would be a second place for the two to disagree.
+    showing: field::Showing,
 }
 
 impl FancyRenderer {
     /// Writing to this process's own streams.
     #[must_use]
-    pub(crate) fn to_terminal(verbosity: Verbosity, palette: Palette, reasons: bool) -> Self {
+    pub(crate) fn to_terminal(
+        verbosity: Verbosity,
+        palette: Palette,
+        showing: field::Showing,
+    ) -> Self {
         // Records are buffered, since they arrive as thousands of lines in one
         // burst at the end. Commentary is not: a progress line held in a buffer
         // is not progress.
@@ -118,28 +123,17 @@ impl FancyRenderer {
             Style::for_stdout(palette),
             Style::for_stderr(palette),
         )
-        .showing_reasons(reasons)
+        .showing(showing)
     }
 
-    /// What this run's flags amount to for a listing.
-    ///
-    /// The two axes meet here and nowhere else, so a renderer never has to
-    /// remember which flag feeds which half.
-    fn evidence(&self) -> field::Evidence {
-        field::Evidence {
-            certificates: self.verbosity.explains(),
-            reasons: self.reasons,
-        }
-    }
-
-    /// The same renderer, told whether to show the packet behind each verdict.
+    /// The same renderer, told what to show beyond the basics.
     ///
     /// Apart from [`new`](Self::new) because every test that builds one wants
-    /// the default, and threading a fourth argument through all of them to say
+    /// the default, and threading a further argument through all of them to say
     /// so would obscure the two that are about writing somewhere.
     #[must_use]
-    pub(crate) fn showing_reasons(mut self, reasons: bool) -> Self {
-        self.reasons = reasons;
+    pub(crate) fn showing(mut self, showing: field::Showing) -> Self {
+        self.showing = showing;
         self
     }
 
@@ -158,7 +152,7 @@ impl FancyRenderer {
             reader: field::Reader::default(),
             style,
             verbosity,
-            reasons: false,
+            showing: field::Showing::default(),
         }
     }
 }
@@ -233,7 +227,7 @@ fn children(
     reader: field::Reader,
     host: &Host,
     verbosity: Verbosity,
-    evidence: field::Evidence,
+    showing: field::Showing,
     silence_means_something: bool,
 ) -> Vec<Child> {
     let mut children = Vec::new();
@@ -288,7 +282,7 @@ fn children(
     // carries what was observed and who sent it, and those do not fit beside
     // each other on one line. The label stays: it is the same question answered
     // at two depths, not two questions.
-    if evidence.reasons {
+    if showing.reasons {
         let detailed = field::answered_in_detail(reader, host);
         if !detailed.is_empty() {
             children.push(Child::many(
@@ -343,7 +337,7 @@ fn children(
         ));
     }
 
-    let listing = field::port_rows(host, silence_means_something, evidence);
+    let listing = field::port_rows(host, silence_means_something, showing);
     if !listing.rows.is_empty() || !listing.notes.is_empty() {
         children.push(ports(style, &listing));
     }
@@ -368,7 +362,7 @@ fn children(
     // plain, the subject included, so nothing competes with the verdict.
     let risks = field::findings(host);
     if !risks.is_empty() {
-        children.push(findings(style, &risks, verbosity, evidence));
+        children.push(findings(style, &risks, verbosity, showing));
     }
 
     children
@@ -390,7 +384,7 @@ fn findings(
     style: Style,
     views: &[field::FindingView],
     verbosity: Verbosity,
-    evidence: field::Evidence,
+    showing: field::Showing,
 ) -> Child {
     let mut rows = Vec::new();
 
@@ -424,19 +418,24 @@ fn findings(
             line.push_str(&style.faint(&format!("~{confidence}")));
         }
 
+        // Raw, not painted: a `Detail` carries text and the block paints it,
+        // which is also what lets the block measure it. Painting here would hand
+        // the block escape bytes to escape again, and they would be drawn.
         let mut detail = Vec::new();
-        if evidence.reasons
+        if showing.excerpts
             && let Some(seen) = &view.evidence
         {
-            detail.push(Detail::new("evidence", style.plain(seen)));
+            detail.push(Detail::new("evidence", seen.clone()));
         }
-        if verbosity.explains() {
-            if let Some(ports) = &view.ports {
-                detail.push(Detail::new("on", style.plain(ports)));
-            }
-            if let Some(remediation) = &view.remediation {
-                detail.push(Detail::new("remedy", style.plain(remediation)));
-            }
+        if verbosity.explains()
+            && let Some(ports) = &view.ports
+        {
+            detail.push(Detail::new("on", ports.clone()));
+        }
+        if showing.remedies
+            && let Some(remediation) = &view.remediation
+        {
+            detail.push(Detail::new("remedy", remediation.clone()));
         }
 
         rows.push(Row::with_detail(line, detail));
@@ -551,7 +550,7 @@ impl Renderer for FancyRenderer {
                     self.reader,
                     host,
                     self.verbosity,
-                    self.evidence(),
+                    self.showing,
                     trustworthy,
                 ),
             })
@@ -614,17 +613,34 @@ mod tests {
         drawn(Style::bare(), reader, host, verbosity)
     }
 
-    /// The block a run that asked for reasons writes.
-    fn reasoned(host: &Host) -> String {
+    /// A host with one finding carrying both an excerpt and advice, which is the
+    /// pair the two flags each reach for one of.
+    fn with_evidence_and_remedy() -> Host {
+        let mut host = host(9);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:http/missing-security-headers",
+                "missing 4 of 4 HTTP security headers",
+                Severity::Medium,
+                Confidence::Certain,
+            )
+            .with_excerpt(Excerpt::new("missing: strict-transport-security"))
+            .with_remediation("set the four headers at the reverse proxy"),
+        );
+        host
+    }
+
+    /// The block a run asking for `showing` writes.
+    fn shown(host: &Host, showing: field::Showing) -> String {
         drawn_showing(
             Style::bare(),
             field::Reader::default(),
             host,
             Verbosity::default(),
-            field::Evidence {
-                certificates: false,
-                reasons: true,
-            },
+            showing,
         )
     }
 
@@ -637,9 +653,9 @@ mod tests {
             reader,
             host,
             verbosity,
-            field::Evidence {
+            field::Showing {
                 certificates: verbosity.explains(),
-                reasons: false,
+                ..Default::default()
             },
         )
     }
@@ -650,11 +666,11 @@ mod tests {
         reader: field::Reader,
         host: &Host,
         verbosity: Verbosity,
-        evidence: field::Evidence,
+        showing: field::Showing,
     ) -> String {
         let blocks = vec![Block {
             header: header(style, reader, host, 1),
-            children: children(style, reader, host, verbosity, evidence, true),
+            children: children(style, reader, host, verbosity, showing, true),
         }];
 
         let mut out = Vec::new();
@@ -691,7 +707,7 @@ mod tests {
                 field::Reader::default(),
                 host,
                 Verbosity::default(),
-                field::Evidence::default(),
+                field::Showing::default(),
                 true,
             ),
         }])
@@ -1020,11 +1036,80 @@ mod tests {
         );
     }
 
-    /// What a detection saw is evidence, not working, so it answers `--reason`
-    /// rather than `-v`: the two flags ask different questions and neither
-    /// implies the other.
+    /// What a detection saw waits for `--evidence`, and for that flag alone:
+    /// `--reason` answers the same question about a port's verdict, and somebody
+    /// triaging findings does not want every port's packet along with them.
     #[test]
-    fn what_a_detection_saw_hangs_under_reason() {
+    fn what_a_detection_saw_waits_for_its_own_flag() {
+        let host = with_evidence_and_remedy();
+
+        let text = block(&host);
+        assert!(
+            !text.contains("evidence") && !text.contains("strict-transport-security"),
+            "a plain run draws the verdicts alone: {text}"
+        );
+
+        let reasoned = shown(
+            &host,
+            field::Showing {
+                reasons: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            !reasoned.contains("strict-transport-security"),
+            "--reason is about ports, and does not carry this: {reasoned}"
+        );
+
+        let asked = shown(
+            &host,
+            field::Showing {
+                excerpts: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            asked.contains("evidence") && asked.contains("strict-transport-security"),
+            "--evidence draws it: {asked}"
+        );
+        assert!(
+            !asked.contains("reverse proxy"),
+            "and not the remedy, which is asked for separately: {asked}"
+        );
+    }
+
+    /// The advice a finding carries is addressed to somebody who has stopped
+    /// reading the scan and started working, so it waits to be asked for, and
+    /// `-v` is not the asking: that flag is the working behind a conclusion.
+    #[test]
+    fn a_findings_remedy_waits_for_its_own_flag() {
+        let host = with_evidence_and_remedy();
+
+        assert!(!block(&host).contains("reverse proxy"), "{}", block(&host));
+        assert!(
+            !explained(&host).contains("reverse proxy"),
+            "-v is not what asks: {}",
+            explained(&host)
+        );
+
+        let asked = shown(
+            &host,
+            field::Showing {
+                remedies: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            asked.contains("remedy") && asked.contains("reverse proxy"),
+            "--remedy draws it: {asked}"
+        );
+    }
+
+    /// A detail carries text and the block paints it. Painting it here too hands
+    /// the block escape bytes to escape, and `\x1b[38;2;…m` is drawn in the
+    /// middle of the line.
+    #[test]
+    fn a_hanging_detail_is_painted_once() {
         let mut host = host(9);
         host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
         host.add_port_finding(
@@ -1040,25 +1125,29 @@ mod tests {
             .with_remediation("set the four headers at the reverse proxy"),
         );
 
-        assert!(
-            !block(&host).contains("evidence"),
-            "a plain run asks for neither: {}",
-            block(&host)
-        );
-        assert!(
-            !explained(&host).contains("strict-transport-security"),
-            "-v is the working, not the evidence: {}",
-            explained(&host)
+        let text = drawn_showing(
+            painting(),
+            field::Reader::default(),
+            &host,
+            Verbosity::new(1, false),
+            field::Showing {
+                excerpts: true,
+                remedies: true,
+                ..Default::default()
+            },
         );
 
-        let reasoned = reasoned(&host);
         assert!(
-            reasoned.contains("evidence") && reasoned.contains("strict-transport-security"),
-            "--reason hangs what the detection saw: {reasoned}"
+            !text.contains("\\x1b"),
+            "an escape sequence was drawn rather than obeyed: {text:?}"
         );
         assert!(
-            !reasoned.contains("reverse proxy"),
-            "and not the remediation, which is the other flag's: {reasoned}"
+            text.contains("missing: strict-transport-security"),
+            "and the value survived: {text:?}"
+        );
+        assert!(
+            text.contains("set the four headers at the reverse proxy"),
+            "the remedy too: {text:?}"
         );
     }
 
@@ -1083,7 +1172,13 @@ mod tests {
             ))),
         );
 
-        let text = reasoned(&host);
+        let text = shown(
+            &host,
+            field::Showing {
+                excerpts: true,
+                ..Default::default()
+            },
+        );
         let line = text
             .lines()
             .find(|line| line.contains("evidence"))
@@ -1107,28 +1202,6 @@ mod tests {
         assert!(
             !text.contains(&painting().alarm("Log4Shell")),
             "nothing but the severity is coloured: {text}"
-        );
-    }
-
-    /// Remediation waits for detail, the way a certificate's working does.
-    #[test]
-    fn a_findings_remediation_appears_only_under_detail() {
-        let mut host = host(8);
-        host.add_finding(
-            finding(
-                "zond:host/telnet-exposed",
-                "Telnet is reachable",
-                Severity::Medium,
-                Confidence::Probable,
-            )
-            .with_remediation("disable telnet and use ssh"),
-        );
-
-        assert!(!block(&host).contains("disable telnet"), "{}", block(&host));
-        assert!(
-            explained(&host).contains("disable telnet"),
-            "{}",
-            explained(&host)
         );
     }
 
@@ -1822,7 +1895,7 @@ mod hostile {
                 reader,
                 &scanned,
                 Verbosity::default(),
-                field::Evidence::default(),
+                field::Showing::default(),
                 false,
             ),
         }];

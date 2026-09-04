@@ -89,14 +89,15 @@ pub(crate) struct MinimalRenderer {
     /// the *record* stream too: whether a block shows the working behind its
     /// operating-system finding.
     verbosity: Verbosity,
-    /// Whether a port carries the packet that settled it, from `--reason`.
-    reasons: bool,
+    /// What this run asked to be shown beyond the basics, resolved by the
+    /// caller for the reason `fancy` gives.
+    showing: field::Showing,
 }
 
 impl MinimalRenderer {
     /// Writing to this process's own streams.
     #[must_use]
-    pub(crate) fn to_terminal(verbosity: Verbosity, reasons: bool) -> Self {
+    pub(crate) fn to_terminal(verbosity: Verbosity, showing: field::Showing) -> Self {
         // Records are buffered, since they arrive as thousands of lines in one
         // burst at the end. Commentary is not: a progress line held in a buffer
         // is not progress.
@@ -105,25 +106,17 @@ impl MinimalRenderer {
             Box::new(io::stderr()),
             verbosity,
         )
-        .showing_reasons(reasons)
+        .showing(showing)
     }
 
-    /// The same renderer, told whether to show the packet behind each verdict.
+    /// The same renderer, told what to show beyond the basics.
     ///
     /// Apart from [`new`](Self::new) for the reason `fancy` gives: every test
     /// that builds one wants the default.
     #[must_use]
-    pub(crate) fn showing_reasons(mut self, reasons: bool) -> Self {
-        self.reasons = reasons;
+    pub(crate) fn showing(mut self, showing: field::Showing) -> Self {
+        self.showing = showing;
         self
-    }
-
-    /// What this run's flags amount to for a listing.
-    fn evidence(&self) -> field::Evidence {
-        field::Evidence {
-            certificates: self.verbosity.explains(),
-            reasons: self.reasons,
-        }
     }
 
     /// Writing wherever the caller says, which is how this is tested.
@@ -138,7 +131,7 @@ impl MinimalRenderer {
             narrator: Narrator::new(narration, verbosity, Style::bare()),
             reader: field::Reader::default(),
             verbosity,
-            reasons: false,
+            showing: field::Showing::default(),
         }
     }
 }
@@ -158,7 +151,7 @@ fn write_host(
     reader: field::Reader,
     host: &Host,
     verbosity: Verbosity,
-    evidence: field::Evidence,
+    showing: field::Showing,
     silence_means_something: bool,
 ) -> io::Result<()> {
     // The address and the name are one fact, which machine this is, so they
@@ -221,7 +214,7 @@ fn write_host(
     tagged_list(
         out,
         "port",
-        &field::ports(host, silence_means_something, evidence),
+        &field::ports(host, silence_means_something, showing),
     )?;
     // Which IP protocols the host's stack takes delivery of, from
     // `--ip-protocols`: what the host speaks, one line each, apart from the
@@ -315,7 +308,7 @@ impl Renderer for MinimalRenderer {
 
         // Read before the loop lends out the record stream, and constant across
         // it: what a run shows does not change host by host.
-        let evidence = self.evidence();
+        let evidence = self.showing;
 
         for (index, host) in hosts.iter().enumerate() {
             // The separator belongs to the listing, so it goes on the record
@@ -397,7 +390,7 @@ mod tests {
             reader,
             host,
             verbosity,
-            field::Evidence::default(),
+            field::Showing::default(),
             true,
         )
         .expect("a vector cannot fail");
@@ -763,7 +756,7 @@ mod hostile {
             field::Reader::default(),
             &scanned,
             Verbosity::default(),
-            field::Evidence::default(),
+            field::Showing::default(),
             false,
         )
         .expect("a capture never fails");

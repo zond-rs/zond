@@ -59,6 +59,12 @@ pub(crate) struct Cli {
 }
 
 /// What `zond` was asked to do.
+///
+// Each variant holds the arguments clap parsed for one subcommand, and a scan
+// takes enough of them to make this enum a few hundred bytes wider than its
+// smallest variant. It is built once, on the way out of `Cli::parse`, so boxing
+// a variant would trade a heap allocation for a saving nothing measures.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Find which hosts on a network are alive.
@@ -85,6 +91,169 @@ pub(crate) enum Command {
 
     /// Print a scan that is already written down.
     Read(ReadArgs),
+
+    /// Check the detections a scan would run, without scanning.
+    Detections(DetectionsArgs),
+}
+
+/// Where a scan's detections come from, beyond the corpus this build ships.
+///
+/// Flattened into `zond scan`, which runs them, and into `zond detections`,
+/// which compiles them and stops. Declared once so an author's `--detections`
+/// means the same in the command that checks their work and the command that
+/// uses it.
+#[derive(Debug, Args)]
+#[command(group = clap::ArgGroup::new("named_detections")
+    .multiple(true)
+    .args(["paths", "detections_bundle"]))]
+pub(crate) struct DetectionArgs {
+    /// A detection file, or a directory of them, to run alongside the built-in
+    /// corpus. Repeatable.
+    ///
+    /// A detection is a TOML document: `[[step]]` for a declarative flow,
+    /// `[compute]` for a sandboxed module, `[detection.host]` for a correlation
+    /// across a host's ports. A module may keep its code in a sibling file and
+    /// name it with `body`, and a directory is read one level deep for `.toml`
+    /// and the bodies they reference.
+    ///
+    /// These are detections you wrote or chose. Somebody else's arrive as a
+    /// signed bundle, through `--detections-bundle`.
+    #[arg(long = "detections", value_name = "PATH", num_args = 1..)]
+    pub paths: Vec<std::path::PathBuf>,
+
+    /// A directory holding a signed detection bundle: somebody else's detections.
+    ///
+    /// The directory holds `manifest.toml`, the signature `manifest.toml.sig`
+    /// beside it, and every source the manifest names. The manifest is checked
+    /// against `--trust-key` before it is parsed and each source against the hash
+    /// it records, so nothing is compiled that the key did not cover.
+    #[arg(long, value_name = "DIR", requires = "trust_key")]
+    pub detections_bundle: Option<std::path::PathBuf>,
+
+    /// The public key a bundle must be signed by, as hex.
+    ///
+    /// Obtained from the publisher by some route other than the bundle. A
+    /// signature names the key that made it, and trusting that one would accept
+    /// anything anybody re-signed, so the key is named here or the bundle is not
+    /// loaded.
+    #[arg(long, value_name = "PATH")]
+    pub trust_key: Option<std::path::PathBuf>,
+
+    /// Run only the detections named here, leaving out the built-in corpus.
+    ///
+    /// For checking one detection against a host without the rest of the
+    /// catalogue reporting alongside it.
+    #[arg(long, requires = "named_detections")]
+    pub only_named_detections: bool,
+}
+
+/// Arguments to `zond detections`.
+#[derive(Debug, Args)]
+#[command(after_help = detections_help())]
+pub(crate) struct DetectionsArgs {
+    /// What to do with them. Listing what a scan would run, when nothing says.
+    #[command(subcommand)]
+    pub action: Option<DetectionsAction>,
+
+    /// Which detections to compile.
+    #[command(flatten)]
+    pub detections: DetectionArgs,
+}
+
+/// What `zond detections` was asked to do beyond listing.
+///
+/// The two halves of publishing a set for somebody else to run. Loading one is
+/// `--detections-bundle`, a flag on a scan rather than a command, because
+/// loading happens every run and publishing happens once.
+#[derive(Debug, Subcommand)]
+pub(crate) enum DetectionsAction {
+    /// Make a signing key, for publishing detections others will run.
+    Keygen(KeygenArgs),
+
+    /// Sign a directory of detections as a bundle others can load.
+    Sign(SignArgs),
+}
+
+/// Arguments to `zond detections keygen`.
+#[derive(Debug, Args)]
+pub(crate) struct KeygenArgs {
+    /// Where to write the key pair.
+    ///
+    /// Two files: the private key at this path, readable only by you, and the
+    /// public key beside it as `.pub`, written as hex. Publish the second and
+    /// keep the first. Neither is ever read by a scan.
+    #[arg(value_name = "PATH")]
+    pub path: std::path::PathBuf,
+}
+
+/// Arguments to `zond detections sign`.
+#[derive(Debug, Args)]
+pub(crate) struct SignArgs {
+    /// The directory of detections to sign.
+    ///
+    /// Read the way `--detections` reads one: every `.toml` in it, and the bodies
+    /// they reference. Nothing in it is modified.
+    #[arg(value_name = "DIR")]
+    pub directory: std::path::PathBuf,
+
+    /// Where to write the bundle.
+    ///
+    /// A directory of its own, holding the manifest, its signature, and one
+    /// self-contained document per detection: a module's code is written into the
+    /// document that runs it, since a signature covers what a recipient hashes
+    /// and a recipient hashes whole files. This is what gets distributed, and
+    /// what `--detections-bundle` is pointed at.
+    #[arg(long, value_name = "DIR")]
+    pub out: std::path::PathBuf,
+
+    /// The private key to sign with, as `keygen` wrote it.
+    #[arg(long, value_name = "PATH")]
+    pub key: std::path::PathBuf,
+
+    /// What the bundle calls itself, which a report prints beside its findings.
+    #[arg(long, value_name = "NAME")]
+    pub name: String,
+
+    /// The version of the set, so a recipient can tell two deliveries apart.
+    #[arg(long, value_name = "VERSION", default_value = "1")]
+    pub bundle_version: String,
+}
+
+/// What `zond detections --help` ends with.
+fn detections_help() -> String {
+    "\
+Examples:
+  zond detections --detections ./checks       compile a directory and list what is in it
+  zond detections                             list the corpus this build ships
+  zond detections --detections ./checks --only-named-detections
+                                              just yours, without the built-in corpus
+  zond detections keygen ~/.zond/acme         a key to publish under
+  zond detections sign ./checks --out ./acme-1 --key ~/.zond/acme --name acme
+                                              a bundle others can load
+
+What it does:
+  Reads the detections, validates and compiles every one of them, and prints
+  what a scan would run: the id, the tier, the intrusiveness class, and the gate
+  that decides which ports it fires on. Nothing is sent anywhere.
+
+  The class matters as much as the gate. A scan runs detections up to the
+  ceiling `--detection` names, `active-benign` by default, so a detection above
+  it is listed here and still does not run until an operator raises the ceiling.
+
+Writing one:
+  A detection is TOML. `[[step]]` makes it a flow: a bounded sequence of probes
+  and matches ending in a finding, carrying no code. `[compute]` makes it a
+  sandboxed module, which reaches the network only through the verbs its class
+  is granted. Either way it declares an id, a `[detection.when]` gate and a
+  `[detection.capabilities]` class.
+
+Giving them to somebody else:
+  `sign` writes a manifest naming every detection and the hash of its source,
+  and a signature over that manifest. A recipient loads it with
+  `--detections-bundle DIR --trust-key key.pub`, and the key has to reach them
+  by some route other than the bundle: a signature names the key that made it,
+  and trusting that one accepts anything anybody re-signed."
+        .to_string()
 }
 
 /// Arguments to `zond read`.
@@ -763,6 +932,10 @@ pub(crate) struct ScanArgs {
     /// [possible values: passive, active-benign, active-mutating, exploit, dos]
     #[arg(long, value_name = "CLASS")]
     pub detection: Option<DetectionEnvelope>,
+
+    /// Which detections the scan runs, beyond the ones built in.
+    #[command(flatten)]
+    pub detections: DetectionArgs,
 
     /// Read the target's TCP ports off a third party's IP-ID counter.
     ///
@@ -1460,6 +1633,10 @@ impl EngineArgs {
 ///
 /// Global, so `zond -v discover lan` and `zond discover -v lan` mean the same
 /// thing.
+// Several independent on/off switches, so the count trips the bool-heavy-struct
+// lint for the reason [`ScanArgs`] does: each is one flag a caller sets in any
+// combination, and clap derives the parser from exactly these fields.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Output")]
 pub(crate) struct OutputArgs {
@@ -1520,6 +1697,32 @@ pub(crate) struct OutputArgs {
     /// unconditionally.
     #[arg(long = "reason", global = true)]
     pub reason: bool,
+
+    /// Show what to do about each finding.
+    ///
+    /// A detection that carries advice hangs it under the finding: which
+    /// version to upgrade to, which setting to turn off. Off by default because
+    /// it is the one line in a scan addressed to somebody who has stopped
+    /// reading and started working, and most of a scan is read before anything
+    /// is done about it.
+    ///
+    /// Spelled `remedy` rather than `fix`, which on a scanner reads as an offer
+    /// to make the change rather than to describe it. This tool sends probes and
+    /// nothing else.
+    #[arg(long = "remedy", global = true)]
+    pub remedy: bool,
+
+    /// Show what each detection saw.
+    ///
+    /// A finding hangs the bytes it was drawn from underneath it: which headers
+    /// were absent, which version the banner gave back. It is what separates a
+    /// finding worth acting on from one worth arguing with.
+    ///
+    /// Its own flag rather than part of `--reason`, which answers the same
+    /// question about a port's verdict: somebody triaging findings does not want
+    /// every port's packet along with them.
+    #[arg(long = "evidence", global = true)]
+    pub evidence: bool,
 }
 
 impl OutputArgs {

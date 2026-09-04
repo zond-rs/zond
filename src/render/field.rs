@@ -994,19 +994,39 @@ pub(crate) struct PortRow {
     pub detail: Vec<PortDetail>,
 }
 
-/// What a port listing shows beyond the ports themselves.
+/// What a listing shows beyond the hosts, ports and findings themselves.
 ///
-/// Two axes, and they are separate because a reader wants them separately. The
-/// working behind a certificate is for somebody auditing a TLS configuration;
-/// the packet behind a verdict is for somebody deciding whether to believe the
-/// verdict at all. `-v` asks for the first and `--reason` for the second, and
-/// neither implies the other.
+/// Four axes, separate because a reader wants them separately, and each off
+/// until asked for. The working behind a certificate is for somebody auditing a
+/// TLS configuration; the packet behind a verdict is for somebody deciding
+/// whether to believe the verdict at all; what a detection saw is for somebody
+/// deciding whether to believe a finding; and what to do about one is for
+/// somebody who has already believed it and is acting.
+///
+/// The two about findings are separate flags from the two about ports for the
+/// same reason the two about ports are separate from each other: somebody
+/// triaging findings does not want every port's packet, and somebody auditing a
+/// firewall does not want a detection's bytes.
+///
+/// Named for what it is rather than for evidence, which three of the four are
+/// and the last is the opposite of.
+//
+// Four axes a run sets in any combination, which is what the bool-heavy-struct
+// lint counts: folding them into an enum would make the combinations
+// unrepresentable, and they are the point.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Evidence {
+pub(crate) struct Showing {
     /// Who issued a certificate, what key it carries, what it fingerprints to.
+    /// From `-v`.
     pub(crate) certificates: bool,
-    /// The packet that settled each port's state, and what it carried.
+    /// The packet that settled each port's state, and what it carried. From
+    /// `--reason`.
     pub(crate) reasons: bool,
+    /// What the detection behind a finding actually saw. From `--evidence`.
+    pub(crate) excerpts: bool,
+    /// What to do about a finding. From `--remedy`.
+    pub(crate) remedies: bool,
 }
 
 /// The ports worth a line, and the notes about what was left out.
@@ -1140,7 +1160,7 @@ fn column_widths(shown: &[&Port]) -> (usize, usize) {
 /// four to twelve characters, so a line assembled left to right puts every state
 /// at a different place and the eye has to search each row instead of running
 /// down one.
-pub(crate) fn ports(host: &Host, silence_means_something: bool, evidence: Evidence) -> Vec<String> {
+pub(crate) fn ports(host: &Host, silence_means_something: bool, showing: Showing) -> Vec<String> {
     let Some(selection) = select(host, silence_means_something) else {
         return Vec::new();
     };
@@ -1165,7 +1185,7 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool, evidence: Eviden
             // from: `minimal` is one tagged line per value and a second line
             // under a port would be a value with no tag. Bracketed so the
             // evidence reads as qualifying the row rather than extending it.
-            match evidence.reasons.then(|| reason_detail(port)).flatten() {
+            match showing.reasons.then(|| reason_detail(port)).flatten() {
                 Some(reason) => format!("{line}  [{}]", reason.value),
                 None => line,
             }
@@ -1188,7 +1208,7 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool, evidence: Eviden
 pub(crate) fn port_rows(
     host: &Host,
     silence_means_something: bool,
-    evidence: Evidence,
+    showing: Showing,
 ) -> PortListing {
     let Some(selection) = select(host, silence_means_something) else {
         return PortListing::default();
@@ -1207,7 +1227,7 @@ pub(crate) fn port_rows(
             state: format!("{:<widest_state$}", state(port.state())),
             verdict: port.state(),
             service: describe(port),
-            detail: port_detail(port, evidence),
+            detail: port_detail(port, showing),
         })
         .collect();
 
@@ -1258,13 +1278,13 @@ const EXPIRY_HORIZON: Duration = Duration::from_secs(30 * 86_400);
 ///
 /// The reason first: it is what the row's own verdict rests on, and a reader
 /// checking a verdict should not have to read past a certificate to find it.
-fn port_detail(port: &Port, evidence: Evidence) -> Vec<PortDetail> {
+fn port_detail(port: &Port, showing: Showing) -> Vec<PortDetail> {
     let mut detail = Vec::new();
 
-    if evidence.reasons {
+    if showing.reasons {
         detail.extend(reason_detail(port));
     }
-    detail.extend(security_detail(port, evidence.certificates));
+    detail.extend(security_detail(port, showing.certificates));
 
     detail
 }
@@ -1587,9 +1607,15 @@ fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Fin
 fn one_line(excerpt: &str) -> String {
     let flattened: String = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    match flattened.char_indices().nth(EVIDENCE_WIDTH) {
-        Some((at, _)) => format!("{}…", &flattened[..at]),
-        None => flattened,
+    // Escaped before it is cut, not after: a control byte the flattening left
+    // becomes four characters when it is drawn, and a cut measured before that
+    // happens is measured against a different string than the one a terminal
+    // gets. The painting escapes again and finds nothing left to do.
+    let printable = printable(&flattened);
+
+    match printable.char_indices().nth(EVIDENCE_WIDTH) {
+        Some((at, _)) => format!("{}…", &printable[..at]),
+        None => printable.into_owned(),
     }
 }
 
@@ -2474,15 +2500,16 @@ mod tests {
                 .with_discovery(Discovery::new(ScanResponse::TcpSynAck)),
         );
 
-        let quiet = port_rows(&host, true, Evidence::default());
+        let quiet = port_rows(&host, true, Showing::default());
         assert!(quiet.rows[0].detail.is_empty(), "{:?}", quiet.rows[0]);
 
         let asked = port_rows(
             &host,
             true,
-            Evidence {
+            Showing {
                 certificates: false,
                 reasons: true,
+                ..Default::default()
             },
         );
         assert_eq!(asked.rows[0].detail[0].label, "reason");
@@ -2503,9 +2530,10 @@ mod tests {
         let lines = ports(
             &host,
             true,
-            Evidence {
+            Showing {
                 certificates: false,
                 reasons: true,
+                ..Default::default()
             },
         );
         assert!(lines[0].ends_with("[SYN/ACK]"), "{}", lines[0]);
@@ -3040,13 +3068,13 @@ mod tests {
             host.add_port(Port::new(number, Protocol::Tcp, PortState::Filtered));
         }
 
-        let trusted = ports(&host, true, Evidence::default());
+        let trusted = ports(&host, true, Showing::default());
         assert!(
             trusted.iter().any(|line| line.contains("filtered")),
             "a scan that could ask reports what it found: {trusted:?}"
         );
 
-        let outrun = ports(&host, false, Evidence::default());
+        let outrun = ports(&host, false, Showing::default());
         assert!(
             outrun.iter().all(|line| !line.contains("filtered")),
             "and one that could not makes no claim at all: {outrun:?}"
@@ -3299,7 +3327,7 @@ mod tests {
     #[test]
     fn ports_are_listed_open_first_with_the_closed_ones_counted() {
         assert_eq!(
-            ports(&scanned(), true, Evidence::default()),
+            ports(&scanned(), true, Showing::default()),
             vec![
                 // Columns, so the eye runs down the states rather than hunting
                 // each one at whatever offset its port number left it at.
@@ -3326,7 +3354,7 @@ mod tests {
             host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Filtered));
         }
 
-        let lines = ports(&host, true, Evidence::default());
+        let lines = ports(&host, true, Showing::default());
 
         // The open port, twelve filtered, and the rollup.
         assert_eq!(lines.len(), 1 + MAX_LISTED_FILTERED + 1);
@@ -3351,7 +3379,7 @@ mod tests {
             host.add_port(Port::new(port, Protocol::Tcp, PortState::Filtered));
         }
 
-        let lines = ports(&host, true, Evidence::default());
+        let lines = ports(&host, true, Showing::default());
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines.iter().all(|line| !line.contains("omitted")),
@@ -3367,7 +3395,7 @@ mod tests {
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
 
         assert_eq!(
-            ports(&host, true, Evidence::default()),
+            ports(&host, true, Showing::default()),
             vec!["[1 closed port omitted]"]
         );
     }
@@ -3380,14 +3408,14 @@ mod tests {
         }
 
         assert_eq!(
-            ports(&host, true, Evidence::default()),
+            ports(&host, true, Showing::default()),
             vec!["[2 closed ports omitted]"]
         );
     }
 
     #[test]
     fn a_host_that_was_never_port_scanned_has_no_port_lines() {
-        assert!(ports(&host(1), true, Evidence::default()).is_empty());
+        assert!(ports(&host(1), true, Showing::default()).is_empty());
         assert_eq!(closed_ports(&host(1)), None);
     }
 
@@ -3413,7 +3441,7 @@ mod tests {
         );
 
         assert_eq!(
-            ports(&host, true, Evidence::default()),
+            ports(&host, true, Showing::default()),
             vec!["9999/tcp  open"]
         );
         assert_eq!(packed_ports(&host).as_deref(), Some("9999/tcp/open/-"));

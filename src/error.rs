@@ -95,6 +95,76 @@ pub(crate) enum Error {
         named: String,
     },
 
+    /// A detection file could not be read.
+    #[error("'{path}': {cause}")]
+    DetectionPath {
+        /// What was named.
+        path: std::path::PathBuf,
+        /// Why it could not be read.
+        cause: std::io::Error,
+    },
+
+    /// A detection file has a name this platform will not hand over as text, so
+    /// there is nothing a `[compute]` body reference could name it by.
+    #[error("'{path}' has a name that is not valid text")]
+    DetectionName {
+        /// What was named.
+        path: std::path::PathBuf,
+    },
+
+    /// Two detection files arrived under one name.
+    ///
+    /// Refused rather than resolved by order: a `[compute]` section references
+    /// its body by name, so taking the second would run one detection under
+    /// another's code.
+    #[error(
+        "'{name}' was named twice; detections are keyed by file name, so two          directories cannot each hold one"
+    )]
+    DuplicateDetection {
+        /// The name given twice.
+        name: String,
+    },
+
+    /// `--detections` named paths that hold no detection.
+    #[error(
+        "no detections in {}; a detection is a .toml document, and a directory          is read one level deep",
+        named.iter().map(|path| format!("'{}'", path.display()))
+            .collect::<Vec<_>>().join(", ")
+    )]
+    NoDetections {
+        /// What was named.
+        named: Vec<std::path::PathBuf>,
+    },
+
+    /// A detection would not compile.
+    #[error("{0}")]
+    Detections(zond_engine::detect::DetectionError),
+
+    /// A detection bundle did not verify against the key it was checked with.
+    #[error("{0}")]
+    Bundle(zond_engine::detect::bundle::BundleError),
+
+    /// A signature document could not be read.
+    #[error("{0}")]
+    Signature(#[from] zond_engine::signature::SignatureError),
+
+    /// `zond detections keygen` was pointed at a path that already holds a key.
+    ///
+    /// Refused rather than overwritten: every bundle already published under a
+    /// key is verified with it, and replacing one ends all of them at once.
+    #[error("'{path}' already exists; a key is never written over an existing one")]
+    KeyExists {
+        /// What was named.
+        path: std::path::PathBuf,
+    },
+
+    /// `--trust-key` named a file that does not hold a hex public key.
+    #[error("'{path}' does not hold a public key; a key is written as hex")]
+    MalformedKey {
+        /// What was named.
+        path: std::path::PathBuf,
+    },
+
     /// A journal could not be read or written.
     #[error("{0}")]
     Journal(#[from] zond_engine::journal::format::JournalError),
@@ -241,6 +311,15 @@ impl Error {
             | Error::WrongPhase { .. }
             | Error::NotAFold { .. }
             | Error::AmbiguousJournal { .. }
+            | Error::DetectionPath { .. }
+            | Error::DetectionName { .. }
+            | Error::DuplicateDetection { .. }
+            | Error::NoDetections { .. }
+            | Error::Detections(_)
+            | Error::Bundle(_)
+            | Error::Signature(_)
+            | Error::MalformedKey { .. }
+            | Error::KeyExists { .. }
             // A plan that does not match, or a scan already running: both are
             // the caller asking for something that cannot be done, not a fault.
             | Error::JournalOpen(_)

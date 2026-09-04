@@ -230,7 +230,7 @@ pub(crate) fn renderer(
     presentation: Presentation,
     verbosity: Verbosity,
     palette: Palette,
-    reasons: bool,
+    showing: field::Showing,
 ) -> Box<dyn Renderer> {
     match presentation {
         // `pipe` takes no `reasons`, and that is the mode's own promise rather
@@ -241,10 +241,10 @@ pub(crate) fn renderer(
         // trip — since long before there was a flag to ask for it.
         Presentation::Pipe => Box::new(pipe::PipeRenderer::to_terminal(verbosity)),
         Presentation::Minimal => {
-            Box::new(minimal::MinimalRenderer::to_terminal(verbosity, reasons))
+            Box::new(minimal::MinimalRenderer::to_terminal(verbosity, showing))
         }
         Presentation::Fancy => Box::new(fancy::FancyRenderer::to_terminal(
-            verbosity, palette, reasons,
+            verbosity, palette, showing,
         )),
     }
 }
@@ -268,8 +268,12 @@ mod tests {
     #[test]
     fn every_mode_produces_a_renderer() {
         for mode in Presentation::ALL {
-            let _: Box<dyn Renderer> =
-                renderer(mode, Verbosity::default(), Palette::default(), false);
+            let _: Box<dyn Renderer> = renderer(
+                mode,
+                Verbosity::default(),
+                Palette::default(),
+                field::Showing::default(),
+            );
         }
     }
 }

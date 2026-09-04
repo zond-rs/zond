@@ -96,6 +96,50 @@
 # accent_colour = "teal"
 
 
+# What each detection saw, under the finding it produced.
+#
+# Off by default. A finding is a claim, and the line under it is the bytes the
+# claim was drawn from: which four headers were absent, which version the banner
+# gave back. It is what separates a finding worth acting on from one worth
+# arguing with.
+#
+# `--evidence` turns it on for one run. It is its own key rather than part of
+# `reason` below, which answers the same question about a port's verdict:
+# somebody triaging findings does not want every port's packet along with them.
+#
+# evidence = false
+
+
+# What to do about each finding, under the finding.
+#
+# Off by default. Where a detection carries advice this is where it goes: the
+# version to upgrade to, the setting to turn off. It is addressed to somebody who
+# has stopped reading the scan and started working, and most of a scan is read
+# before anything is done about it.
+#
+# `--remedy` turns it on for one run. It is spelled that way rather than `fix`
+# because on a scanner `--fix` reads as an offer to make the change; this tool
+# sends probes and nothing else.
+#
+# remedy = false
+
+
+# The packet behind every verdict, and what it carried.
+#
+# Off by default. A port says which packet settled it — SYN/ACK, RST, ICMP
+# prohibited, no reply — with the TTL it carried and the round trip it took.
+#
+# This is what separates two verdicts that read alike. A port reported
+# `filtered` because a firewall said so and one reported `filtered` because
+# nothing came back are the same word and different findings, and only one of
+# them is somebody's policy.
+#
+# `--reason` turns it on for one run. Not applied to `--pipe`, whose fields are
+# a stable interface; a program reads the JSON, which carries all of it.
+#
+# reason = false
+
+
 # What makes two records, in two different scans, the same host.
 #
 # Read only by `zond diff`, and `--identity` overrides it for one run.

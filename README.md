@@ -503,6 +503,66 @@ whose own reasons are read back. `reason = true` in `cli.toml` turns it on for
 good. Not on `--pipe`, whose fields are a stable interface; a program reads the
 JSON, which carries all of it unconditionally.
 
+## Detections, including your own
+
+After a service is named, the detection corpus probes it further for what is
+wrong with it. `zond detections` lists what a scan would run:
+
+```bash
+zond detections
+```
+
+The corpus is not fixed. A detection is a TOML document, and `--detections`
+takes a file or a directory of them:
+
+```bash
+zond detections --detections ./checks          # compile them, and say what they are
+zond scan 10.0.0.0/24 --detections ./checks    # and run them
+```
+
+`[[step]]` makes a detection a flow: a bounded sequence of probes and matches
+ending in a finding, carrying no code. `[compute]` makes it a sandboxed module,
+which reaches the network only through the verbs its class is granted, and whose
+code may sit in a sibling file. The engine's README has the format, and
+`--only-named-detections` leaves the built-in corpus out while you are getting
+one right.
+
+What a detection may do is not its own decision. Each declares a class, and
+`--detection` is the ceiling an operator permits:
+
+```bash
+zond scan 10.0.0.0/24 --detection passive       # read only what the scan gathered
+zond scan 10.0.0.0/24 --detection exploit       # prove it rather than infer it
+```
+
+The default stops at `active-benign`, so a detection that mutates, exploits or
+degrades a target is listed by `zond detections` and does not run until somebody
+raises the ceiling.
+
+### Giving them to somebody else
+
+Detections you wrote are yours to run. Somebody else's arrive signed, and the
+only way to load one is to name the key you trust:
+
+```bash
+zond detections keygen ~/.zond/acme
+zond detections sign ./checks --out ./acme-1 --key ~/.zond/acme --name acme-security
+```
+
+That writes a bundle: one self-contained document per detection, a manifest
+naming each and the hash of its source, and a signature over the manifest. The
+recipient points a scan at it and says whose it is:
+
+```bash
+zond scan 10.0.0.0/24 --detections-bundle ./acme-1 --trust-key acme.pub
+```
+
+The key has to reach them by some other route than the bundle. A signature names
+the key that made it, and a checker that trusted that one would accept anything
+anybody re-signed. Because the signature covers the manifest, it covers the
+membership as well as the bytes: an attacker serving the files can neither alter
+a detection nor drop the one that would have found them.
+
 ## Reading a scan back
 
 ```bash

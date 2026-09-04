@@ -128,11 +128,19 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         tracing::warn!("{warning}");
     }
 
-    // The flag wins, then the file, then off, which is the order every other
-    // setting layers in. Resolved once here because four commands draw hosts and
-    // each of them asking separately is how one of them ends up ignoring the
-    // file.
-    let reasons = cli.output.reason || settings.reason().unwrap_or(false);
+    // The flag wins, then the file, then the built-in default, which is the
+    // order every other setting layers in. Resolved once here because four
+    // commands draw hosts and each of them asking separately is how one of them
+    // ends up ignoring the file.
+    //
+    // Certificates come from the verbosity rather than a key, since `-v` is what
+    // asks for the working behind anything.
+    let showing = render::field::Showing {
+        certificates: verbosity.explains(),
+        reasons: cli.output.reason || settings.reason().unwrap_or(false),
+        excerpts: cli.output.evidence || settings.evidence().unwrap_or(false),
+        remedies: cli.output.remedy || settings.remedy().unwrap_or(false),
+    };
 
     // `journal` reads what is already on disk rather than watching a run, so it
     // takes the presentation and not a `Renderer`.
@@ -140,7 +148,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         return command::journal::run(args, presentation, verbosity, palette);
     }
 
-    let mut renderer = render::renderer(presentation, verbosity, palette, reasons);
+    let mut renderer = render::renderer(presentation, verbosity, palette, showing);
 
     // On unless the run or the settings file says otherwise: somebody wants to
     // continue or re-read a scan after it is over, not before. The limit rides
@@ -165,9 +173,10 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         }
         Command::Diff(args) => command::diff::run(args, presentation, palette),
         Command::Merge(args) => {
-            command::merge::run(args, presentation, verbosity, palette, reasons)
+            command::merge::run(args, presentation, verbosity, palette, showing)
         }
-        Command::Read(args) => command::read::run(args, presentation, verbosity, palette, reasons),
+        Command::Read(args) => command::read::run(args, presentation, verbosity, palette, showing),
+        Command::Detections(args) => command::detections::run(args),
         Command::Journal(_) => unreachable!("handled above"),
     }
 }

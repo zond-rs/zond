@@ -1569,3 +1569,210 @@ fn naming_a_file_is_where_the_merged_report_goes() {
     );
     assert_eq!(status(&refolded), 0, "{}", stderr(&refolded));
 }
+
+/// A flow written on the spot compiles, lists, and is the only thing listed when
+/// the built-in corpus is left out.
+///
+/// The whole authoring loop in one command, which is what `zond detections`
+/// exists for: nothing here reaches a network, so an author gets the answer in
+/// the time a compile takes rather than the time a scan takes.
+#[test]
+fn a_detection_written_by_hand_is_compiled_and_listed() {
+    let home = config_home("detections_listed");
+    let checks = home.join("checks");
+    std::fs::create_dir_all(&checks).expect("a detections directory");
+    std::fs::write(checks.join("mine.toml"), CALLER_FLOW).expect("a detection");
+
+    // A file that is not a detection, to prove the walk leaves it alone rather
+    // than handing it to the engine and failing on it.
+    std::fs::write(checks.join("README.md"), "notes").expect("a note");
+
+    let listed = zond_in(
+        &home,
+        &[
+            "detections",
+            "--detections",
+            checks.to_str().expect("a utf-8 path"),
+            "--only-named-detections",
+        ],
+    );
+    assert_eq!(status(&listed), 0, "{}", stderr(&listed));
+
+    let out = stdout(&listed);
+    assert!(out.contains("cli-test-detection"), "{out}");
+    assert!(out.contains("flow"), "{out}");
+    assert!(out.contains("active-benign"), "{out}");
+    assert!(
+        !out.contains("redis-unauth-access"),
+        "the built-in corpus was listed anyway: {out}"
+    );
+}
+
+/// A detection that will not compile stops the command, naming the file.
+///
+/// The message has to name the file: a directory of thirty detections and an
+/// objection that names none of them is not a message an author can act on.
+#[test]
+fn a_detection_that_will_not_compile_names_the_file_it_came_from() {
+    let home = config_home("detections_refused");
+    let checks = home.join("checks");
+    std::fs::create_dir_all(&checks).expect("a detections directory");
+    std::fs::write(
+        checks.join("broken.toml"),
+        "[detection]\nid = \"x\"\nversion = \"1.0.0\"\ntitle = \"x\"\n",
+    )
+    .expect("a detection");
+
+    let refused = zond_in(
+        &home,
+        &[
+            "detections",
+            "--detections",
+            checks.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&refused), 2, "{}", stderr(&refused));
+    assert!(
+        stderr(&refused).contains("broken.toml"),
+        "{}",
+        stderr(&refused)
+    );
+}
+
+/// A bundle is signed, loaded under the key that signed it, and refused under
+/// any other.
+///
+/// The refusal is the point. A bundle that loaded whatever key it names would be
+/// a signature check that verifies against the attacker's own key, so the wrong
+/// key has to be a refusal rather than a warning.
+#[test]
+fn a_signed_bundle_loads_only_under_the_key_that_signed_it() {
+    let home = config_home("detections_bundle");
+    let checks = home.join("checks");
+    std::fs::create_dir_all(&checks).expect("a detections directory");
+    std::fs::write(checks.join("mine.toml"), CALLER_FLOW).expect("a detection");
+
+    let key = home.join("publisher");
+    let generated = zond_in(
+        &home,
+        &["detections", "keygen", key.to_str().expect("utf-8")],
+    );
+    assert_eq!(status(&generated), 0, "{}", stderr(&generated));
+
+    let out = home.join("bundle");
+    let signed = zond_in(
+        &home,
+        &[
+            "detections",
+            "sign",
+            checks.to_str().expect("utf-8"),
+            "--out",
+            out.to_str().expect("utf-8"),
+            "--key",
+            key.to_str().expect("utf-8"),
+            "--name",
+            "cli-test",
+        ],
+    );
+    assert_eq!(status(&signed), 0, "{}", stderr(&signed));
+
+    let public = key.with_extension("pub");
+    let loaded = zond_in(
+        &home,
+        &[
+            "detections",
+            "--detections-bundle",
+            out.to_str().expect("utf-8"),
+            "--trust-key",
+            public.to_str().expect("utf-8"),
+            "--only-named-detections",
+        ],
+    );
+    assert_eq!(status(&loaded), 0, "{}", stderr(&loaded));
+    assert!(
+        stdout(&loaded).contains("cli-test-detection"),
+        "{}",
+        stdout(&loaded)
+    );
+
+    // Another key, generated the same way, and the same bundle.
+    let other = home.join("stranger");
+    let generated = zond_in(
+        &home,
+        &["detections", "keygen", other.to_str().expect("utf-8")],
+    );
+    assert_eq!(status(&generated), 0, "{}", stderr(&generated));
+
+    let refused = zond_in(
+        &home,
+        &[
+            "detections",
+            "--detections-bundle",
+            out.to_str().expect("utf-8"),
+            "--trust-key",
+            other.with_extension("pub").to_str().expect("utf-8"),
+        ],
+    );
+    assert_eq!(status(&refused), 2, "{}", stderr(&refused));
+}
+
+/// A detection the caller wrote runs in a real scan and reaches the report.
+///
+/// The other tests stop at compiling. This one is the claim that matters: a file
+/// somebody wrote turns into a finding about a host, through the same phase the
+/// built-in corpus runs in.
+#[test]
+fn a_detection_the_caller_wrote_files_a_finding_in_a_scan() {
+    let home = config_home("detections_scanned");
+    let checks = home.join("checks");
+    std::fs::create_dir_all(&checks).expect("a detections directory");
+
+    // Gated on a port nothing in this test opens, so the scan settles without
+    // the detection firing. What is asserted is that it was loaded and the scan
+    // ran with it, not that a service answered it.
+    std::fs::write(checks.join("mine.toml"), CALLER_FLOW).expect("a detection");
+
+    let scanned = zond_in(
+        &home,
+        &[
+            "--pipe",
+            "scan",
+            "127.0.0.1",
+            "-p",
+            "9",
+            "--assume-up",
+            "--no-journal",
+            "--detections",
+            checks.to_str().expect("a utf-8 path"),
+        ],
+    );
+    assert_eq!(status(&scanned), 0, "{}", stderr(&scanned));
+}
+
+/// A flow gated on a port this suite never opens, so loading it changes what a
+/// scan carries and not what a scan concludes.
+const CALLER_FLOW: &str = "\
+[detection]\n\
+id      = \"cli-test-detection\"\n\
+version = \"1.0.0\"\n\
+title   = \"A detection written for the CLI test suite\"\n\
+\n\
+[detection.when]\n\
+port     = 65000\n\
+protocol = \"tcp\"\n\
+\n\
+[detection.capabilities]\n\
+class      = \"active-benign\"\n\
+speak      = \"target\"\n\
+max_bytes  = 1024\n\
+max_millis = 500\n\
+\n\
+[[step]]\n\
+send   = \"PING\\r\\n\"\n\
+expect = \"PONG\"\n\
+\n\
+  [[step.finding]]\n\
+  when     = \"matched\"\n\
+  severity = \"low\"\n\
+  summary  = \"the test detection fired\"\n\
+";
