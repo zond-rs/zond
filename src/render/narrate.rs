@@ -270,46 +270,62 @@ impl Narrator {
     pub(crate) fn summary(&mut self, report: &ScanReport) -> io::Result<()> {
         let summary = field::summary(report);
 
-        // The ground covered is named only where the record says what it was.
-        // A report from another scanner often does not, and "3 hosts up of 0
-        // addresses" reads as a broken tool rather than as an absence.
-        let ground = match field::addresses_scanned(report) {
-            Some(scanned) => format!(" of {scanned} {}", plural(scanned, "address")),
-            None => String::new(),
+        self.say("")?;
+
+        let hosts = format!(
+            "{} {} up",
+            summary.hosts_alive,
+            plural(summary.hosts_alive as u128, "host")
+        );
+
+        // A scan and a sweep close on different numbers, so their one line is
+        // built differently rather than sharing a shape that fits neither. A
+        // scan is about ports: the hosts that answered, then what their ports
+        // came to, and no address count — a scan probes the hosts a liveness
+        // pass found, not a range, so "of N addresses" is the sweep's number and
+        // reads as noise here. A sweep is about ground: how much answered out of
+        // how much was swept.
+        let line = if field::kind(report) == Some(ScanKind::PortScan) {
+            let ports = if summary.ports_total > 0 {
+                format!(
+                    "{} open {} of {} probed",
+                    summary.ports_open,
+                    plural(summary.ports_open as u128, "port"),
+                    summary.ports_total,
+                )
+            } else {
+                String::from("no ports probed")
+            };
+            format!("{hosts}, {ports}{}", timing(report))
+        } else {
+            // Named only where the record says what the ground was: a foreign
+            // report often does not, and "3 hosts up of 0 addresses" reads as a
+            // broken tool rather than an absence.
+            let ground = match field::addresses_scanned(report) {
+                Some(scanned) => format!(" of {scanned} {}", plural(scanned, "address")),
+                None => String::new(),
+            };
+            format!("{hosts}{ground}{}", timing(report))
+        };
+        // What the scan concluded is wrong, where it concluded anything. On the
+        // summary line rather than under it, because a run that turned up a
+        // critical vulnerability should not make a reader open every block to
+        // find out, and a second bullet saying only `3 findings` spends a line on
+        // a number that fits at the end of this one. The count at high or above
+        // is still called out, since that is the part that asks for action rather
+        // than a note in a review.
+        let line = match field::findings_tally(report) {
+            Some((total, serious)) => {
+                let found = format!("{total} {}", plural(total as u128, "finding"));
+                match serious {
+                    0 => format!("{line}, {found}"),
+                    _ => format!("{line}, {found} ({serious} high or above)"),
+                }
+            }
+            None => line,
         };
 
-        self.say("")?;
-        self.remark(&format!(
-            "{} {} up{ground}{}",
-            summary.hosts_alive,
-            plural(summary.hosts_alive as u128, "host"),
-            timing(report),
-        ))?;
-
-        // A discovery sweep probes no ports, and "0 open ports" would read as a
-        // finding rather than as nothing having been asked.
-        if summary.ports_total > 0 {
-            self.remark(&format!(
-                "{} open {} of {} probed",
-                summary.ports_open,
-                plural(summary.ports_open as u128, "port"),
-                summary.ports_total,
-            ))?;
-        }
-
-        // What the scan concluded is wrong, where it concluded anything. Said on
-        // the summary line because a run that turned up a critical vulnerability
-        // should not make a reader open every block to find out; the count at
-        // high or above is called out separately, since that is the part that
-        // asks for action rather than a note in a review.
-        if let Some((total, serious)) = field::findings_tally(report) {
-            let head = format!("{total} {}", plural(total as u128, "finding"));
-            let line = match serious {
-                0 => head,
-                _ => format!("{head} ({serious} high or above)"),
-            };
-            self.remark(&line)?;
-        }
+        self.remark(&line)?;
 
         // After the count rather than before the scan: both notes say the count
         // is an undercount, which matters when somebody is looking at it. The
@@ -773,6 +789,89 @@ mod tests {
 
         let hosts: Vec<_> = report.hosts().cloned().collect();
         ScanReport::recorded("test", vec![rebuilt], hosts)
+    }
+
+    // -----------------------------------------------------------------------
+    // A port scan that reached no ports says so, rather than reading as a sweep
+    // -----------------------------------------------------------------------
+
+    /// A report of one port-scan phase over `covered`, holding `hosts`.
+    ///
+    /// The discovery-phase fixtures elsewhere here are `Discovery`-kind; this is
+    /// the one that says a *port scan* ran, which is what the note under test
+    /// keys on.
+    fn port_scanned(hosts: Vec<zond_engine::Host>, covered: &str) -> ScanReport {
+        use std::time::Duration;
+        use zond_engine::ZondConfig;
+        use zond_engine::model::exclusion::Exclusions;
+        use zond_engine::model::parse::ip::to_set;
+        use zond_engine::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, TargetScope};
+        use zond_engine::system::privilege::Privilege;
+
+        let mut targets = to_set(&[covered], None, None).expect("a range");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::PortScan,
+            started_at: recorded_at(),
+            elapsed: Duration::from_secs(1),
+            privilege: Some(Privilege::Raw),
+            targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            probes: Vec::new(),
+            origin: None,
+        });
+        ScanReport::recorded("test", vec![phase], hosts)
+    }
+
+    /// A port scan that found a host and probed none of its ports says so on the
+    /// one summary line, so it does not read as the discovery it otherwise looks
+    /// like: an address and how it answered, and a count of hosts alone.
+    #[test]
+    fn a_port_scan_that_reached_no_ports_says_no_ports_probed() {
+        let said = summarised(&port_scanned(vec![host(1)], "192.0.2.1"));
+
+        assert!(
+            said.contains("1 host up, no ports probed"),
+            "a scan that reached no ports should say so: {said}"
+        );
+        // And not the sweep's address count, which for a scan is the wrong
+        // number and the noise this rework removed.
+        assert!(
+            !said.contains("address"),
+            "no address count on a scan: {said}"
+        );
+    }
+
+    /// The port clause is a scan's alone. A discovery sweep probes no ports by
+    /// design, so it keeps its ground count and says nothing about ports.
+    #[test]
+    fn a_discovery_sweep_says_nothing_about_ports() {
+        let said = summarised(&scoped(vec![host(1)], "192.0.2.0/24"));
+
+        assert!(!said.contains("no ports probed"), "{said}");
+        assert!(said.contains("1 host up of 256 addresses"), "{said}");
+    }
+
+    /// And a port scan that did probe ports is not told it reached none, however
+    /// few were open.
+    #[test]
+    fn a_port_scan_with_probed_ports_gets_no_such_note() {
+        let mut host = host(1);
+        host.add_port(zond_engine::Port::new(
+            22,
+            zond_engine::Protocol::Tcp,
+            zond_engine::PortState::Closed,
+        ));
+        let said = summarised(&port_scanned(vec![host], "192.0.2.1"));
+
+        assert!(
+            !said.contains("no ports probed"),
+            "a port that was probed and came back closed is still a probed port: {said}"
+        );
     }
 
     // -----------------------------------------------------------------------

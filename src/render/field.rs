@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use zond_engine::Host;
 use zond_engine::export::Redaction;
+use zond_engine::model::confidence::Confidence;
 use zond_engine::model::finding::{Reference, Severity};
 use zond_engine::model::host::Filtering;
 use zond_engine::model::host::NetworkRole;
@@ -391,6 +392,9 @@ pub(crate) fn os(host: &Host) -> Option<String> {
 /// it answered once quickly and then made the scan wait. No median, because
 /// three figures already describe the spread and [`rtt_millis`] carries it
 /// anyway.
+///
+/// Whether there is a spread is decided on the figures rather than on the
+/// durations behind them, for the reason [`rtt_variation`] gives.
 pub(crate) fn rtt_human(host: &Host) -> Option<String> {
     let median = host.median_rtt()?;
     let (Some(min), Some(max), Some(mean)) = (host.min_rtt(), host.max_rtt(), host.average_rtt())
@@ -398,26 +402,22 @@ pub(crate) fn rtt_human(host: &Host) -> Option<String> {
         return Some(format_rtt(median));
     };
 
-    if min == max {
+    let (low, middle, high) = (format_rtt(min), format_rtt(mean), format_rtt(max));
+
+    if low == middle && middle == high {
         return Some(format_rtt(median));
     }
 
-    Some(format!(
-        "min {}  avg {}  max {}",
-        format_rtt(min),
-        format_rtt(mean),
-        format_rtt(max)
-    ))
+    Some(format!("min {low}  avg {middle}  max {high}"))
 }
 
-/// The fastest round trip a host answered in.
+/// What the round trips came to, as the line a block gives them.
 ///
-/// The figure that answers "how far away is this". The fastest rather than the
-/// median because it is the one the network is capable of: a slower reply says
-/// the host or the path was busy at that moment, which is a different fact and
-/// belongs in [`rtt_variation`].
-pub(crate) fn fastest(host: &Host) -> Option<Duration> {
-    host.min_rtt().or_else(|| host.median_rtt())
+/// Three figures where they disagreed and one where they did not: `min/avg/max`
+/// is worth the width only when the three differ, and a host that answered every
+/// probe in the same time has said everything with one number.
+pub(crate) fn latency(host: &Host) -> Option<String> {
+    rtt_variation(host).or_else(|| host.median_rtt().map(format_rtt))
 }
 
 /// What the round trips did apart from the fastest, where they did anything.
@@ -427,17 +427,19 @@ pub(crate) fn fastest(host: &Host) -> Option<Duration> {
 /// figures so they compare against each other directly. The unit is taken from
 /// the slowest.
 ///
-/// `None` when every round trip agreed, because then the fastest already said
-/// it and three copies of one number say it three times. That is the ordinary
-/// case, which is what keeps this out of the way until it means something: a
-/// host whose fastest reply is 8 ms and slowest 1.2 s is not 8 ms away, and this
-/// is the line that says so.
+/// `None` when the round trips agree, because then the fastest already said it
+/// and three copies of one number say it three times. That is the ordinary case,
+/// which is what keeps this out of the way until it means something: a host
+/// whose fastest reply is 8 ms and slowest 1.2 s is not 8 ms away, and this is
+/// the line that says so.
+///
+/// Agreement is judged on the three figures, not on the durations they came
+/// from. Two round trips that differ by a few microseconds are not the same
+/// duration and are the same figure at this precision, and a row reading
+/// `6.96 / 6.96 / 6.96 ms` claims a spread while displaying none. What a reader
+/// can see is what decides.
 pub(crate) fn rtt_variation(host: &Host) -> Option<String> {
     let (min, max, mean) = (host.min_rtt()?, host.max_rtt()?, host.average_rtt()?);
-
-    if min == max {
-        return None;
-    }
 
     let (divisor, unit) = if max.as_secs_f64() >= 1.0 {
         (1.0, "s")
@@ -445,13 +447,13 @@ pub(crate) fn rtt_variation(host: &Host) -> Option<String> {
         (0.001, "ms")
     };
     let figure = |rtt: Duration| format!("{:.2}", rtt.as_secs_f64() / divisor);
+    let (low, middle, high) = (figure(min), figure(mean), figure(max));
 
-    Some(format!(
-        "min/avg/max  {} / {} / {} {unit}",
-        figure(min),
-        figure(mean),
-        figure(max)
-    ))
+    if low == middle && middle == high {
+        return None;
+    }
+
+    Some(format!("min/avg/max  {low} / {middle} / {high} {unit}"))
 }
 
 /// What a scan established this host *does*, in the engine's own order.
@@ -1333,29 +1335,41 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
     detail
 }
 
-/// One finding, spelled for a person and kept apart from how a mode draws it.
+/// One finding worth a line, with its columns padded and its citations kept
+/// apart from its title.
 ///
 /// A finding is a claim about what is wrong with a host or a port: a known
-/// vulnerability the service matches, a detection that fired. The engine produces
-/// them and the file formats carry every field; this is the terminal's compact
-/// view, which leads with how bad it is and how sure, and keeps the rest for
-/// `-v`.
+/// vulnerability the service matches, a detection that fired. The engine
+/// produces them and the file formats carry every field; this is the terminal's
+/// compact view, which leads with how bad it is and keeps the fix for `-v`.
 ///
-/// The severity is kept unformatted so a presentation colours it by rank rather
-/// than matching on the word. `subject` is the port a finding is about, `None`
-/// for one about the host itself, so a listing can say *where* without the
-/// caller re-deriving it.
+/// The severity is kept unformatted alongside its token so a presentation
+/// colours it by rank rather than matching on the word it was spelled as.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FindingView {
-    /// `443/tcp`, where the finding is about a port; `None` for a host finding.
-    pub subject: Option<String>,
+    /// `CRIT`, `MED`, padded so every subject in the listing starts in one
+    /// column.
+    pub token: String,
     /// How bad it is if true, unformatted so a mode can colour it.
     pub severity: Severity,
-    /// How sure it is true, one word: `probable`, `certain`.
-    pub confidence: &'static str,
-    /// The title and any external references, already joined: `Log4Shell
-    /// remote code execution  CVE-2021-44228`.
-    pub headline: String,
+    /// `80, 631/tcp`, or `host` for a finding about the host itself, padded
+    /// likewise.
+    pub subject: String,
+    /// The title, as the detection wrote it.
+    pub title: String,
+    /// How many spaces follow the title, so citations land in one column.
+    pub pad: usize,
+    /// `CVE-2021-44228`, where the finding cites anything.
+    pub reference: Option<String>,
+    /// What the detection saw, bounded to one line. Shown under `--reason`,
+    /// which is the flag for the evidence behind a verdict.
+    pub evidence: Option<String>,
+    /// How sure it is true, and `None` where it is certain: a word that is the
+    /// same on every line is a word nobody reads.
+    pub confidence: Option<&'static str>,
+    /// Every port this finding was raised on, where the listing folded more of
+    /// them into a count than the subject column will spell. Shown under `-v`.
+    pub ports: Option<String>,
     /// What to do about it, where the detection carried advice. Shown under
     /// `-v`, since a person triaging wants the finding and a person acting on it
     /// wants this.
@@ -1380,55 +1394,301 @@ pub(crate) fn severity_urgency(severity: Severity) -> Urgency {
     }
 }
 
+/// A severity as the short token the risks column is built from.
+///
+/// Four characters at the widest, so the column the eye runs down stays four
+/// wide however many levels a listing carries. The engine's own label is the
+/// fallback, uppercased and cut to the same width: a level added to the scale
+/// after this build was compiled still lands in the column rather than pushing
+/// every row on the block out of line.
+pub(crate) fn severity_token(severity: Severity) -> String {
+    match severity {
+        Severity::Critical => "CRIT".to_owned(),
+        Severity::High => "HIGH".to_owned(),
+        Severity::Medium => "MED".to_owned(),
+        Severity::Low => "LOW".to_owned(),
+        Severity::Info => "INFO".to_owned(),
+        other => other
+            .label()
+            .chars()
+            .take(TOKEN_WIDTH)
+            .flat_map(char::to_uppercase)
+            .collect(),
+    }
+}
+
+/// The widest a severity token is allowed to be.
+const TOKEN_WIDTH: usize = 4;
+
+/// How wide the title column may grow before citations are left ragged.
+///
+/// A title is written by whoever wrote the detection and nothing bounds its
+/// length, so padding every row to the longest one would let a single verbose
+/// title push every citation on the block off the screen. Past this the row
+/// keeps its two spaces and its citation sits where it falls.
+const TITLE_CAP: usize = 46;
+
+/// How many subjects a row spells before it counts them instead.
+const SUBJECTS_SPELLED: usize = 3;
+
+/// Where a claim was found: a port and its protocol, or `None` for the host
+/// itself.
+type Origin = Option<(u16, String)>;
+
+/// One finding as it comes off a host, before rows are folded or padded.
+struct Claim {
+    /// The port it is about, `None` for one about the host itself.
+    port: Origin,
+    severity: Severity,
+    confidence: Confidence,
+    title: String,
+    reference: Option<String>,
+    evidence: Option<String>,
+    remediation: Option<String>,
+}
+
+/// What makes two claims the same finding seen twice.
+///
+/// Everything the row would draw except where it was found. A detection that
+/// fires on three ports of one host is one weakness in three places, and three
+/// rows repeating a sentence is the reader's problem rather than the scan's.
+/// Severity is part of the key because the same detection can grade two ports
+/// differently, and those are two findings however alike they read.
+#[derive(PartialEq, Eq)]
+struct Fold {
+    severity: Severity,
+    confidence: Confidence,
+    title: String,
+    reference: Option<String>,
+    evidence: Option<String>,
+    remediation: Option<String>,
+}
+
+/// One row, once the claims behind it have been gathered.
+struct Folded {
+    /// What every claim in the row agrees on.
+    key: Fold,
+    /// Where each of them was found, sorted and without repeats.
+    found: Vec<Origin>,
+}
+
 /// The findings a host carries, its own and its ports', worst first.
 ///
 /// One list rather than two, because a person reading it wants the worst finding
 /// first whether it is about the host or one of its ports, and `subject` says
-/// which without splitting the list. Sorted by severity descending and then by
-/// subject, so two runs of the same scan draw the same order.
+/// which without splitting the list. Claims alike in everything but their port
+/// fold into one row; what is left sorts by severity descending, then by the
+/// host's own findings, then by the lowest port a row covers, so two runs of the
+/// same scan draw the same order and the risks agree with the ports table about
+/// what comes first.
 ///
 /// Empty for the ordinary host, which carries no findings at all: nothing here
 /// draws a heading for a host that has nothing wrong with it.
 pub(crate) fn findings(host: &Host) -> Vec<FindingView> {
-    let mut views: Vec<FindingView> = Vec::new();
-
-    for finding in host.findings() {
-        views.push(view(None, finding));
-    }
+    let mut claims: Vec<Claim> = host
+        .findings()
+        .map(|finding| claim(None, finding))
+        .collect();
 
     for port in host.ports() {
-        let endpoint = format!("{}/{}", port.number(), protocol(port.protocol()));
+        let endpoint = (port.number(), protocol(port.protocol()).clone());
         for finding in port.findings() {
-            views.push(view(Some(endpoint.clone()), finding));
+            claims.push(claim(Some(endpoint.clone()), finding));
         }
     }
 
+    let mut folded = fold(claims);
+
     // Worst first. `Severity` orders weakest-to-strongest, so the comparison is
-    // reversed; the subject breaks a tie so the order is total and stable.
-    views.sort_by(|a, b| {
-        b.severity
-            .cmp(&a.severity)
-            .then_with(|| a.subject.cmp(&b.subject))
+    // reversed; what the row is about breaks the tie, the host's own findings
+    // ahead of its ports' and the rest by number, so the order is total.
+    folded.sort_by(|a, b| {
+        b.key
+            .severity
+            .cmp(&a.key.severity)
+            .then_with(|| a.found.first().cmp(&b.found.first()))
     });
 
-    views
+    let rows: Vec<(Fold, String, Option<String>)> = folded
+        .into_iter()
+        .map(|row| {
+            let (subject, spelled) = subject(&row.found);
+            (row.key, subject, spelled)
+        })
+        .collect();
+
+    let token_width = rows
+        .iter()
+        .map(|(key, ..)| severity_token(key.severity).len())
+        .max()
+        .unwrap_or(0);
+    let subject_width = rows
+        .iter()
+        .map(|(_, subject, _)| subject.chars().count())
+        .max()
+        .unwrap_or(0);
+    // From the titles that have something after them, and no wider than the cap:
+    // a row ending at its title needs no padding, so a long one that ends there
+    // should not push everything else out to meet it.
+    let title_width = rows
+        .iter()
+        .filter(|(key, ..)| key.reference.is_some() || key.confidence != Confidence::Certain)
+        .map(|(key, ..)| width(&key.title))
+        .max()
+        .unwrap_or(0)
+        .min(TITLE_CAP);
+
+    rows.into_iter()
+        .map(|(key, subject, ports)| FindingView {
+            token: format!("{:<token_width$}", severity_token(key.severity)),
+            severity: key.severity,
+            subject: format!("{subject:<subject_width$}"),
+            pad: title_width.saturating_sub(width(&key.title)),
+            title: key.title,
+            reference: key.reference,
+            evidence: key.evidence,
+            confidence: (key.confidence != Confidence::Certain)
+                .then(|| wire::confidence_name(key.confidence)),
+            ports,
+            remediation: key.remediation,
+        })
+        .collect()
 }
 
-/// One finding as a [`FindingView`], with its title and references joined.
-fn view(subject: Option<String>, finding: &zond_engine::model::finding::Finding) -> FindingView {
-    let mut headline = finding.title().to_owned();
-    for reference in finding.references() {
-        headline.push_str("  ");
-        headline.push_str(&reference_text(reference));
-    }
+/// One finding as a [`Claim`], with its citations joined.
+fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Finding) -> Claim {
+    let mut references = finding.references().map(reference_text).peekable();
+    let reference = references
+        .peek()
+        .is_some()
+        .then(|| references.collect::<Vec<_>>().join("  "));
 
-    FindingView {
-        subject,
+    let excerpt = finding.excerpt().as_str();
+
+    Claim {
+        port,
         severity: finding.severity(),
-        confidence: wire::confidence_name(finding.confidence()),
-        headline,
+        confidence: finding.confidence(),
+        title: finding.title().to_owned(),
+        reference,
+        evidence: (!excerpt.trim().is_empty()).then(|| one_line(excerpt)),
         remediation: finding.remediation().map(ToOwned::to_owned),
     }
+}
+
+/// An excerpt as the one line a block gives it.
+///
+/// The engine bounds an excerpt at two kilobytes and says nothing about its
+/// shape, so what arrives here may be a sentence, a list, or the bytes of a
+/// reply with newlines still in them. A row is one line, so runs of whitespace
+/// close up and what is left is cut to a width a terminal will not wrap. The
+/// bytes themselves are escaped later, by the painting, as every value a scanned
+/// host chose is.
+fn one_line(excerpt: &str) -> String {
+    let flattened: String = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    match flattened.char_indices().nth(EVIDENCE_WIDTH) {
+        Some((at, _)) => format!("{}…", &flattened[..at]),
+        None => flattened,
+    }
+}
+
+/// How much of an excerpt a row shows before cutting it.
+///
+/// A detail's value starts around column 27, so this is what keeps the line
+/// inside a hundred columns: enough for a sentence or a short list, and no more.
+/// Anything longer is in the exports, which are where a two-kilobyte excerpt
+/// belongs.
+const EVIDENCE_WIDTH: usize = 68;
+
+/// Claims alike in everything but their port, gathered into one row each.
+///
+/// First-seen order is kept rather than sorted here, because the caller sorts
+/// what comes back and a fold that reordered as well would decide the tie twice.
+fn fold(claims: Vec<Claim>) -> Vec<Folded> {
+    let mut rows: Vec<Folded> = Vec::new();
+
+    for claim in claims {
+        let key = Fold {
+            severity: claim.severity,
+            confidence: claim.confidence,
+            title: claim.title,
+            reference: claim.reference,
+            evidence: claim.evidence,
+            remediation: claim.remediation,
+        };
+
+        match rows.iter_mut().find(|row| row.key == key) {
+            Some(row) => row.found.push(claim.port),
+            None => rows.push(Folded {
+                key,
+                found: vec![claim.port],
+            }),
+        }
+    }
+
+    for row in &mut rows {
+        row.found.sort();
+        row.found.dedup();
+    }
+
+    rows
+}
+
+/// What a row is about, and the full port list where the column would not hold
+/// it.
+///
+/// A finding on the host itself is about the `host`. Ports are spelled in one
+/// column, so a run of them sharing a protocol names it once: `80, 631/tcp`
+/// rather than a phrase whose second half is the same word three times. Past a
+/// few the column would grow wider than everything it sits beside, so the row
+/// counts them instead and hands the spelling back for `-v` to hang.
+fn subject(ports: &[Origin]) -> (String, Option<String>) {
+    let named: Vec<&(u16, String)> = ports.iter().flatten().collect();
+
+    if named.is_empty() {
+        return (String::from("host"), None);
+    }
+
+    let spelled = spell(&named);
+
+    // The host's own finding folded together with a port's: one claim about two
+    // different subjects, so the row says both rather than picking one.
+    let spelled = if ports.iter().any(Option::is_none) {
+        format!("host, {spelled}")
+    } else {
+        spelled
+    };
+
+    if named.len() <= SUBJECTS_SPELLED {
+        return (spelled, None);
+    }
+
+    (format!("{} ports", named.len()), Some(spelled))
+}
+
+/// A run of ports as one phrase, naming a shared protocol once.
+fn spell(ports: &[&(u16, String)]) -> String {
+    let first = &ports[0].1;
+    if ports.iter().all(|(_, proto)| proto == first) {
+        let numbers: Vec<String> = ports.iter().map(|(number, _)| number.to_string()).collect();
+        return format!("{}/{first}", numbers.join(", "));
+    }
+
+    ports
+        .iter()
+        .map(|(number, proto)| format!("{number}/{proto}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// How many columns a value the scan chose will occupy once it is printable.
+///
+/// Measured after escaping, because that is what the terminal will be handed: a
+/// title carrying a newline is two characters wider drawn than it is stored, and
+/// a column padded from the stored length would be short by exactly that much.
+fn width(value: &str) -> usize {
+    printable(value).chars().count()
 }
 
 /// A reference as the short identifier a reader recognises.
@@ -1998,62 +2258,6 @@ pub(crate) fn spoken_vendor(vendor: &str) -> &str {
 // ─────────────────────────────────────────────────────────────────────────────
 // One unit for a whole listing
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// What every latency in a listing is written in, or `None` where none was
-/// measured.
-///
-/// One unit for the whole column: `1.20 s` beside `4.87 ms` is two numbers a
-/// reader has to convert before they mean anything, and the whole point of the
-/// column is that they should not have to.
-///
-/// **Chosen from the fastest, not the slowest.** The unit has to be able to hold
-/// the *smallest* measurement, because that is the one a coarser unit destroys.
-/// 4.87 ms written in seconds is `0.01`, and a column of those has thrown away
-/// the difference between a router two hops away and one across the room. The
-/// largest measurement loses nothing to a finer unit; it takes more columns and
-/// says the same thing, and columns are cheap where significant digits are not.
-///
-/// This is where [`rtt_variation`]'s rule does *not* generalise. A min/avg/max
-/// triple belongs to one host and its three figures sit close together, so
-/// either end picks a unit that serves all three. A listing's figures are
-/// uncorrelated and routinely span four orders of magnitude.
-///
-/// The space is part of the unit, so the figure can be right-aligned on its
-/// digits with nothing between them and the column.
-pub(crate) fn listing_unit(fastest: Option<Duration>) -> Option<&'static str> {
-    fastest.map(|rtt| {
-        if rtt.as_secs_f64() >= 1.0 {
-            " s"
-        } else {
-            " ms"
-        }
-    })
-}
-
-/// One latency as a bare figure in `unit`.
-///
-/// Two decimals always, whatever the magnitude. A column whose entries carry
-/// different precisions does not line up on the decimal point, and lining up on
-/// the decimal point is the only reason the column exists: `148.40` beside
-/// `4.87` is a comparison, `148.4` beside `4.87` is two strings.
-pub(crate) fn listing_figure(rtt: Duration, unit: &'static str) -> String {
-    let millis = rtt.as_secs_f64() * 1000.0;
-
-    if unit == " s" {
-        format!("{:.2}", millis / 1000.0)
-    } else {
-        format!("{millis:.2}")
-    }
-}
-
-/// The quickest round trip anything in this listing managed.
-///
-/// What picks the listing's unit. `None` when nothing was measured at all,
-/// because every host was sniffed rather than probed or answered something that
-/// carries no round trip, and then the listing has no latency column.
-pub(crate) fn fastest_of(hosts: &[&Host]) -> Option<Duration> {
-    hosts.iter().filter_map(|host| host.min_rtt()).min()
-}
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -2664,60 +2868,6 @@ mod tests {
         );
     }
 
-    /// One unit for the column, taken from the **fastest**, which is the
-    /// measurement a coarser unit would destroy.
-    ///
-    /// A sweep that turns up a 4.87 ms router and a 1.49 s phone has to write
-    /// both in milliseconds. Written in seconds the router reads `0.01`, and the
-    /// column has thrown away the whole difference it exists to show.
-    #[test]
-    fn a_listing_takes_its_unit_from_the_fastest_measurement() {
-        let quick = Duration::from_micros(4_870);
-        let slow = Duration::from_millis(1_490);
-
-        assert_eq!(listing_unit(Some(quick)), Some(" ms"));
-        assert_eq!(listing_unit(Some(slow)), Some(" s"));
-
-        // The case that was wrong: both in one listing.
-        let unit = listing_unit([quick, slow].into_iter().min()).expect("a unit");
-        assert_eq!(unit, " ms");
-        assert_eq!(listing_figure(quick, unit), "4.87");
-        assert_eq!(
-            listing_figure(slow, unit),
-            "1490.00",
-            "the slow host takes more columns and loses nothing; the quick one \
-             would have lost everything"
-        );
-    }
-
-    /// A listing that measured nothing has no unit, and therefore no column.
-    #[test]
-    fn a_listing_that_measured_nothing_has_no_unit() {
-        assert_eq!(listing_unit(None), None);
-    }
-
-    /// Fixed precision, so the decimal points land in one column. This is the
-    /// whole reason the figures are worth aligning.
-    #[test]
-    fn every_figure_carries_the_same_precision() {
-        let figures = [
-            listing_figure(Duration::from_micros(4_870), " ms"),
-            listing_figure(Duration::from_micros(148_400), " ms"),
-            listing_figure(Duration::from_micros(183_700), " ms"),
-        ];
-
-        assert_eq!(figures, ["4.87", "148.40", "183.70"]);
-
-        let decimals: Vec<usize> = figures
-            .iter()
-            .map(|figure| figure.len() - figure.find('.').expect("a decimal point"))
-            .collect();
-        assert!(
-            decimals.windows(2).all(|pair| pair[0] == pair[1]),
-            "the figures carry different precisions: {figures:?}"
-        );
-    }
-
     // ── The path to a host ───────────────────────────────────────────────────
 
     /// A path renders its distances wide enough to align and no wider, and the
@@ -3101,6 +3251,28 @@ mod tests {
         host.add_rtt(Duration::from_micros(1_420));
 
         assert_eq!(rtt_human(&host).as_deref(), Some("1.42ms"));
+    }
+
+    /// Samples that differ by less than the precision drawn agree as far as a
+    /// reader is concerned, and `min 12.3ms  avg 12.3ms  max 12.3ms` claims a
+    /// spread while showing none. The wider band above ten milliseconds rounds
+    /// harder, so it is the one that collides in practice.
+    #[test]
+    fn samples_that_round_together_print_as_one_figure() {
+        let mut coarse = host(1);
+        coarse.add_rtt(Duration::from_micros(12_310));
+        coarse.add_rtt(Duration::from_micros(12_320));
+        coarse.add_rtt(Duration::from_micros(12_330));
+
+        assert_eq!(rtt_human(&coarse).as_deref(), Some("12.3ms"));
+
+        let mut fine = host(1);
+        fine.add_rtt(Duration::from_micros(6_960));
+        fine.add_rtt(Duration::from_micros(6_961));
+        fine.add_rtt(Duration::from_micros(6_962));
+
+        assert_eq!(rtt_human(&fine).as_deref(), Some("6.96ms"));
+        assert_eq!(rtt_variation(&fine), None);
     }
 
     #[test]

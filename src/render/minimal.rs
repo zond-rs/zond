@@ -242,23 +242,33 @@ fn write_host(
 
 /// A host's findings as one line each, for the `risk` tag.
 ///
-/// The severity leads, then the subject where the finding is about a port, then
-/// the headline, with the confidence bracketed after it. No colour: this stream
-/// is drawn bare, and the severity is a word a reader reads rather than a hue.
+/// The severity leads as the word rather than the column token the block draws,
+/// because nothing here is a column for it to line up with. Then the subject,
+/// then the title and what it cites, with the confidence bracketed after it
+/// where the finding is short of certain. No colour: this stream is drawn bare,
+/// and the severity is a word a reader reads rather than a hue.
 fn risk_lines(host: &Host) -> Vec<String> {
     field::findings(host)
         .into_iter()
         .map(|view| {
-            let subject = match &view.subject {
-                Some(subject) => format!("{subject} "),
-                None => String::new(),
-            };
-            format!(
-                "[{}] {subject}{}  [{}]",
+            let mut line = format!(
+                "[{}] {} {}",
                 view.severity.label(),
-                view.headline,
-                view.confidence
-            )
+                view.subject.trim_end(),
+                view.title
+            );
+
+            if let Some(reference) = &view.reference {
+                line.push_str("  ");
+                line.push_str(reference);
+            }
+            if let Some(confidence) = view.confidence {
+                line.push_str("  [");
+                line.push_str(confidence);
+                line.push(']');
+            }
+
+            line
         })
         .collect()
 }
@@ -426,13 +436,13 @@ mod tests {
             DetectionClass, DetectionId, Finding, Reference, Severity, Version,
         };
 
-        let finding = |id: &str, title: &str, severity| {
+        let finding = |id: &str, title: &str, severity, confidence| {
             let detection = DetectionId::new(id, Version::new(1, 0, 0), "").expect("a valid id");
             Finding::new(
                 detection,
                 title,
                 severity,
-                Confidence::Probable,
+                confidence,
                 DetectionClass::Passive,
             )
             .expect("a valid finding")
@@ -447,6 +457,7 @@ mod tests {
                 "zond:cve/CVE-2021-44228",
                 "Log4Shell remote code execution",
                 Severity::Critical,
+                Confidence::Certain,
             )
             .with_reference(Reference::cve("CVE-2021-44228").expect("a valid CVE")),
         );
@@ -454,6 +465,7 @@ mod tests {
             "zond:host/telnet-exposed",
             "Telnet is reachable",
             Severity::Medium,
+            Confidence::Probable,
         ));
 
         let text = block(&host);
@@ -464,8 +476,8 @@ mod tests {
             "the port finding is a risk line carrying its endpoint: {text}"
         );
         assert!(
-            text.contains("[Medium] Telnet is reachable"),
-            "the host finding carries no endpoint: {text}"
+            text.contains("[Medium] host Telnet is reachable"),
+            "the host finding is about the host rather than a port: {text}"
         );
         assert!(
             text.find("Critical").expect("critical drawn")

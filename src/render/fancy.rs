@@ -79,7 +79,7 @@ use zond_engine::export::Redaction;
 use zond_engine::{Host, HostStatus, PortState, ScanReport};
 
 use crate::diagnostics::Verbosity;
-use crate::render::block::{self, Block, Child, Detail, Distance, Header, Row};
+use crate::render::block::{self, Block, Child, Detail, Header, Row};
 use crate::render::narrate::Narrator;
 use crate::render::progress::{self, Counting};
 use crate::render::style::{Palette, Style};
@@ -184,13 +184,7 @@ fn counting(phase: Phase<'_>) -> Option<Counting> {
 }
 
 /// The line a block opens with: which machine this is, and what came of it.
-fn header(
-    style: Style,
-    reader: field::Reader,
-    host: &Host,
-    at: usize,
-    unit: Option<&'static str>,
-) -> Header {
+fn header(style: Style, reader: field::Reader, host: &Host, at: usize) -> Header {
     Header {
         at: Some(at),
         // A scan does not sort its hosts into kinds; what came of one trails it.
@@ -199,16 +193,6 @@ fn header(
         // The name says which machine this is, so it belongs with the address
         // rather than among the things that were learned about it.
         name: reader.hostname(host),
-        // The fastest round trip rather than the median: it is the one the
-        // network is capable of, and a slower reply says the host or the path
-        // was busy at that moment, which is a different fact and waits for `-v`.
-        //
-        // A host the listing has a column for but no measurement of still gets a
-        // `Distance`, with nothing in it. See `block::Distance::figure`.
-        distance: unit.map(|unit| Distance {
-            figure: field::fastest(host).map(|rtt| field::listing_figure(rtt, unit)),
-            unit,
-        }),
         verdict: verdict(style, host),
     }
 }
@@ -300,15 +284,6 @@ fn children(
         children.push(Child::one("evidence", style.plain(&working)));
     }
 
-    // Not a row: the fastest round trip rides on the header. What is left here
-    // is the part a header has no room for, and only when the round trips
-    // disagreed enough for it to mean something.
-    if verbosity.explains()
-        && let Some(variation) = field::rtt_variation(host)
-    {
-        children.push(Child::one("latency", style.plain(&variation)));
-    }
-
     // One line per piece of evidence under `--reason`, because the long form
     // carries what was observed and who sent it, and those do not fit beside
     // each other on one line. The label stays: it is the same question answered
@@ -323,6 +298,16 @@ fn children(
         }
     } else if let Some(answered) = field::answered(host) {
         children.push(Child::one("answered", style.plain(&answered)));
+    }
+
+    // Under `answered`, because the reply that came back and how long it took are
+    // one subject read at two depths. A row rather than a figure on the header:
+    // the header says which host this is and what came of it, and a measurement
+    // squeezed between the name and the verdict is a third thing competing with
+    // both. Three figures where the round trips disagreed and one where they did
+    // not, since then two of the three would be the same number again.
+    if let Some(latency) = field::latency(host) {
+        children.push(Child::one("latency", style.plain(&latency)));
     }
 
     // The further addresses only. The primary is already on the header line, and
@@ -383,45 +368,75 @@ fn children(
     // plain, the subject included, so nothing competes with the verdict.
     let risks = field::findings(host);
     if !risks.is_empty() {
-        children.push(findings(style, &risks, verbosity));
+        children.push(findings(style, &risks, verbosity, evidence));
     }
 
     children
 }
 
-/// The `risks` child: one line per finding, worst first, each coloured by how
-/// bad it is.
+/// The `risks` child: one line per finding, worst first, in columns.
 ///
-/// A child like any other. The severity word leads and is the only part
-/// coloured; the subject, where a finding is about a port rather than the host,
-/// is faint and sits before the headline so a reader sees *where* without it
-/// competing with *what*. Remediation hangs off the line under `-v`, the way a
-/// certificate's working does, because a person triaging wants the finding and a
-/// person acting on it wants the fix.
-fn findings(style: Style, views: &[field::FindingView], verbosity: Verbosity) -> Child {
+/// A child like any other. The severity leads as a short token and is the only
+/// part coloured, so the column the eye runs down is a band of colour rather
+/// than five words of different lengths; the subject is faint and sits beside
+/// it, saying *where* without competing with *what*. Citations trail the title
+/// in a column of their own, and the confidence follows only where the finding
+/// is short of certain. The fix and the full port list hang off the line under
+/// `-v`, the way a certificate's working does, because a person triaging wants
+/// the finding and a person acting on it wants the rest. What the detection
+/// actually saw hangs under `--reason` instead, which is the flag for the
+/// evidence behind a verdict rather than the working behind a conclusion.
+fn findings(
+    style: Style,
+    views: &[field::FindingView],
+    verbosity: Verbosity,
+    evidence: field::Evidence,
+) -> Child {
     let mut rows = Vec::new();
 
     for view in views {
-        let severity = style.by_urgency(
-            field::severity_urgency(view.severity),
-            view.severity.label(),
+        // Every column is painted trimmed and padded after, so no escape
+        // sequence ever wraps a run of spaces: what the terminal measures is
+        // exactly what the widths were computed from.
+        let token = view.token.trim_end();
+        let subject = view.subject.trim_end();
+
+        let mut line = format!(
+            "{}{}  {}{}  {}",
+            style.by_urgency(field::severity_urgency(view.severity), token),
+            " ".repeat(view.token.len() - token.len()),
+            style.faint(subject),
+            " ".repeat(view.subject.chars().count() - subject.chars().count()),
+            style.plain(&view.title)
         );
 
-        let mut line = String::new();
-        if let Some(subject) = &view.subject {
-            line.push_str(&style.faint(subject));
+        if let Some(reference) = &view.reference {
+            line.push_str(&" ".repeat(view.pad));
             line.push_str("  ");
+            line.push_str(&style.faint(reference));
         }
-        line.push_str(&severity);
-        line.push_str("  ");
-        line.push_str(&style.plain(&view.headline));
-        line.push_str(&style.faint(&format!("  [{}]", view.confidence)));
+
+        if let Some(confidence) = view.confidence {
+            if view.reference.is_none() {
+                line.push_str(&" ".repeat(view.pad));
+            }
+            line.push_str("  ");
+            line.push_str(&style.faint(&format!("~{confidence}")));
+        }
 
         let mut detail = Vec::new();
-        if verbosity.explains()
-            && let Some(remediation) = &view.remediation
+        if evidence.reasons
+            && let Some(seen) = &view.evidence
         {
-            detail.push(Detail::new("fix", style.plain(remediation)));
+            detail.push(Detail::new("evidence", style.plain(seen)));
+        }
+        if verbosity.explains() {
+            if let Some(ports) = &view.ports {
+                detail.push(Detail::new("on", style.plain(ports)));
+            }
+            if let Some(remediation) = &view.remediation {
+                detail.push(Detail::new("remedy", style.plain(remediation)));
+            }
         }
 
         rows.push(Row::with_detail(line, detail));
@@ -523,20 +538,14 @@ impl Renderer for FancyRenderer {
         let hosts = field::sorted_hosts(report);
         let trustworthy = field::silence_means_something(report);
 
-        // One unit for the whole column, chosen from the quickest host in the
-        // run, so two latencies in this listing compare against each other
-        // without either being converted first. See `field::listing_unit`.
-        let unit = field::listing_unit(field::fastest_of(&hosts));
-
         // Every block is built before any of it is drawn, because the columns
         // are measured across the listing: a handle right-aligned to the widest,
-        // a latency right-aligned to a column the longest name allows. See
-        // `block::Columns`.
+        // a verdict in a column the longest name allows. See `block::Columns`.
         let blocks: Vec<Block> = hosts
             .iter()
             .enumerate()
             .map(|(index, host)| Block {
-                header: header(self.style, self.reader, host, index + 1, unit),
+                header: header(self.style, self.reader, host, index + 1),
                 children: children(
                     self.style,
                     self.reader,
@@ -581,7 +590,7 @@ mod tests {
     use std::time::Duration;
     use zond_engine::model::confidence::Confidence;
     use zond_engine::model::finding::{
-        DetectionClass, DetectionId, Finding, Reference, Severity, Version,
+        DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
     };
     use zond_engine::model::host::OsFingerprint;
     use zond_engine::model::host::path::Hop;
@@ -603,6 +612,20 @@ mod tests {
 
     fn rendered(reader: field::Reader, host: &Host, verbosity: Verbosity) -> String {
         drawn(Style::bare(), reader, host, verbosity)
+    }
+
+    /// The block a run that asked for reasons writes.
+    fn reasoned(host: &Host) -> String {
+        drawn_showing(
+            Style::bare(),
+            field::Reader::default(),
+            host,
+            Verbosity::default(),
+            field::Evidence {
+                certificates: false,
+                reasons: true,
+            },
+        )
     }
 
     /// One host as a listing of one, which is how a block is measured: the
@@ -629,9 +652,8 @@ mod tests {
         verbosity: Verbosity,
         evidence: field::Evidence,
     ) -> String {
-        let unit = field::listing_unit(field::fastest(host));
         let blocks = vec![Block {
-            header: header(style, reader, host, 1, unit),
+            header: header(style, reader, host, 1),
             children: children(style, reader, host, verbosity, evidence, true),
         }];
 
@@ -644,13 +666,12 @@ mod tests {
     fn listing(hosts: &[&Host]) -> String {
         let style = Style::bare();
         let reader = field::Reader::default();
-        let unit = field::listing_unit(field::fastest_of(hosts));
 
         let blocks: Vec<Block> = hosts
             .iter()
             .enumerate()
             .map(|(index, host)| Block {
-                header: header(style, reader, host, index + 1, unit),
+                header: header(style, reader, host, index + 1),
                 children: Vec::new(),
             })
             .collect();
@@ -662,10 +683,9 @@ mod tests {
 
     /// The column every value in a one-block listing begins in.
     fn value_column(host: &Host) -> usize {
-        let unit = field::listing_unit(field::fastest(host));
         let style = Style::bare();
         block::Columns::of(&[Block {
-            header: header(style, field::Reader::default(), host, 1, unit),
+            header: header(style, field::Reader::default(), host, 1),
             children: children(
                 style,
                 field::Reader::default(),
@@ -731,14 +751,14 @@ mod tests {
     }
 
     /// A finding of `severity` about `title`, from a detection named `id`.
-    fn finding(id: &str, title: &str, severity: Severity) -> Finding {
+    fn finding(id: &str, title: &str, severity: Severity, confidence: Confidence) -> Finding {
         let detection = DetectionId::new(id, Version::new(1, 0, 0), "")
             .expect("a non-empty id is a valid detection id");
         Finding::new(
             detection,
             title,
             severity,
-            Confidence::Probable,
+            confidence,
             DetectionClass::Passive,
         )
         .expect("a non-empty title is a valid finding")
@@ -756,6 +776,7 @@ mod tests {
                 "zond:cve/CVE-2021-44228",
                 "Log4Shell remote code execution",
                 Severity::Critical,
+                Confidence::Certain,
             )
             .with_reference(Reference::cve("CVE-2021-44228").expect("a well-formed CVE id")),
         );
@@ -763,7 +784,29 @@ mod tests {
             "zond:host/telnet-exposed",
             "Telnet is reachable",
             Severity::Medium,
+            Confidence::Probable,
         ));
+        host
+    }
+
+    /// The same detection firing on several ports of one host, which is the case
+    /// the listing folds.
+    fn repeated(ports: &[u16], severity: Severity, confidence: Confidence) -> Host {
+        let mut host = host(9);
+        for number in ports {
+            host.add_port(Port::new(*number, Protocol::Tcp, PortState::Open));
+            host.add_port_finding(
+                *number,
+                Protocol::Tcp,
+                finding(
+                    "zond:http/missing-security-headers",
+                    "missing HTTP security headers",
+                    severity,
+                    confidence,
+                )
+                .with_reference(Reference::cwe(693)),
+            );
+        }
         host
     }
 
@@ -779,22 +822,278 @@ mod tests {
             .collect();
 
         assert!(
-            risks[0].contains("Critical")
+            risks[0].contains("CRIT")
                 && risks[0].contains("443/tcp")
                 && risks[0].contains("Log4Shell")
                 && risks[0].contains("CVE-2021-44228"),
             "the critical port finding should lead, with its subject and CVE: {text}"
         );
         assert!(
-            risks.iter().any(|line| line.contains("Medium")
+            risks.iter().any(|line| line.contains("MED")
                 && line.contains("Telnet")
+                && line.contains("host")
                 && !line.contains("/tcp")),
-            "the host finding carries no port subject: {text}"
+            "the host finding is about the host rather than a port: {text}"
         );
         assert!(
-            text.find("Critical").expect("critical is drawn")
-                < text.find("Medium").expect("medium is drawn"),
+            text.find("CRIT").expect("critical is drawn")
+                < text.find("MED").expect("medium is drawn"),
             "the worse finding comes first: {text}"
+        );
+    }
+
+    /// Every severity token starts and ends in one column, so the colour the eye
+    /// runs down is a band rather than five words of different lengths.
+    #[test]
+    fn severity_tokens_share_a_column() {
+        let text = block(&at_risk());
+
+        let risks: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("CRIT") || line.contains("MED"))
+            .collect();
+        assert_eq!(risks.len(), 2, "both findings are drawn: {text}");
+
+        let tokens: Vec<usize> = risks
+            .iter()
+            .map(|line| {
+                line.find("CRIT")
+                    .or_else(|| line.find("MED"))
+                    .expect("the line was chosen for carrying one")
+            })
+            .collect();
+        assert_eq!(
+            tokens[0], tokens[1],
+            "the tokens start in one column: {text}"
+        );
+
+        let subjects: Vec<usize> = risks
+            .iter()
+            .map(|line| {
+                line.find("443/tcp")
+                    .or_else(|| line.find("host"))
+                    .expect("every row says what it is about")
+            })
+            .collect();
+        assert_eq!(
+            subjects[0], subjects[1],
+            "the subjects start in one column: {text}"
+        );
+
+        let titles: Vec<usize> = risks
+            .iter()
+            .map(|line| {
+                line.find("Log4Shell")
+                    .or_else(|| line.find("Telnet"))
+                    .expect("every row carries its title")
+            })
+            .collect();
+        assert_eq!(
+            titles[0], titles[1],
+            "the titles start in one column: {text}"
+        );
+    }
+
+    /// One detection firing on three ports is one weakness in three places, so it
+    /// draws one row naming them rather than three repeating a sentence.
+    #[test]
+    fn alike_findings_fold_into_one_row() {
+        let text = block(&repeated(
+            &[80, 443, 631],
+            Severity::Medium,
+            Confidence::Certain,
+        ));
+
+        let risks: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("missing HTTP security headers"))
+            .collect();
+
+        assert_eq!(risks.len(), 1, "the three claims fold into one row: {text}");
+        assert!(
+            risks[0].contains("80, 443, 631/tcp"),
+            "the row names every port, and the shared protocol once: {text}"
+        );
+    }
+
+    /// Past a few ports the column would grow wider than everything beside it, so
+    /// the row counts them and `-v` spells them.
+    #[test]
+    fn a_folded_row_past_a_few_ports_counts_them() {
+        let host = repeated(&[80, 443, 631, 8080], Severity::Low, Confidence::Certain);
+        let text = block(&host);
+
+        assert!(
+            text.contains("4 ports"),
+            "the subject counts what it will not spell: {text}"
+        );
+        assert!(
+            !text.contains("80, 443, 631, 8080/tcp"),
+            "and does not spell it: {text}"
+        );
+
+        let detailed = explained(&host);
+        assert!(
+            detailed.contains("on") && detailed.contains("80, 443, 631, 8080/tcp"),
+            "-v hangs the ports the row would not spell: {detailed}"
+        );
+    }
+
+    /// A confidence that is the same on every line is a word nobody reads, so
+    /// only a finding short of certain says how sure it is.
+    #[test]
+    fn only_an_uncertain_finding_says_how_sure_it_is() {
+        let certain = block(&repeated(&[80], Severity::Medium, Confidence::Certain));
+        assert!(
+            !certain.contains("certain"),
+            "a certain finding spends no columns saying so: {certain}"
+        );
+
+        let probable = block(&repeated(&[80], Severity::Medium, Confidence::Probable));
+        assert!(
+            probable.contains("~probable"),
+            "anything short of certain says which: {probable}"
+        );
+    }
+
+    /// Two ports the same detection graded differently are two findings, however
+    /// alike they read.
+    #[test]
+    fn findings_graded_differently_stay_apart() {
+        let mut host = repeated(&[80], Severity::Medium, Confidence::Certain);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:http/missing-security-headers",
+                "missing HTTP security headers",
+                Severity::Low,
+                Confidence::Certain,
+            )
+            .with_reference(Reference::cwe(693)),
+        );
+
+        let text = block(&host);
+        let risks: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("missing HTTP security headers"))
+            .collect();
+
+        assert_eq!(risks.len(), 2, "the two grades stay apart: {text}");
+        assert!(
+            risks[0].contains("MED") && risks[1].contains("LOW"),
+            "and the worse one leads: {text}"
+        );
+    }
+
+    /// A title carrying a control character is escaped before it is measured,
+    /// so the columns beside it stay where the widths said they would.
+    #[test]
+    fn a_title_is_measured_after_escaping() {
+        let mut host = repeated(&[80], Severity::Medium, Confidence::Certain);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:http/banner",
+                "banner said\nmissing HTTP secu",
+                Severity::Low,
+                Confidence::Certain,
+            )
+            .with_reference(Reference::cwe(200)),
+        );
+
+        let text = block(&host);
+        assert!(
+            !text.contains("banner said\nmissing"),
+            "the newline never reaches the terminal: {text}"
+        );
+
+        let citations: Vec<usize> = text.lines().filter_map(|line| line.find("CWE-")).collect();
+        assert_eq!(citations.len(), 2, "both rows cite something: {text}");
+        assert_eq!(
+            citations[0], citations[1],
+            "the escaped title is two columns wider than it is stored, and the \
+             citations still share a column: {text}"
+        );
+    }
+
+    /// What a detection saw is evidence, not working, so it answers `--reason`
+    /// rather than `-v`: the two flags ask different questions and neither
+    /// implies the other.
+    #[test]
+    fn what_a_detection_saw_hangs_under_reason() {
+        let mut host = host(9);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:http/missing-security-headers",
+                "missing 4 of 4 HTTP security headers",
+                Severity::Medium,
+                Confidence::Certain,
+            )
+            .with_excerpt(Excerpt::new("missing: strict-transport-security"))
+            .with_remediation("set the four headers at the reverse proxy"),
+        );
+
+        assert!(
+            !block(&host).contains("evidence"),
+            "a plain run asks for neither: {}",
+            block(&host)
+        );
+        assert!(
+            !explained(&host).contains("strict-transport-security"),
+            "-v is the working, not the evidence: {}",
+            explained(&host)
+        );
+
+        let reasoned = reasoned(&host);
+        assert!(
+            reasoned.contains("evidence") && reasoned.contains("strict-transport-security"),
+            "--reason hangs what the detection saw: {reasoned}"
+        );
+        assert!(
+            !reasoned.contains("reverse proxy"),
+            "and not the remediation, which is the other flag's: {reasoned}"
+        );
+    }
+
+    /// An excerpt is bounded at two kilobytes and may carry newlines, and a row
+    /// is one line. Runs of whitespace close up and the rest is cut.
+    #[test]
+    fn a_long_excerpt_is_flattened_and_cut() {
+        let mut host = host(9);
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            80,
+            Protocol::Tcp,
+            finding(
+                "zond:http/banner",
+                "server banner",
+                Severity::Info,
+                Confidence::Certain,
+            )
+            .with_excerpt(Excerpt::new(format!(
+                "HTTP/1.1 200 OK\r\nServer: {}",
+                "x".repeat(200)
+            ))),
+        );
+
+        let text = reasoned(&host);
+        let line = text
+            .lines()
+            .find(|line| line.contains("evidence"))
+            .expect("the evidence hangs under the row");
+
+        assert!(line.contains("HTTP/1.1 200 OK Server:"), "{text}");
+        assert!(line.ends_with('…'), "the rest is cut: {text}");
+        assert!(
+            line.chars().count() < 140,
+            "and the line stays short: {text}"
         );
     }
 
@@ -802,7 +1101,7 @@ mod tests {
     #[test]
     fn only_the_severity_of_a_finding_is_painted() {
         let text = painted(&at_risk());
-        let alarm = painting().alarm("Critical");
+        let alarm = painting().alarm("CRIT");
 
         assert!(text.contains(&alarm), "the severity is coloured: {text}");
         assert!(
@@ -813,13 +1112,14 @@ mod tests {
 
     /// Remediation waits for detail, the way a certificate's working does.
     #[test]
-    fn a_findings_fix_appears_only_under_detail() {
+    fn a_findings_remediation_appears_only_under_detail() {
         let mut host = host(8);
         host.add_finding(
             finding(
                 "zond:host/telnet-exposed",
                 "Telnet is reachable",
                 Severity::Medium,
+                Confidence::Probable,
             )
             .with_remediation("disable telnet and use ssh"),
         );
@@ -862,9 +1162,10 @@ mod tests {
     fn a_furnished_host_reads_as_a_block() {
         assert_eq!(
             block(&furnished()),
-            "  1  192.0.2.1  router.example  1.42 ms
+            "  1  192.0.2.1  router.example
      hardware  00:00:5e:00:53:01  Icann, Iana Department
      answered  ARP  NDP
+     latency   1.42ms
      also      fe80::1%en0
      path      1  192.0.2.254  0.90ms
                2  *
@@ -940,54 +1241,9 @@ mod tests {
         assert_eq!(block(&only), "  1  192.0.2.44\n     roles  router\n");
     }
 
-    /// A sweep of a home segment turns up a router a few milliseconds away and a
-    /// phone that takes a second and a half. Both are written in milliseconds,
-    /// because the unit has to hold the *smallest* measurement. Written in
-    /// seconds the router reads `0.01`, and the column has thrown away the
-    /// difference it exists to show.
+    /// A listing that measured nothing at all says nothing about latency.
     #[test]
-    fn a_quick_host_keeps_its_precision_beside_a_slow_one() {
-        let mut quick = host(1);
-        quick.add_rtt(Duration::from_micros(4_870));
-
-        let mut slow = host(2);
-        slow.add_rtt(Duration::from_millis(1_490));
-
-        let text = listing(&[&quick, &slow]);
-
-        assert!(text.contains("4.87 ms"), "{text}");
-        assert!(text.contains("1490.00 ms"), "{text}");
-        assert!(
-            !text.contains(" s\n"),
-            "the column switched to seconds: {text}"
-        );
-    }
-
-    /// A host the scan overheard rather than timed still has a place in the
-    /// column, and says so. A blank there reads as a rendering fault and a zero
-    /// reads as a finding, and it is neither.
-    #[test]
-    fn a_host_that_was_never_timed_says_so_in_the_column() {
-        let mut timed = host(1);
-        timed.add_rtt(Duration::from_micros(4_870));
-
-        let text = listing(&[&timed, &host(2)]);
-        let lines: Vec<&str> = text.lines().collect();
-
-        assert!(lines[0].ends_with("4.87 ms"), "{text}");
-        assert!(lines[1].ends_with('-'), "{text}");
-
-        // The dash stands where the last digit does, so the column reads as one.
-        assert_eq!(
-            lines[0].rfind(|c: char| c.is_ascii_digit()),
-            lines[1].rfind('-'),
-            "the stand-in is not in the column: {text}"
-        );
-    }
-
-    /// A listing that measured nothing at all has no column to stand in.
-    #[test]
-    fn a_listing_that_timed_nothing_draws_no_column() {
+    fn a_listing_that_timed_nothing_says_nothing() {
         let text = listing(&[&host(1), &host(2)]);
 
         assert_eq!(text, "  1  192.0.2.1\n  2  192.0.2.2\n");
@@ -1143,46 +1399,83 @@ mod tests {
         assert!(!block(&host).contains("Also"), "{}", block(&host));
     }
 
-    /// The fastest round trip rides on the header in a column of its own, not in
-    /// a row: it is one figure, and the header is where a listing is scanned. It
-    /// needs no mark either, because the column says what it is, which is the
-    /// whole reason the hourglass could be retired.
+    /// The round trips take a row of their own, under what answered. The header
+    /// says which host this is and what came of it, and a measurement between
+    /// the name and the verdict competes with both.
     #[test]
-    fn the_fastest_round_trip_rides_on_the_header() {
+    fn the_round_trips_take_a_row_under_what_answered() {
         let text = block(&furnished());
         let opening = text.lines().next().expect("a header");
 
-        assert!(opening.ends_with("1.42 ms"), "{text}");
-        assert!(!text.contains("latency"), "it took no row: {text}");
+        assert!(
+            !opening.contains("1.42"),
+            "the header carries no measurement: {text}"
+        );
+        assert!(text.contains("latency   1.42ms"), "{text}");
+
+        let lines: Vec<&str> = text.lines().collect();
+        let answered = lines
+            .iter()
+            .position(|line| line.contains("answered"))
+            .expect("a host that answered");
+        let latency = lines
+            .iter()
+            .position(|line| line.contains("latency"))
+            .expect("a host that was timed");
+        assert_eq!(latency, answered + 1, "the row follows `answered`: {text}");
     }
 
-    /// What the round trips did *apart* from the fastest is a different fact: a
-    /// host whose fastest reply is 8 ms and slowest 1.2 s is not 8 ms away. It
-    /// waits for somebody to ask, because most hosts have nothing to say.
+    /// What the round trips did *apart* from the fastest is the same fact read
+    /// deeper: a host whose fastest reply is 8 ms and slowest 1.2 s is not 8 ms
+    /// away. One row either way, since the row is now the only place they are
+    /// said at all.
     #[test]
-    fn the_spread_is_a_row_and_only_under_detail() {
+    fn round_trips_that_disagree_are_spelled_out() {
         let mut spread = host(1);
         spread.add_rtt(Duration::from_micros(1_100));
         spread.add_rtt(Duration::from_micros(1_510));
         spread.add_rtt(Duration::from_micros(2_030));
 
-        assert!(
-            !block(&spread).contains("min/avg/max"),
-            "{}",
-            block(&spread)
-        );
-
-        let detailed = explained(&spread);
-        assert!(detailed.contains("latency  min/avg/max"), "{detailed}");
-        assert!(detailed.contains("1.10 / 1.55 / 2.03 ms"), "{detailed}");
+        let text = block(&spread);
+        assert!(text.contains("latency  min/avg/max"), "{text}");
+        assert!(text.contains("1.10 / 1.55 / 2.03 ms"), "{text}");
     }
 
-    /// A host whose round trips all agreed has no spread to report, so asking
-    /// for detail turns up no row rather than three copies of one number.
+    /// Round trips that differ by microseconds are not the same duration and are
+    /// the same figure at the precision the row draws, and a row reading
+    /// `6.96 / 6.96 / 6.96 ms` claims a spread it is not showing. What a reader
+    /// can see decides.
     #[test]
-    fn round_trips_that_agree_produce_no_spread_row() {
-        let detailed = explained(&furnished());
-        assert!(!detailed.contains("Latency"), "{detailed}");
+    fn round_trips_that_differ_below_the_precision_drawn_are_one_figure() {
+        let mut host = host(1);
+        host.add_rtt(Duration::from_micros(6_960));
+        host.add_rtt(Duration::from_micros(6_961));
+        host.add_rtt(Duration::from_micros(6_962));
+
+        let text = block(&host);
+
+        assert!(
+            !text.contains("min/avg/max"),
+            "three figures that read the same are one figure: {text}"
+        );
+        assert!(text.contains("latency  6.96ms"), "{text}");
+    }
+
+    /// A host whose round trips all agreed says the one number, because two of
+    /// the three figures would be that number again.
+    #[test]
+    fn round_trips_that_agree_are_one_figure() {
+        let text = block(&furnished());
+
+        assert!(text.contains("latency   1.42ms"), "{text}");
+        assert!(!text.contains("min/avg/max"), "{text}");
+    }
+
+    /// A host the scan overheard rather than timed has no row, rather than a row
+    /// standing in for a measurement nobody took.
+    #[test]
+    fn a_host_that_was_never_timed_has_no_latency_row() {
+        assert!(!block(&host(2)).contains("latency"), "{}", block(&host(2)));
     }
 
     /// Protocol names are acronyms, not words, and they are written as such.
@@ -1259,8 +1552,7 @@ mod tests {
             (&strong, "192.0.2.1", "the address the block is about"),
             (&accent, "router.example", "the name the network gave back"),
             (&plain, "00:00:5e:00:53:01", "the hardware address"),
-            (&plain, "1.42", "a measurement"),
-            (&faint, " ms", "the unit it is measured in"),
+            (&plain, "1.42ms", "a measurement"),
             (&plain, "ARP  NDP", "what answered"),
             (&plain, "fe80::1%en0", "a further address"),
             (&plain, "192.0.2.254", "a router partway along the path"),
@@ -1523,9 +1815,8 @@ mod hostile {
 
         let style = Style::bare();
         let reader = field::Reader::default();
-        let unit = field::listing_unit(field::fastest(&scanned));
         let blocks = vec![Block {
-            header: header(style, reader, &scanned, 1, unit),
+            header: header(style, reader, &scanned, 1),
             children: children(
                 style,
                 reader,

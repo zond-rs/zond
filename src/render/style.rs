@@ -392,7 +392,7 @@ impl Mark {
         match self {
             Mark::Info => "\u{2022}",
             Mark::Success => "+",
-            Mark::Warning => "!",
+            Mark::Warning => "\u{25b2}",
             Mark::Error => "\u{d7}",
             Mark::Outgoing => "\u{bb}",
             Mark::Incoming => "\u{ab}",
@@ -717,30 +717,34 @@ impl Style {
         }
     }
 
-    /// A whole line of commentary: the glyph that says what it is, and the text
-    /// in the colour that kind of line is drawn in.
+    /// A whole line of commentary: a glyph that carries the colour, and the text
+    /// beside it drawn faint.
     ///
-    /// **`text` is plain, and is escaped like anything else.** A caller holding
-    /// something it has already painted composes the line itself from
-    /// [`mark`](Self::mark). Handing it here turns its escape sequences into the
-    /// literal characters `\x1b[…`, which is the correct answer for a hostname
-    /// and the wrong one for a colour this program chose.
+    /// **The colour rides on the glyph alone, and every line's text is one faint
+    /// grey.** A success, a warning and an error are a green `+`, a yellow `▲`
+    /// and a red `×` in front of grey text, the same grey a remark's `•` sits in
+    /// front of. Colour marks the *kind* of line in one column, which is the
+    /// whole of what it is for; the commentary itself is furniture behind the
+    /// records on the other stream, so it recedes into one dim shade rather than
+    /// competing for the eye line by line.
     ///
-    /// **The one place a line on standard error is composed.** There were three
-    /// of them once: a scan's narration, the engine's diagnostics and the
-    /// journal's footer. Two painted the text while the third painted only the
-    /// glyph, so an ordinary line arrived dim or bright depending on which half
-    /// of the program had written it. One stream, one drawing.
+    /// The glyph carries the whole distinction: [`mark`](Self::mark) draws a
+    /// faint `•` for a remark, a bright hue for a success, a warning or an error,
+    /// and the two listen directions their own. The text after it is that one
+    /// grey throughout.
+    ///
+    /// **`text` is escaped like anything else.** A caller holding something it
+    /// has already painted composes the line itself from [`mark`](Self::mark).
+    /// Handing it here turns its escape sequences into the literal characters
+    /// `\x1b[…`, which is the correct answer for a hostname and the wrong one for
+    /// a colour this program chose.
+    ///
+    /// **The one place a line on standard error is composed.** A scan's
+    /// narration, the engine's diagnostics and the journal's footer all pass
+    /// through here, so this rule is drawn once and holds for the whole stream.
     #[must_use]
     pub(crate) fn line(self, mark: Mark, text: &str) -> String {
-        let painted = match mark {
-            Mark::Success => self.good(text),
-            Mark::Warning => self.caution(text),
-            Mark::Error => self.alarm(text),
-            Mark::Info | Mark::Outgoing | Mark::Incoming => self.faint(text),
-        };
-
-        format!("{} {painted}", self.mark(mark))
+        format!("{} {}", self.mark(mark), self.faint(text))
     }
 
     /// Text with no role.
@@ -856,6 +860,47 @@ mod tests {
         assert!(painted.contains("\\x1b[2J"), "{painted:?}");
     }
 
+    /// The colour of a line rides on its glyph; its text is one faint grey.
+    ///
+    /// A warning is a coloured `▲` in front of grey text, not a sentence washed
+    /// yellow: colour marks the kind of line in one column, and the commentary
+    /// itself recedes into the same dim shade whatever its glyph. The glyph
+    /// carries the hue; the text is faint throughout.
+    #[test]
+    fn a_lines_colour_is_on_its_glyph_and_not_its_text() {
+        let style = painting();
+
+        for mark in [
+            Mark::Info,
+            Mark::Success,
+            Mark::Warning,
+            Mark::Error,
+            Mark::Outgoing,
+            Mark::Incoming,
+        ] {
+            let composed = style.line(mark, "the message");
+            let glyph = style.mark(mark);
+
+            // The glyph arrives painted, exactly as `mark` draws it.
+            assert!(
+                composed.starts_with(&glyph),
+                "the glyph should open the line painted: {composed:?}"
+            );
+
+            // And what follows the glyph is the message with no colour of its
+            // own — the same bytes `plainly` produces, escapes and all.
+            let text = composed
+                .strip_prefix(&glyph)
+                .and_then(|rest| rest.strip_prefix(' '))
+                .expect("a glyph and a space open the line");
+            assert_eq!(
+                text,
+                style.faint("the message"),
+                "the text is one faint grey, whatever the glyph's colour: {composed:?}"
+            );
+        }
+    }
+
     /// Every kind of line opens with a different shape, not merely a different
     /// colour.
     ///
@@ -878,7 +923,7 @@ mod tests {
         // an implementation detail. The set is what a reader learns once.
         assert_eq!(
             marks.map(Mark::glyph),
-            ["\u{2022}", "+", "!", "\u{d7}", "\u{bb}", "\u{ab}"]
+            ["\u{2022}", "+", "\u{25b2}", "\u{d7}", "\u{bb}", "\u{ab}"]
         );
 
         let glyphs: Vec<&str> = marks.iter().map(|mark| mark.glyph()).collect();

@@ -95,17 +95,6 @@ const GAP: usize = 2;
 /// not to be taken for another row of the value itself.
 const DETAIL_INDENT: usize = 2;
 
-/// What stands in the latency column where a record was never timed.
-///
-/// A blank there reads as a rendering fault and a zero reads as a finding, and
-/// it is neither: the host answered something that carries no round trip, such
-/// as an ARP reply the scan overheard rather than asked for. Drawn as furniture,
-/// because the absence of a value is not a value.
-///
-/// The same dash `pipe` writes for an empty field, so one mark means one thing
-/// across the program.
-const NOTHING: &str = "-";
-
 /// What separates a mark from the identity it classifies.
 ///
 /// One, not [`GAP`]: the mark is a property of the record rather than a column
@@ -113,35 +102,16 @@ const NOTHING: &str = "-";
 /// with a mark on it.
 const MARK_GAP: usize = 1;
 
-/// How far a verdict sits from the distance before it.
+/// How far a verdict sits from the identity before it.
 ///
-/// Three, so that the gap after a latency is visibly wider than the gap between
-/// a label and its value, and the verdict reads as its own column rather than as
-/// something appended to the measurement.
+/// Three, so that the gap is visibly wider than the one between a label and its
+/// value, and the verdict reads as its own column rather than as something
+/// appended to the name.
 const VERDICT_GAP: usize = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // What a block is made of
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// How far away a record is, in the unit its listing chose.
-///
-/// The figure is bare and the unit rides beside it, because that is what lets a
-/// column of them be right-aligned on the digits: `4.87` and `148.40` compare
-/// on sight only if the `ms` is not between them and the edge.
-#[derive(Debug, Clone)]
-pub(crate) struct Distance {
-    /// The figure alone, already rounded to the precision the listing uses, or
-    /// `None` where this record carries no measurement.
-    ///
-    /// `None` is not the same as the record having no [`Distance`] at all. A
-    /// record without one is in a listing that measured nothing and has no
-    /// column; a record with `None` is in a listing that *does* have one, and
-    /// this row has nothing to put in it.
-    pub figure: Option<String>,
-    /// What it is measured in, including the space before it.
-    pub unit: &'static str,
-}
 
 /// A one-word classification, and how wide it actually is.
 ///
@@ -195,7 +165,6 @@ pub(crate) struct Header {
     /// The name beside it, where the network gave one back.
     pub name: Option<String>,
     /// How far away it is.
-    pub distance: Option<Distance>,
     /// What came of it, already painted.
     pub verdict: Option<String>,
 }
@@ -208,7 +177,6 @@ impl Header {
             tag: None,
             identity,
             name: None,
-            distance: None,
             verdict: None,
         }
     }
@@ -370,8 +338,6 @@ pub(crate) struct Columns {
     label_width: usize,
     /// How wide a detail's own label field is.
     detail_label_width: usize,
-    /// The column a distance's figure ends in.
-    distance_end: usize,
     /// The column a verdict begins in.
     verdict_column: usize,
 }
@@ -427,8 +393,8 @@ impl Columns {
                 .map(|detail| detail.label.chars().count()),
         );
 
-        // Where the identities and names of this listing stop. The distance
-        // column starts a gap past the longest of them, so it is as tight as the
+        // Where the identities and names of this listing stop. The verdict
+        // follows a gap past the longest of them, so it is as tight as the
         // listing allows rather than at some column chosen in advance.
         let identity_end = widest(&mut blocks.iter().map(|block| {
             label_column
@@ -440,41 +406,13 @@ impl Columns {
                     .map_or(0, |name| GAP + name.chars().count())
         }));
 
-        let figure_width = widest(
-            &mut blocks
-                .iter()
-                .filter_map(|block| block.header.distance.as_ref())
-                .map(|distance| {
-                    distance
-                        .figure
-                        .as_ref()
-                        .map_or(NOTHING.chars().count(), |figure| figure.chars().count())
-                }),
-        );
-
-        let unit_width = widest(
-            &mut blocks
-                .iter()
-                .filter_map(|block| block.header.distance.as_ref())
-                .map(|distance| distance.unit.chars().count()),
-        );
-
-        // A listing that measured nothing has no figure column, and therefore
-        // no gap in front of one: the verdict follows the identities directly.
-        let distance_end = if figure_width == 0 {
-            identity_end
-        } else {
-            identity_end + GAP + figure_width
-        };
-
         Self {
             number_width,
             tag_column,
             label_column,
             label_width,
             detail_label_width,
-            distance_end,
-            verdict_column: distance_end + unit_width + VERDICT_GAP,
+            verdict_column: identity_end + VERDICT_GAP,
         }
     }
 
@@ -545,12 +483,6 @@ impl Line {
     fn indent_to(&mut self, column: usize) {
         let spaces = column.saturating_sub(self.width);
         self.push(&" ".repeat(spaces), spaces);
-    }
-
-    /// Adds `painted` so that it *ends* at `column`.
-    fn ending_at(&mut self, column: usize, painted: &str, width: usize) {
-        self.pad_to(column.saturating_sub(width));
-        self.push(painted, width);
     }
 
     /// The finished line.
@@ -642,25 +574,6 @@ fn header(style: Style, columns: Columns, header: &Header) -> String {
     if let Some(name) = &header.name {
         line.pad_to(line.width + GAP);
         line.push(&style.accent(name), name.chars().count());
-    }
-
-    if let Some(distance) = &header.distance {
-        match &distance.figure {
-            Some(figure) => {
-                line.ending_at(
-                    columns.distance_end,
-                    &style.plain(figure),
-                    figure.chars().count(),
-                );
-                line.push(&style.faint(distance.unit), distance.unit.chars().count());
-            }
-            // No unit after it: there is no measurement for one to qualify.
-            None => line.ending_at(
-                columns.distance_end,
-                &style.faint(NOTHING),
-                NOTHING.chars().count(),
-            ),
-        }
     }
 
     if let Some(verdict) = &header.verdict {

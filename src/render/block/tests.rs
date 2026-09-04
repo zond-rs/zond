@@ -40,17 +40,13 @@ fn listing(blocks: &[Block]) -> String {
     String::from_utf8(out).expect("the renderer writes text")
 }
 
-/// A header with an address, a name and a latency.
-fn host(at: usize, identity: &str, name: Option<&str>, figure: &str) -> Header {
+/// A header with an address and a name.
+fn host(at: usize, identity: &str, name: Option<&str>) -> Header {
     Header {
         at: Some(at),
         tag: None,
         identity: identity.to_owned(),
         name: name.map(ToOwned::to_owned),
-        distance: Some(Distance {
-            figure: Some(figure.to_owned()),
-            unit: " ms",
-        }),
         verdict: None,
     }
 }
@@ -92,7 +88,7 @@ fn port(port: &str, state: &str, service: Option<(&str, &str)>) -> String {
 fn a_sweep_reads_as_one_listing() {
     let blocks = vec![
         Block {
-            header: host(1, "192.168.0.1", Some("kabelbox.local"), "4.87"),
+            header: host(1, "192.168.0.1", Some("kabelbox.local")),
             children: vec![
                 fact("hardware", "c8:52:61:c7:05:94  Arris"),
                 fact("roles", "router  dns  dhcp"),
@@ -107,21 +103,21 @@ fn a_sweep_reads_as_one_listing() {
             ],
         },
         Block {
-            header: host(2, "192.168.0.30", Some("EPSON928262"), "4.83"),
+            header: host(2, "192.168.0.30", Some("EPSON928262")),
             children: vec![
                 fact("hardware", "dc:cd:2f:92:82:62  Seiko Epson"),
                 fact("answered", "arp  icmp  ndp"),
             ],
         },
         Block {
-            header: host(3, "192.168.0.101", Some("LGwebOSTV.local"), "148.40"),
+            header: host(3, "192.168.0.101", Some("LGwebOSTV.local")),
             children: vec![
                 fact("hardware", "28:87:61:53:ef:8e"),
                 fact("answered", "arp  icmp"),
             ],
         },
         Block {
-            header: host(4, "192.168.0.150", Some("RaspberryPi"), "5.14"),
+            header: host(4, "192.168.0.150", Some("RaspberryPi")),
             children: vec![
                 fact("hardware", "2c:cf:67:27:15:bc  Raspberry Pi"),
                 fact("system", "Linux  55%"),
@@ -130,35 +126,35 @@ fn a_sweep_reads_as_one_listing() {
             ],
         },
         Block {
-            header: host(5, "192.168.0.238", None, "183.70"),
+            header: host(5, "192.168.0.238", None),
             children: Vec::new(),
         },
     ];
 
     assert_eq!(
         listing(&blocks),
-        "  1  192.168.0.1  kabelbox.local       4.87 ms
+        "  1  192.168.0.1  kabelbox.local
      hardware  c8:52:61:c7:05:94  Arris
      roles     router  dns  dhcp
      answered  arp  icmp  ndp
      also      2a02:908:8c1:b880::1
                2a02:908:8c1:b880:ca52:61ff:fec7:594
 
-  2  192.168.0.30  EPSON928262         4.83 ms
+  2  192.168.0.30  EPSON928262
      hardware  dc:cd:2f:92:82:62  Seiko Epson
      answered  arp  icmp  ndp
 
-  3  192.168.0.101  LGwebOSTV.local  148.40 ms
+  3  192.168.0.101  LGwebOSTV.local
      hardware  28:87:61:53:ef:8e
      answered  arp  icmp
 
-  4  192.168.0.150  RaspberryPi        5.14 ms
+  4  192.168.0.150  RaspberryPi
      hardware  2c:cf:67:27:15:bc  Raspberry Pi
      system    Linux  55%
      answered  arp  icmp  ndp
      also      fe80::a3cd:515a:be67:a12a
 
-  5  192.168.0.238                   183.70 ms
+  5  192.168.0.238
 "
     );
 }
@@ -171,7 +167,7 @@ fn a_scan_puts_its_ports_in_the_value_column() {
     let block = Block {
         header: Header {
             verdict: Some(bare().good("2 open")),
-            ..host(1, "192.0.2.1", Some("router.example"), "1.42")
+            ..host(1, "192.0.2.1", Some("router.example"))
         },
         children: vec![
             fact("hardware", "00:00:5e:00:53:01  Icann, Iana"),
@@ -197,7 +193,7 @@ fn a_scan_puts_its_ports_in_the_value_column() {
 
     assert_eq!(
         drawn(&block),
-        "  1  192.0.2.1  router.example  1.42 ms   2 open
+        "  1  192.0.2.1  router.example   2 open
      hardware  00:00:5e:00:53:01  Icann, Iana
      also      2001:db8::1
                fe80::1%en0
@@ -332,11 +328,11 @@ fn handles_right_align_so_identities_share_a_column() {
 fn a_latency_is_aligned_and_a_name_is_not() {
     let blocks = vec![
         Block {
-            header: host(1, "192.0.2.1", Some("here"), "4.87"),
+            header: host(1, "192.0.2.1", Some("here")),
             children: Vec::new(),
         },
         Block {
-            header: host(2, "192.0.2.200", Some("there"), "148.40"),
+            header: host(2, "192.0.2.200", Some("there")),
             children: Vec::new(),
         },
     ];
@@ -360,9 +356,9 @@ fn a_latency_is_aligned_and_a_name_is_not() {
     );
 }
 
-/// A listing that measured no latency has no room reserved for one.
+/// The verdict follows the identities directly, with nothing reserved between.
 #[test]
-fn a_listing_with_no_distances_reserves_no_column_for_them() {
+fn a_verdict_follows_the_identities_with_nothing_between() {
     let block = Block {
         header: Header {
             verdict: Some(bare().faint("no reply")),
