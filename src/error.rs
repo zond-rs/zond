@@ -286,6 +286,12 @@ pub(crate) enum Error {
     /// daemon with a cleared environment.
     #[error("no directory to keep scan records in: this environment names no home")]
     NoJournalDirectory,
+
+    /// The endpoint `zond detections test` was given was not a `host:port`.
+    #[error(
+        "'{target}' is not a host and port; name one as host:port, an IPv6 address bracketed as [::1]:443"
+    )]
+    MalformedTarget { target: String },
 }
 
 impl Error {
@@ -330,7 +336,8 @@ impl Error {
             Error::Import(_)
             | Error::Scan(_)
             | Error::Journal(_)
-            | Error::NoJournalDirectory => Code::Failure,
+            | Error::NoJournalDirectory
+            | Error::MalformedTarget { .. } => Code::Failure,
             Error::Io(e) => {
                 if e.kind() == ErrorKind::BrokenPipe {
                     Code::Success

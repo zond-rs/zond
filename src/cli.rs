@@ -186,6 +186,17 @@ pub(crate) struct DetectionsArgs {
 /// loading happens every run and publishing happens once.
 #[derive(Debug, Subcommand)]
 pub(crate) enum DetectionsAction {
+    /// Run detections against one endpoint and print what they found.
+    ///
+    /// The author's inner loop: point a detection at a box, see whether it fires
+    /// and what it saw, without waiting on a full scan. It scans the one endpoint,
+    /// identifies the service its gate needs, and runs the detections at a raised
+    /// ceiling, `exploit` by default, so a check written to confirm actually runs
+    /// against the target you named. With `--detections` it runs your file alone;
+    /// without, it runs the built-in corpus. Evidence is shown by default, since
+    /// seeing what a detection decided on is the point.
+    Test(TestArgs),
+
     /// Re-run a recorded scan's compute detections offline, to see what each saw.
     ///
     /// A compute detection reaches the network only through capabilities the scan
@@ -208,6 +219,30 @@ pub(crate) enum DetectionsAction {
 
     /// Sign a directory of detections as a bundle others can load.
     Sign(SignArgs),
+}
+
+/// Arguments to `zond detections test`.
+#[derive(Debug, Args)]
+pub(crate) struct TestArgs {
+    /// The endpoint to run the detections against, as `host:port`. An IPv6
+    /// address is bracketed, `[::1]:443`. The host may be a name, which is
+    /// resolved.
+    ///
+    /// Positional, the way `zond scan` and `zond read` name what they act on.
+    #[arg(value_name = "HOST:PORT")]
+    pub target: String,
+
+    /// The detections to run, and nothing else. With none named, the built-in
+    /// corpus runs instead, for a quick look at what fires against the endpoint.
+    #[command(flatten)]
+    pub detections: DetectionArgs,
+
+    /// The most intrusive class to run, `exploit` by default so a check that
+    /// triggers a weakness to confirm it actually fires. `zond scan` defaults to
+    /// `active-benign`; a test is an explicit act against a chosen target, so it
+    /// opens the ceiling instead of making you raise it.
+    #[arg(long, value_name = "CLASS")]
+    pub detection: Option<DetectionEnvelope>,
 }
 
 /// Arguments to `zond detections replay`.

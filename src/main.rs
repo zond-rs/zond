@@ -197,9 +197,15 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             command::merge::run(args, presentation, verbosity, palette, showing)
         }
         Command::Read(args) => command::read::run(args, presentation, verbosity, palette, showing),
-        Command::Detections(args) => {
-            command::detections::run(args, presentation, verbosity, palette)
-        }
+        Command::Detections(args) => match &args.action {
+            // A test drives the network and draws a scan, so it is async and takes
+            // the same rendering the scan path does, where the rest of `detections`
+            // reads or compiles and stays synchronous.
+            Some(cli::DetectionsAction::Test(test)) => {
+                command::detections::test(test, presentation, verbosity, palette).await
+            }
+            _ => command::detections::run(args, presentation, verbosity, palette),
+        },
         Command::Journal(_) => unreachable!("handled above"),
     }
 }

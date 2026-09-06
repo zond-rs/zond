@@ -28,25 +28,29 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use std::io::Write;
 
+use zond_engine::config::{DetectionEnvelope, ServiceDetection};
 use zond_engine::detect::Detections;
 use zond_engine::detect::bundle::Bundle;
 use zond_engine::detect::compute::replay_run;
 use zond_engine::journal::{paths, store};
-use zond_engine::model::finding::{Finding, Severity};
+use zond_engine::model::finding::{DetectionClass, Finding, Severity};
 use zond_engine::signature::{Domain, Signature, Signing, SigningKey};
+use zond_engine::{PortSet, scan};
 
 use crate::cli::{
-    DetectionArgs, DetectionsAction, DetectionsArgs, KeygenArgs, ReplayArgs, SignArgs,
+    DetectionArgs, DetectionsAction, DetectionsArgs, KeygenArgs, ReplayArgs, SignArgs, TestArgs,
 };
 use crate::diagnostics::Verbosity;
 use crate::error::Error;
 use crate::exit::Outcome;
-use crate::render;
 use crate::render::style::{Palette, Style};
-use crate::settings::Presentation;
+use crate::render::{self, Phase};
+use crate::settings::{Presentation, Risk};
+use crate::target;
 
 /// The manifest a bundle directory holds.
 const BUNDLE_MANIFEST: &str = "manifest.toml";
@@ -119,6 +123,9 @@ pub(crate) fn run(
     palette: Palette,
 ) -> Result<Outcome, Error> {
     match &args.action {
+        // `test` drives the network and is async, so `main` dispatches it before
+        // this synchronous path is ever reached.
+        Some(DetectionsAction::Test(_)) => unreachable!("test is dispatched in main"),
         Some(DetectionsAction::Replay(replay_args)) => {
             return replay(replay_args, presentation, verbosity, palette);
         }
@@ -152,6 +159,131 @@ pub(crate) fn run(
     tracing::info!("{}", render::detections::summary(&listing));
 
     Ok(Outcome::Complete)
+}
+
+/// Runs detections against one endpoint and draws the scan, the author's loop.
+///
+/// A scan scoped to the one host and port: it port-scans it, identifies the
+/// service a gate names, and runs the detections at a raised ceiling, so a check
+/// written to confirm a weakness fires against the box it was pointed at rather
+/// than waiting for an operator to widen a real scan. The endpoint is drawn with
+/// its evidence, since a test exists to show what a detection decided on.
+///
+/// It builds its own renderer rather than taking the shared one, so it can turn
+/// evidence on whatever the command line said: on a scan that is the reader's
+/// call, here it is the point.
+pub(crate) async fn test(
+    args: &TestArgs,
+    presentation: Presentation,
+    verbosity: Verbosity,
+    palette: Palette,
+) -> Result<Outcome, Error> {
+    let (host, port) = parse_target(&args.target)?;
+
+    // Everything it found, and the working behind it: every grade, the evidence,
+    // and the advice. Certificates follow `-v`, as they do everywhere.
+    let showing = render::field::Showing {
+        certificates: verbosity.explains(),
+        reasons: false,
+        excerpts: true,
+        remedies: true,
+        risk: Risk::from_str("info").expect("info is a valid risk floor"),
+    };
+    let mut renderer = render::renderer(presentation, verbosity, palette, showing);
+
+    let mut config = crate::command::engine_settings(None)?.config;
+    // The service is identified so a gate that names one fits, and the ceiling is
+    // raised to what the author is testing. A test is an explicit act against a
+    // named target, which is the whole of what the envelope decides.
+    config.service_detection = ServiceDetection::Thorough;
+    config.detection = args
+        .detection
+        .unwrap_or_else(|| DetectionEnvelope::up_to(DetectionClass::Exploit));
+
+    // A plain port number is always a valid single-port set; the parse cannot fail
+    // on what `parse_target` already read as a `u16`.
+    let ports = PortSet::from_str(&port.to_string()).expect("a port number is a valid port set");
+    let targets = target::resolve_ports(
+        std::slice::from_ref(&host),
+        &[] as &[&str],
+        &config.exclusions,
+        ports,
+        !config.no_dns,
+    )
+    .await?;
+    targets.apply_to(&mut config);
+
+    let redaction = crate::command::redaction(&config);
+    renderer.started(Phase::PortScan { targets: &targets }, redaction)?;
+
+    let corpus = test_corpus(&args.detections)?;
+    let plan = targets.into_map();
+    let (session, task) = scan(plan, &config, corpus).await?;
+
+    // The same driver the scan command uses, so a test is drawn exactly as the
+    // scan it is. Nothing is written to a file: a test goes to the terminal.
+    crate::command::drive(
+        session,
+        task,
+        &[],
+        redaction,
+        crate::command::Stopping::CutsShort,
+        renderer.as_mut(),
+    )
+    .await
+}
+
+/// `host:port` into its two parts. An IPv6 address is bracketed, `[::1]:443`, so
+/// the port is told from the address's own colons; a name or an IPv4 address is
+/// split at its single colon. Without a port it is not an endpoint, which is what
+/// a detection runs against, so that is an error rather than a whole-host scan.
+fn parse_target(target: &str) -> Result<(String, u16), Error> {
+    let malformed = || Error::MalformedTarget {
+        target: target.to_string(),
+    };
+
+    if let Some(rest) = target.strip_prefix('[') {
+        let (address, port) = rest.split_once("]:").ok_or_else(malformed)?;
+        let port = port.parse().map_err(|_| malformed())?;
+        return Ok((address.to_string(), port));
+    }
+
+    let (host, port) = target.rsplit_once(':').ok_or_else(malformed)?;
+    let port = port.parse().map_err(|_| malformed())?;
+    if host.is_empty() {
+        return Err(malformed());
+    }
+    Ok((host.to_string(), port))
+}
+
+/// The corpus a test runs: the named detections alone when any were named, so a
+/// test is about the file in hand, and the built-in corpus when none were, for a
+/// quick look at what fires against the endpoint.
+fn test_corpus(args: &DetectionArgs) -> Result<Detections, Error> {
+    if args.paths.is_empty() && args.detections_bundle.is_none() {
+        return Ok(Detections::embedded());
+    }
+
+    let mut builder = Detections::builder().without_embedded();
+    if !args.paths.is_empty() {
+        let mut sources = BTreeMap::new();
+        for path in &args.paths {
+            read_into(path, &mut sources)?;
+        }
+        if sources.is_empty() {
+            return Err(Error::NoDetections {
+                named: args.paths.clone(),
+            });
+        }
+        builder = builder.sources(&sources).map_err(Error::Detections)?;
+    }
+    if let Some(directory) = &args.detections_bundle {
+        let key = trusted_key(args.trust_key.as_deref().expect("--trust-key is required"))?;
+        builder = builder
+            .bundle(verified_bundle(directory, &key)?)
+            .map_err(Error::Detections)?;
+    }
+    Ok(builder.build())
 }
 
 /// Re-runs the compute detections a scan journalled, offline, and draws what
