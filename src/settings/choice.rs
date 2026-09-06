@@ -27,6 +27,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use zond_engine::diff::HostIdentity;
+use zond_engine::model::finding::Severity;
+use zond_engine::record::wire;
 
 /// How a run is drawn.
 ///
@@ -101,6 +103,96 @@ impl FromStr for Presentation {
             .ok_or_else(|| UnknownPresentation {
                 written: written.to_owned(),
                 expected: Presentation::ALL.map(Presentation::as_str).to_vec(),
+            })
+    }
+}
+
+/// The lowest grade of finding a listing draws.
+///
+/// A scan turns up more than a reader wants on every run. `missing HTTP security
+/// headers` is true of most web servers and says the same thing on each, and a
+/// sweep of forty of them is forty rows nobody reads. This is where the floor
+/// sits, and everything at or above it is drawn.
+///
+/// The count on a host's header is not filtered by it. A finding below the floor
+/// is one the reader is not being shown, and a block that also revised its own
+/// total would be hiding the fact that it hid something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Risk(Severity);
+
+impl Risk {
+    /// Whether a finding of this grade is drawn.
+    #[must_use]
+    pub(crate) fn admits(self, severity: Severity) -> bool {
+        severity >= self.0
+    }
+
+    /// How the floor is written, in the spelling that sets it.
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        wire::severity_name(self.0)
+    }
+}
+
+impl Risk {
+    /// The floor that draws every finding, however it is graded.
+    ///
+    /// A run reaches it by name, through `--risk info`. This is the same floor
+    /// for the tests that measure a listing's shape rather than the floor.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn everything() -> Self {
+        Self(Severity::Info)
+    }
+}
+
+impl Default for Risk {
+    /// Medium.
+    ///
+    /// The grade below which a finding is hardening advice more often than it is
+    /// an exposure, so it is the floor that keeps a sweep readable without
+    /// deciding, from a detection author's guess, that a reader should not see an
+    /// open door.
+    fn default() -> Self {
+        Self(Severity::Medium)
+    }
+}
+
+impl fmt::Display for Risk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The error [`Risk::from_str`] returns, carrying the grades that would have
+/// worked so a caller can print it verbatim.
+#[derive(Debug, thiserror::Error)]
+#[error("unusable risk floor '{written}': expected one of {}", expected.join(", "))]
+pub(crate) struct UnknownRisk {
+    /// What was written.
+    pub written: String,
+    /// The grades that would have worked, weakest first.
+    pub expected: Vec<&'static str>,
+}
+
+impl FromStr for Risk {
+    type Err = UnknownRisk;
+
+    /// A grade by name, without regard to case.
+    ///
+    /// Read through [`wire::severity`] rather than from a table written here, so
+    /// the word a person types and the word a record carries stay one
+    /// vocabulary.
+    fn from_str(written: &str) -> Result<Self, Self::Err> {
+        wire::severity(&written.to_ascii_lowercase())
+            .map(Self)
+            .ok_or_else(|| UnknownRisk {
+                written: written.to_owned(),
+                expected: Severity::ALL
+                    .iter()
+                    .copied()
+                    .map(wire::severity_name)
+                    .collect(),
             })
     }
 }
@@ -267,6 +359,51 @@ pub(crate) struct UnknownEntryLimit {
 
 #[cfg(test)]
 mod tests {
+
+    /// The floor is read through the engine's own vocabulary, so the word a
+    /// person types and the word a record carries stay one spelling.
+    #[test]
+    fn a_grade_is_read_by_name_whatever_the_case() {
+        for (written, grade) in [
+            ("info", Severity::Info),
+            ("LOW", Severity::Low),
+            ("Medium", Severity::Medium),
+            ("high", Severity::High),
+            ("critical", Severity::Critical),
+        ] {
+            let read = Risk::from_str(written).expect(written);
+            assert!(read.admits(grade), "{written} does not admit its own grade");
+        }
+    }
+
+    /// The default is medium, which is the grade below which a finding is
+    /// hardening advice more often than it is an exposure.
+    #[test]
+    fn the_floor_defaults_to_medium() {
+        let floor = Risk::default();
+
+        assert!(floor.admits(Severity::Critical));
+        assert!(floor.admits(Severity::High));
+        assert!(floor.admits(Severity::Medium));
+        assert!(!floor.admits(Severity::Low));
+        assert!(!floor.admits(Severity::Info));
+        assert_eq!(floor.as_str(), "medium");
+    }
+
+    /// Anything that is not a grade names the ones that are.
+    #[test]
+    fn an_unknown_grade_names_the_ones_that_would_have_worked() {
+        let refused = Risk::from_str("severe").expect_err("not a grade");
+        let message = refused.to_string();
+
+        for grade in Severity::ALL {
+            assert!(
+                message.contains(wire::severity_name(grade)),
+                "{message} does not name {}",
+                wire::severity_name(grade)
+            );
+        }
+    }
     use super::*;
 
     /// Every spelling round-trips, and shouting is still asking.

@@ -20,6 +20,8 @@
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
+use crate::settings::Risk;
+
 use zond_engine::Host;
 use zond_engine::export::Redaction;
 use zond_engine::model::confidence::Confidence;
@@ -416,8 +418,20 @@ pub(crate) fn rtt_human(host: &Host) -> Option<String> {
 /// Three figures where they disagreed and one where they did not: `min/avg/max`
 /// is worth the width only when the three differ, and a host that answered every
 /// probe in the same time has said everything with one number.
+///
+/// Named by the probe that measured it, where the samples agree on one. A block
+/// draws this beside a port's own round trip, and the two measure different
+/// distances to the same machine: an ARP reply comes off the link layer, a
+/// SYN/ACK crosses the target's IP and TCP stacks, and a printer that answers
+/// one in 0.09 ms and the other in 0.22 ms is not contradicting itself. The port
+/// says which packet it timed, and until this the host did not.
 pub(crate) fn latency(host: &Host) -> Option<String> {
-    rtt_variation(host).or_else(|| host.median_rtt().map(format_rtt))
+    let figures = rtt_variation(host).or_else(|| host.median_rtt().map(format_rtt))?;
+
+    Some(match host.rtt_protocol() {
+        Some(protocol) => format!("{figures} via {}", spoken(&protocol)),
+        None => figures,
+    })
 }
 
 /// What the round trips did apart from the fastest, where they did anything.
@@ -1045,6 +1059,13 @@ pub(crate) struct Showing {
     pub(crate) excerpts: bool,
     /// What to do about a finding. From `--remedy`.
     pub(crate) remedies: bool,
+    /// The lowest grade of finding a listing draws. From `--risk`, or `risk` in
+    /// `cli.toml`.
+    ///
+    /// Apart from the four beside it in kind: those are switches and this is a
+    /// floor. What it governs stays on the page either way, since a host says
+    /// how many findings it has whatever this is set to.
+    pub(crate) risk: Risk,
 }
 
 /// The ports worth a line, and the notes about what was left out.
@@ -1523,6 +1544,19 @@ pub(crate) struct FindingView {
     pub remediation: Option<String>,
 }
 
+/// The findings a listing draws, and what it held back.
+pub(crate) struct FindingListing {
+    /// One entry per row shown, worst first.
+    pub rows: Vec<FindingView>,
+    /// How many findings sit below the floor.
+    ///
+    /// Counted in findings rather than in rows, so that this and the count on a
+    /// host's header are the same arithmetic: a row folds several ports into
+    /// one line, and two totals that disagreed about what a finding is would be
+    /// worse than either.
+    pub withheld: usize,
+}
+
 /// How a severity reads as an urgency, so a finding borrows the same colours a
 /// certificate's expiry does rather than inventing a second scale.
 ///
@@ -1623,7 +1657,7 @@ struct Folded {
 ///
 /// Empty for the ordinary host, which carries no findings at all: nothing here
 /// draws a heading for a host that has nothing wrong with it.
-pub(crate) fn findings(host: &Host) -> Vec<FindingView> {
+pub(crate) fn findings(host: &Host, floor: Risk) -> FindingListing {
     let mut claims: Vec<Claim> = host
         .findings()
         .map(|finding| claim(None, finding))
@@ -1648,11 +1682,19 @@ pub(crate) fn findings(host: &Host) -> Vec<FindingView> {
             .then_with(|| a.found.first().cmp(&b.found.first()))
     });
 
+    // Held back before the columns are measured, so a row nobody sees does not
+    // set the width of the ones they do.
+    let mut withheld = 0usize;
     let rows: Vec<(Fold, String, Option<String>)> = folded
         .into_iter()
-        .map(|row| {
+        .filter_map(|row| {
+            if !floor.admits(row.key.severity) {
+                withheld += row.found.len();
+                return None;
+            }
+
             let (subject, spelled) = subject(&row.found);
-            (row.key, subject, spelled)
+            Some((row.key, subject, spelled))
         })
         .collect();
 
@@ -1682,7 +1724,8 @@ pub(crate) fn findings(host: &Host) -> Vec<FindingView> {
         .max()
         .unwrap_or(0);
 
-    rows.into_iter()
+    let rows = rows
+        .into_iter()
         .map(|(key, subject, ports)| FindingView {
             token: format!("{:<token_width$}", severity_token(key.severity)),
             severity: key.severity,
@@ -1696,7 +1739,9 @@ pub(crate) fn findings(host: &Host) -> Vec<FindingView> {
             ports,
             remediation: key.remediation,
         })
-        .collect()
+        .collect();
+
+    FindingListing { rows, withheld }
 }
 
 /// One finding as a [`Claim`], with its citations joined.

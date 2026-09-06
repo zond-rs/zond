@@ -56,7 +56,8 @@ use zond_engine::{PortSet, ZondConfig};
 mod choice;
 
 pub(crate) use choice::{
-    EntryLimit, Identity, Presentation, UnknownEntryLimit, UnknownIdentity, UnknownPresentation,
+    EntryLimit, Identity, Presentation, Risk, UnknownEntryLimit, UnknownIdentity,
+    UnknownPresentation, UnknownRisk,
 };
 
 /// This crate's settings file, as it is named on disk.
@@ -93,6 +94,9 @@ pub(crate) enum UnusableValue {
     /// `accent_colour` was neither a named accent nor a colour.
     #[error(transparent)]
     Accent(#[from] UnknownAccent),
+    /// `risk` named something that is not a grade.
+    #[error(transparent)]
+    Risk(#[from] UnknownRisk),
 }
 
 /// Something a settings file said that this program could not use.
@@ -173,6 +177,7 @@ pub(crate) struct Settings {
     journal: Option<bool>,
     journal_entry_limit: Option<EntryLimit>,
     page_size: Option<usize>,
+    risk: Option<Risk>,
 }
 
 impl Settings {
@@ -197,6 +202,16 @@ impl Settings {
     #[must_use]
     pub(crate) fn remedy(self) -> Option<bool> {
         self.remedy
+    }
+
+    /// The lowest grade of finding these settings draw, if they say.
+    ///
+    /// Worth a key rather than a flag alone for the reason `reason` is one:
+    /// somebody sweeping a network they already know wants the floor raised on
+    /// every run, and somebody auditing one host wants it on the floor.
+    #[must_use]
+    pub(crate) fn risk(self) -> Option<Risk> {
+        self.risk
     }
 
     /// Whether these settings ask for what each detection saw.
@@ -287,6 +302,9 @@ impl Settings {
         if let Some(page_size) = other.page_size {
             self.page_size = Some(page_size);
         }
+        if let Some(risk) = other.risk {
+            self.risk = Some(risk);
+        }
     }
 }
 
@@ -315,6 +333,7 @@ struct Document {
     // message for anything else should be able to quote what was there.
     journal_entry_limit: Option<toml::Value>,
     page_size: Option<usize>,
+    risk: Option<String>,
     #[serde(flatten)]
     unknown: BTreeMap<String, toml::Value>,
 }
@@ -368,6 +387,13 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
         .transpose()
         .map_err(|source| bad_value(source.into()))?;
 
+    let risk = document
+        .risk
+        .as_deref()
+        .map(Risk::from_str)
+        .transpose()
+        .map_err(|source| bad_value(source.into()))?;
+
     let warnings = document
         .unknown
         .into_keys()
@@ -389,6 +415,7 @@ fn parse(text: &str, path: &Path) -> Result<(Settings, Vec<Warning>), SettingsEr
             journal: document.journal,
             journal_entry_limit,
             page_size: document.page_size,
+            risk,
         },
         warnings,
     ))
@@ -877,6 +904,7 @@ mod tests {
     #[test]
     fn a_later_file_overrides_only_what_it_mentions() {
         let mut settings = Settings {
+            risk: None,
             presentation: Some(Presentation::Minimal),
             colour: Some(ColourChoice::Never),
             accent_colour: Some(Accent::VIOLET),
@@ -920,6 +948,7 @@ mod tests {
         );
 
         settings.overlay(Settings {
+            risk: None,
             presentation: Some(Presentation::Minimal),
             colour: None,
             accent_colour: None,

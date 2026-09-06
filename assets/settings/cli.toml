@@ -140,6 +140,29 @@
 # reason = false
 
 
+# The lowest grade of finding a listing draws.
+#
+# `medium` by default. A scan turns up more than most runs want to read:
+# `missing HTTP security headers` is true of most web servers and says the same
+# thing on each, so a sweep of forty of them is forty rows nobody reads. The
+# floor keeps a listing to what could be an exposure.
+#
+#   info       Everything, including facts that are not weaknesses at all.
+#   low        A hardening step left undone, and up.
+#   medium     A real weakness with a real precondition, and up. The default.
+#   high       Directly exploitable, and up.
+#   critical   Remote code execution and authentication bypass alone.
+#
+# The count beside a host is never filtered. A host with five findings and a
+# floor that draws three still says `5 risks`, and the block says how many it
+# held back: a finding out of sight must not also be out of the total.
+#
+# `--risk` sets it for one run. Not applied to `--pipe` or the exports, which
+# carry every finding whatever this says.
+#
+# risk = "medium"
+
+
 # What makes two records, in two different scans, the same host.
 #
 # Read only by `zond diff`, and `--identity` overrides it for one run.

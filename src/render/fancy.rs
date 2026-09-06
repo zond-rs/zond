@@ -83,6 +83,8 @@
 use std::io::{self, BufWriter, Write};
 
 use zond_engine::export::Redaction;
+use zond_engine::model::finding::Severity;
+use zond_engine::record::wire;
 use zond_engine::{Host, HostStatus, PortState, ScanReport};
 
 use crate::diagnostics::Verbosity;
@@ -392,8 +394,8 @@ fn children(
     // says is wrong with this host or one of its ports. The severity carries the
     // colour, so the eye lands on the worst line first; the rest of the line is
     // plain, the subject included, so nothing competes with the verdict.
-    let risks = field::findings(host);
-    if !risks.is_empty() {
+    let risks = field::findings(host, showing.risk);
+    if !risks.rows.is_empty() || risks.withheld > 0 {
         children.push(findings(style, &risks, verbosity, showing));
     }
 
@@ -416,11 +418,26 @@ fn children(
 /// evidence behind a verdict rather than the working behind a conclusion.
 fn findings(
     style: Style,
-    views: &[field::FindingView],
+    listing: &field::FindingListing,
     verbosity: Verbosity,
     showing: field::Showing,
 ) -> Child {
     let mut rows = Vec::new();
+    let views = &listing.rows;
+
+    // What the floor kept back, at the head of the child the way a port table's
+    // scope sits at the head of its own. A finding out of sight must not also be
+    // out of the count: the header still totals every one of them, and this says
+    // how many of that total are not drawn below.
+    if listing.withheld > 0 {
+        rows.push(Row::plain(style.faint(&format!(
+            "{} below {}, --risk {} to see {}",
+            listing.withheld,
+            showing.risk,
+            wire::severity_name(Severity::Info),
+            if listing.withheld == 1 { "it" } else { "them" }
+        ))));
+    }
 
     for view in views {
         // Every column is painted trimmed and padded after, so no escape
@@ -682,6 +699,10 @@ mod tests {
     use zond_engine::model::port::security::{CertificateInfo, Security};
     use zond_engine::{Port, Protocol, Service};
 
+    use std::str::FromStr;
+
+    use crate::settings::Risk;
+
     /// The block a plain run writes: no colour, no detail asked for. Asserting
     /// on this reads the layout rather than a wall of escapes.
     fn block(host: &Host) -> String {
@@ -718,6 +739,10 @@ mod tests {
     }
 
     /// The block a run asking for `showing` writes.
+    ///
+    /// Every helper here draws from the floor up: these tests are about the
+    /// shape of a listing, and a fixture graded below the default floor would
+    /// otherwise go missing from the thing being measured.
     fn shown(host: &Host, showing: field::Showing) -> String {
         drawn_showing(
             Style::bare(),
@@ -752,6 +777,14 @@ mod tests {
         verbosity: Verbosity,
         showing: field::Showing,
     ) -> String {
+        // From the floor up. These tests are about the shape of a listing, and a
+        // fixture graded below the default floor would otherwise go missing from
+        // the thing being measured. The floor has tests of its own.
+        let showing = field::Showing {
+            risk: Risk::everything(),
+            ..showing
+        };
+
         let listing = field::port_listings(&[host], true, showing);
         let blocks = vec![Block {
             header: header(style, reader, host, 1),
@@ -1007,6 +1040,106 @@ mod tests {
             titles[0], titles[1],
             "the titles start in one column: {text}"
         );
+    }
+
+    /// The floor holds a grade back from the listing without holding it back
+    /// from the count. A finding out of sight must not also be out of the total.
+    #[test]
+    fn a_finding_below_the_floor_is_held_back_but_still_counted() {
+        let host = at_risk();
+
+        let drawn = |floor: Risk| {
+            let showing = field::Showing {
+                risk: floor,
+                ..Default::default()
+            };
+            let style = Style::bare();
+            let reader = field::Reader::default();
+            let listing = field::port_listings(&[&host], true, showing);
+            let blocks = vec![Block {
+                header: header(style, reader, &host, 1),
+                children: children(
+                    style,
+                    reader,
+                    &host,
+                    &listing[0],
+                    Verbosity::default(),
+                    showing,
+                ),
+            }];
+
+            let mut out = Vec::new();
+            block::write_all(&mut out, style, &blocks, WIDTH, |_, _| Ok(()))
+                .expect("a vector cannot fail");
+            String::from_utf8(out).expect("the renderer writes text")
+        };
+
+        let everything = drawn(Risk::everything());
+        assert!(everything.contains("Log4Shell"), "{everything}");
+        assert!(everything.contains("Telnet"), "{everything}");
+
+        // `at_risk` carries one critical and one medium, so a high floor draws
+        // the first and holds the second.
+        let raised = drawn(Risk::from_str("high").expect("a grade"));
+        assert!(raised.contains("Log4Shell"), "{raised}");
+        assert!(
+            !raised.contains("Telnet"),
+            "the floor did not hold: {raised}"
+        );
+        assert!(
+            raised.contains("1 below high"),
+            "the block does not say what it held back: {raised}"
+        );
+
+        // And the header still totals both, whatever the floor draws.
+        for text in [&everything, &raised] {
+            assert!(
+                text.lines()
+                    .next()
+                    .is_some_and(|line| line.contains("2 risks")),
+                "the count was filtered along with the listing: {text}"
+            );
+        }
+    }
+
+    /// A floor that holds everything back still draws the child, because the
+    /// alternative is a host that silently reports nothing.
+    #[test]
+    fn a_host_whose_findings_are_all_below_the_floor_still_says_so() {
+        let mut host = host(12);
+        host.add_finding(finding(
+            "zond:host/telnet-exposed",
+            "Telnet is reachable",
+            Severity::Low,
+            Confidence::Certain,
+        ));
+
+        let showing = field::Showing {
+            risk: Risk::from_str("critical").expect("a grade"),
+            ..Default::default()
+        };
+        let style = Style::bare();
+        let reader = field::Reader::default();
+        let listing = field::port_listings(&[&host], true, showing);
+        let blocks = vec![Block {
+            header: header(style, reader, &host, 1),
+            children: children(
+                style,
+                reader,
+                &host,
+                &listing[0],
+                Verbosity::default(),
+                showing,
+            ),
+        }];
+
+        let mut out = Vec::new();
+        block::write_all(&mut out, style, &blocks, WIDTH, |_, _| Ok(()))
+            .expect("a vector cannot fail");
+        let text = String::from_utf8(out).expect("the renderer writes text");
+
+        assert!(text.contains("1 risk"), "{text}");
+        assert!(text.contains("1 below critical"), "{text}");
     }
 
     /// A verbose title does not take its own citation out of the column.

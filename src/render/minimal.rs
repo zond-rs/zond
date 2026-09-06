@@ -228,7 +228,7 @@ fn write_host(
     // The terse mode says what and how bad and how sure, and leaves the
     // remediation to the modes that hang detail: a person acting on a fix is not
     // reading it out of a tagged block.
-    tagged_list(out, "risk", &risk_lines(host))?;
+    tagged_list(out, "risk", &risk_lines(host, showing))?;
 
     Ok(())
 }
@@ -240,8 +240,9 @@ fn write_host(
 /// then the title and what it cites, with the confidence bracketed after it
 /// where the finding is short of certain. No colour: this stream is drawn bare,
 /// and the severity is a word a reader reads rather than a hue.
-fn risk_lines(host: &Host) -> Vec<String> {
-    field::findings(host)
+fn risk_lines(host: &Host, showing: field::Showing) -> Vec<String> {
+    field::findings(host, showing.risk)
+        .rows
         .into_iter()
         .map(|view| {
             let mut line = format!(

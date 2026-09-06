@@ -33,6 +33,7 @@ use crate::diagnostics::Verbosity;
 use crate::render::style::ColourChoice;
 use crate::settings::Identity;
 use crate::settings::Presentation;
+use crate::settings::Risk;
 
 /// The `zond` command line.
 #[derive(Debug, Parser)]
@@ -1722,6 +1723,25 @@ pub(crate) struct OutputArgs {
     /// unconditionally.
     #[arg(long = "reason", global = true)]
     pub reason: bool,
+
+    /// The lowest grade of finding to draw.
+    ///
+    /// A scan turns up more than most runs want to read. `missing HTTP security
+    /// headers` is true of most web servers and says the same thing on each, so
+    /// a sweep of forty of them is forty rows nobody reads. The floor is
+    /// `medium` unless this or `risk` in `cli.toml` says otherwise.
+    ///
+    /// The count beside a host is never filtered. A host with five findings and
+    /// a floor that draws three still says `5 risks`, and the block says how
+    /// many it held back: a finding out of sight must not also be out of the
+    /// total.
+    ///
+    /// `info` draws everything. Not on `--pipe` or the exports, which carry
+    /// every finding whatever this says.
+    ///
+    /// [possible values: info, low, medium, high, critical]
+    #[arg(long = "risk", global = true, value_name = "GRADE")]
+    pub risk: Option<Risk>,
 
     /// Show what to do about each finding.
     ///
