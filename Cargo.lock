@@ -2626,6 +2626,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "dashmap",
+ "data-encoding",
  "dns-parser",
  "fancy-regex",
  "hickory-resolver",

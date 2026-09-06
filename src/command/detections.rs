@@ -27,15 +27,20 @@
 //! operator's envelope, and neither is affected by having come off disk.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use std::io::Write;
 
 use zond_engine::detect::Detections;
 use zond_engine::detect::bundle::Bundle;
+use zond_engine::detect::compute::replay_run;
+use zond_engine::journal::{paths, store};
+use zond_engine::model::finding::{Finding, Severity};
 use zond_engine::signature::{Domain, Signature, Signing, SigningKey};
 
-use crate::cli::{DetectionArgs, DetectionsAction, DetectionsArgs, KeygenArgs, SignArgs};
+use crate::cli::{
+    DetectionArgs, DetectionsAction, DetectionsArgs, KeygenArgs, ReplayArgs, SignArgs,
+};
 use crate::diagnostics::Verbosity;
 use crate::error::Error;
 use crate::exit::Outcome;
@@ -114,6 +119,9 @@ pub(crate) fn run(
     palette: Palette,
 ) -> Result<Outcome, Error> {
     match &args.action {
+        Some(DetectionsAction::Replay(replay_args)) => {
+            return replay(replay_args, presentation, verbosity, palette);
+        }
         Some(DetectionsAction::Keygen(keygen)) => return keys(keygen),
         Some(DetectionsAction::Sign(sign)) => return publish(sign),
         None => {}
@@ -144,6 +152,258 @@ pub(crate) fn run(
     tracing::info!("{}", render::detections::summary(&listing));
 
     Ok(Outcome::Complete)
+}
+
+/// Re-runs the compute detections a scan journalled, offline, and draws what
+/// reproduced.
+///
+/// A compute detection reaches the world only through its capabilities, which the
+/// scan recorded, so replaying the tape reproduces the finding with no target and
+/// no packet. A finding prints with its evidence; a run that drew nothing waits
+/// for `-v`, the way a finding's own working does, so an all-quiet replay is one
+/// summary line rather than a line per run. A run this build can no longer
+/// reproduce (its detection changed, or came off `--detections`) is named as
+/// unavailable rather than reproduced by a different one, since [`replay_run`]
+/// matches by the content hash of the body that ran. Only the compute tier tapes
+/// a run; a flow leaves nothing here, which the summary says when a scan recorded
+/// none.
+///
+/// The findings go to standard output and the summary to standard error, the
+/// stream split every command here keeps.
+pub(crate) fn replay(
+    args: &ReplayArgs,
+    presentation: Presentation,
+    verbosity: Verbosity,
+    palette: Palette,
+) -> Result<Outcome, Error> {
+    let (directory, label) = journal_directory(&args.scan)?;
+    let runs = store::read_detections(&directory)?;
+    let selected: Vec<&_> = runs
+        .iter()
+        .filter(|run| {
+            args.only
+                .as_deref()
+                .is_none_or(|only| run.detection.id == only)
+        })
+        .collect();
+
+    let style = Style::records(presentation, palette);
+    let mut out = std::io::stdout().lock();
+
+    let mut findings_total = 0usize;
+    let mut unavailable = 0usize;
+    let mut wrote_records = false;
+
+    for run in &selected {
+        // The detection is the subject of a line and the endpoint the circumstance;
+        // the address is bracketed when IPv6, or the port reads as another group.
+        let header = || format!("{} on {}", run.detection.id, endpoint(&run.host, run.port));
+
+        match replay_run(run) {
+            Ok(findings) if findings.is_empty() => {
+                // A run that drew nothing is the working behind a clean result, not
+                // the result, so it waits for `-v` the way a finding's own evidence
+                // does. What it read is what makes the silence legible once asked.
+                if verbosity.explains() {
+                    writeln!(out, "{}", style.strong(&header()))?;
+                    writeln!(
+                        out,
+                        "    {}",
+                        style.faint(&format!(
+                            "no finding · read {}",
+                            read_preview(&run.responses)
+                        )),
+                    )?;
+                    wrote_records = true;
+                }
+            }
+            Ok(findings) => {
+                findings_total += findings.len();
+                writeln!(out, "{}", style.strong(&header()))?;
+                for finding in &findings {
+                    write_finding(&mut out, style, finding)?;
+                }
+                wrote_records = true;
+            }
+            Err(error) => {
+                // A recorded run this build can no longer reproduce is a hole in the
+                // replay, not noise, so it is named whether or not detail was asked.
+                unavailable += 1;
+                writeln!(
+                    out,
+                    "{}  {}",
+                    style.strong(&header()),
+                    style.faint(&format!("unavailable, {error}")),
+                )?;
+                wrote_records = true;
+            }
+        }
+    }
+    out.flush()?;
+
+    if verbosity.narrates() {
+        // A blank line separates the records from the summary, and only earns its
+        // place when there were records: an all-quiet replay is one summary line.
+        if wrote_records {
+            let _ = writeln!(std::io::stderr());
+        }
+        tracing::info!(
+            "{}",
+            replay_summary(
+                &label,
+                runs.len(),
+                selected.len(),
+                findings_total,
+                unavailable
+            )
+        );
+    }
+
+    Ok(Outcome::Complete)
+}
+
+/// The one line that says what a replay amounted to.
+///
+/// It leads with the answer a reader wants, whether anything reproduced, and
+/// names the scope where it would otherwise mislead: a scan that recorded no
+/// runs did not run no detections, it ran flows, which are live and leave no tape
+/// to replay.
+fn replay_summary(
+    label: &str,
+    recorded: usize,
+    selected: usize,
+    findings: usize,
+    unavailable: usize,
+) -> String {
+    let runs = |n: usize| if n == 1 { "run" } else { "runs" };
+
+    if recorded == 0 {
+        return format!(
+            "no compute detections were recorded for {label}; flows run live and leave no tape to replay"
+        );
+    }
+    if selected == 0 {
+        return format!("no recorded run in {label} matched the id asked for");
+    }
+
+    let mut summary = if findings > 0 {
+        format!(
+            "replayed {selected} detection {} from {label}: {findings} {}",
+            runs(selected),
+            if findings == 1 { "finding" } else { "findings" },
+        )
+    } else {
+        format!(
+            "replayed {selected} detection {} from {label}: no findings reproduced",
+            runs(selected),
+        )
+    };
+    if unavailable > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            summary,
+            ", {unavailable} could not be replayed against this build"
+        );
+    }
+    summary
+}
+
+/// `host:port`, bracketing an IPv6 address so the port is not read as another of
+/// its colon-separated groups.
+fn endpoint(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// A one-line look at what a detection was handed, for saying why a replay drew
+/// nothing. The first non-empty response's first line, control bytes shown as
+/// dots and the whole truncated, or a note that nothing was gathered.
+fn read_preview(responses: &[String]) -> String {
+    let Some(text) = responses
+        .iter()
+        .find(|response| !response.trim().is_empty())
+    else {
+        return "nothing (no response was gathered)".to_string();
+    };
+
+    let line = text.lines().next().unwrap_or_default();
+    let mut preview: String = line
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                '.'
+            } else {
+                character
+            }
+        })
+        .take(PREVIEW_CHARS)
+        .collect();
+    if line.chars().count() > PREVIEW_CHARS {
+        preview.push('…');
+    }
+    format!("\"{preview}\"")
+}
+
+/// The most characters of a gathered response a replay previews. Enough for a
+/// status line or a banner, short enough to stay one line in a terminal.
+const PREVIEW_CHARS: usize = 80;
+
+/// One finding and the evidence behind it, indented under its detection.
+fn write_finding(out: &mut impl Write, style: Style, finding: &Finding) -> Result<(), Error> {
+    writeln!(
+        out,
+        "    {}  {}",
+        severity_tag(style, finding.severity()),
+        style.plain(finding.title()),
+    )?;
+    let excerpt = finding.excerpt();
+    if !excerpt.is_empty() {
+        writeln!(
+            out,
+            "        {} {}",
+            style.faint("evidence"),
+            style.faint(excerpt.as_str()),
+        )?;
+    }
+    Ok(())
+}
+
+/// A finding's severity as a coloured tag: the graver it is, the louder the ink.
+fn severity_tag(style: Style, severity: Severity) -> String {
+    let label = severity.label().to_uppercase();
+    match severity {
+        Severity::Critical | Severity::High => style.alarm(&label),
+        Severity::Medium => style.caution(&label),
+        Severity::Low => style.accent(&label),
+        // Info, and any grade a later model adds below it.
+        _ => style.faint(&label),
+    }
+}
+
+/// The journal directory to replay and a label naming it for the summary: a path
+/// if one was named, else the record the id resolves to. `latest` is the newest
+/// record, and the label is the id it resolved to rather than the word `latest`,
+/// so the summary says which scan was actually read.
+fn journal_directory(scan: &str) -> Result<(PathBuf, String), Error> {
+    let path = Path::new(scan);
+    if path.is_dir() {
+        return Ok((path.to_path_buf(), scan.to_string()));
+    }
+
+    let id = crate::command::journal::newest_if_latest(scan)?;
+    let directory = paths::scan(&id).ok_or(Error::NoJournalDirectory)?;
+    if !directory.is_dir() {
+        return Err(Error::NoSuchJournal {
+            id,
+            known: paths::root()
+                .and_then(|root| store::list(&root).ok())
+                .map_or(0, |entries| entries.len()),
+        });
+    }
+    Ok((directory, id))
 }
 
 /// Reads one `--detections` path into `sources`, keyed by file name.

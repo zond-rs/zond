@@ -186,11 +186,46 @@ pub(crate) struct DetectionsArgs {
 /// loading happens every run and publishing happens once.
 #[derive(Debug, Subcommand)]
 pub(crate) enum DetectionsAction {
+    /// Re-run a recorded scan's compute detections offline, to see what each saw.
+    ///
+    /// A compute detection reaches the network only through capabilities the scan
+    /// recorded, so its run is a pure function of what those returned. Replaying
+    /// the tape reproduces the finding with no target and no packet, which is the
+    /// answer to "why did it fire" and the way to check one against the exact
+    /// bytes it decided on. Findings print; a run that drew nothing is a line only
+    /// under `-v`, the way a finding's evidence is.
+    ///
+    /// Only the compute tier records a tape. A flow (`redis-unauth`,
+    /// `grafana-path-traversal`) runs live and leaves nothing to replay, so it
+    /// does not appear here; `zond read` shows the findings of a whole scan. It
+    /// re-runs against this build's shipped corpus, so a detection that has since
+    /// changed or that came from `--detections` reports as unavailable rather than
+    /// being reproduced by something else.
+    Replay(ReplayArgs),
+
     /// Make a signing key, for publishing detections others will run.
     Keygen(KeygenArgs),
 
     /// Sign a directory of detections as a bundle others can load.
     Sign(SignArgs),
+}
+
+/// Arguments to `zond detections replay`.
+#[derive(Debug, Args)]
+pub(crate) struct ReplayArgs {
+    /// The scan whose detections to replay: a record as `zond journal` lists them,
+    /// which may be shortened to any prefix that names only one or given as
+    /// `latest`, or a path to a journal directory.
+    ///
+    /// Named the way `zond read` names a scan, and required for the same reason:
+    /// replaying is an act on one particular record, so the record is said rather
+    /// than assumed.
+    #[arg(value_name = "SCAN")]
+    pub scan: String,
+
+    /// Replay only the detection with this id, rather than every one recorded.
+    #[arg(long, value_name = "ID")]
+    pub only: Option<String>,
 }
 
 /// Arguments to `zond detections keygen`.
@@ -1325,13 +1360,17 @@ pub(crate) struct EngineArgs {
     /// going to say anyway. Reach for it with equipment that must not be sent
     /// anything it did not expect. `probe`, the default, also asks: each port
     /// gets the requests its service registered, and a port nothing recognises
-    /// gets the one generic request worth asking of anything.
+    /// gets the one generic request worth asking of anything. `thorough` goes
+    /// one step further, and only for a port that answered none of that: it
+    /// puts the questions other services registered to it, likeliest first. A
+    /// Redis moved to 8443 answers `PING` and nothing else, so nothing below
+    /// this level ever finds it.
     ///
     /// Turning it down does not make an unknown port faster to scan. Asking is
     /// how a port is finished with quickly, and the alternative is waiting out a
     /// greeting that never comes.
     ///
-    /// [possible values: off, banner, probe]
+    /// [possible values: off, banner, probe, thorough]
     #[arg(long, value_name = "LEVEL")]
     pub service_detection: Option<ServiceDetection>,
 
