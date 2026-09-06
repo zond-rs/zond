@@ -12,19 +12,20 @@
 //! • recording this run as 06G3JC56RSVTRBTR        <- stderr
 //! • discovering 1024 addresses (192.0.2.0/22)     <- stderr
 //!                                                 <- stdout, from here
-//!   1  192.0.2.1  router.example    1.10 ms   2 open
+//!   1  192.0.2.1  router.example    1.10 ms   2 open  1 risk
 //!      hardware  00:00:5e:00:53:01  Icann, Iana
 //!      system    Linux 6.x [84%]
 //!      answered  ARP  NDP
 //!      also      2001:db8::1
 //!      path      1  192.0.2.254  0.90ms
 //!                2  *
-//!      ports     22/tcp   open      ssh    OpenSSH 9.6
+//!      ports     1000 probed, 996 closed
+//!                22/tcp   open      ssh    OpenSSH 9.6
 //!                443/tcp  open      https  nginx 1.24
-//!                  tls   1.3  X25519  alpn h2, http/1.1
-//!                  cert  router.example  expires in 12d
+//!                           tls     1.3            X25519  alpn h2, http/1.1
+//!                          cert     router.example  expires in 12d
 //!                5/tcp    filtered
-//!                [996 closed ports omitted]
+//!      risks     MED  443/tcp  the certificate is close to expiry
 //!
 //!   2  192.0.2.44
 //!
@@ -42,11 +43,17 @@
 //! colour each one takes. Those are the judgements that need to know what a port
 //! and a certificate are, which is exactly what `block` is kept ignorant of.
 //!
-//! ## `ports` is last on purpose
+//! ## `ports` is late on purpose, and `risks` is last
 //!
-//! It is the longest child, and a long value is cheapest at the bottom of a
+//! `ports` is the longest child, and a long value is cheapest at the bottom of a
 //! block: its continuation lines run down into empty space rather than pushing
-//! the rest of the facts away from the header they belong to.
+//! the rest of the facts away from the header they belong to. `risks` follows
+//! it, because a finding is a conclusion drawn from everything above it.
+//!
+//! What a table left out is drawn at its *head* rather than its foot. It is the
+//! table's scope and not a footnote to it: nine rows mean something different
+//! once you know they are nine of a thousand, and a count arriving afterwards
+//! has already been read past — with nothing between it and the findings.
 //!
 //! ## What a block pays for
 //!
@@ -96,6 +103,11 @@ pub(crate) struct FancyRenderer {
     /// Decides whether a block shows the working behind its operating-system
     /// finding and behind a certificate.
     verbosity: Verbosity,
+    /// How many columns the record stream has to fold a long value to.
+    ///
+    /// Held rather than asked for at drawing time, so that a renderer built over
+    /// a vector draws the same thing whatever window the test happens to run in.
+    width: usize,
     /// What this run asked to be shown beyond the basics.
     ///
     /// Apart from `verbosity` because the axes answer different readers, and
@@ -116,14 +128,17 @@ impl FancyRenderer {
         // Records are buffered, since they arrive as thousands of lines in one
         // burst at the end. Commentary is not: a progress line held in a buffer
         // is not progress.
-        Self::new(
-            Box::new(BufWriter::new(io::stdout())),
-            Box::new(io::stderr()),
-            verbosity,
-            Style::for_stdout(palette),
-            Style::for_stderr(palette),
-        )
-        .showing(showing)
+        Self {
+            width: super::width(),
+            ..Self::new(
+                Box::new(BufWriter::new(io::stdout())),
+                Box::new(io::stderr()),
+                verbosity,
+                Style::for_stdout(palette),
+                Style::for_stderr(palette),
+            )
+            .showing(showing)
+        }
     }
 
     /// The same renderer, told what to show beyond the basics.
@@ -152,6 +167,7 @@ impl FancyRenderer {
             reader: field::Reader::default(),
             style,
             verbosity,
+            width: super::ASSUMED_WIDTH,
             showing: field::Showing::default(),
         }
     }
@@ -215,7 +231,24 @@ fn verdict(style: Style, host: &Host) -> Option<String> {
         });
     }
 
-    (!parts.is_empty()).then(|| parts.join(", "))
+    // What is wrong with this host, on the line that says which host it is.
+    // Findings are the reason a scan was run and they were only readable by
+    // reading the block; a count here is what lets a sweep be scanned for the
+    // hosts worth opening. Coloured by the worst grade present, and the count and
+    // the word are both spelled, so the colour only ranks what the text says.
+    if let Some((count, worst)) = field::host_risks(host) {
+        let counted = format!("{count} {}", if count == 1 { "risk" } else { "risks" });
+        parts.push(style.by_urgency(field::severity_urgency(worst), &counted));
+    }
+
+    // A column between them rather than a comma. Two reasons, and the second is
+    // the one that decided it: these are separate measurements and not a list,
+    // so they take the same gap the address and the name beside them take — and a
+    // comma is an unpainted character between two painted ones, which is exactly
+    // the thing `block` stopped drawing when the rules came out. It arrived in
+    // whatever the terminal's default foreground happened to be, which on a good
+    // many themes is brighter than anything in the palette.
+    (!parts.is_empty()).then(|| parts.join(&" ".repeat(block::GAP)))
 }
 
 /// The facts this host has, in the order they are drawn.
@@ -226,9 +259,9 @@ fn children(
     style: Style,
     reader: field::Reader,
     host: &Host,
+    listing: &field::PortListing,
     verbosity: Verbosity,
     showing: field::Showing,
-    silence_means_something: bool,
 ) -> Vec<Child> {
     let mut children = Vec::new();
 
@@ -337,9 +370,8 @@ fn children(
         ));
     }
 
-    let listing = field::port_rows(host, silence_means_something, showing);
     if !listing.rows.is_empty() || !listing.notes.is_empty() {
-        children.push(ports(style, &listing));
+        children.push(ports(style, listing));
     }
 
     // Which IP protocols the host's stack takes delivery of, from
@@ -372,8 +404,10 @@ fn children(
 ///
 /// A child like any other. The severity leads as a short token and is the only
 /// part coloured, so the column the eye runs down is a band of colour rather
-/// than five words of different lengths; the subject is faint and sits beside
-/// it, saying *where* without competing with *what*. Citations trail the title
+/// than five words of different lengths; the subject sits beside it saying
+/// *where*, in the same ink as the title because it is the one column tying a
+/// finding back to the port table above it and furniture is not what it is.
+/// Citations trail the title
 /// in a column of their own, and the confidence follows only where the finding
 /// is short of certain. The fix and the full port list hang off the line under
 /// `-v`, the way a certificate's working does, because a person triaging wants
@@ -399,7 +433,7 @@ fn findings(
             "{}{}  {}{}  {}",
             style.by_urgency(field::severity_urgency(view.severity), token),
             " ".repeat(view.token.len() - token.len()),
-            style.faint(subject),
+            style.plain(subject),
             " ".repeat(view.subject.chars().count() - subject.chars().count()),
             style.plain(&view.title)
         );
@@ -441,7 +475,11 @@ fn findings(
         rows.push(Row::with_detail(line, detail));
     }
 
-    Child::rows("risks", rows)
+    let title_column = views.first().map_or(0, |view| {
+        view.token.chars().count() + block::GAP + view.subject.chars().count() + block::GAP
+    });
+
+    Child::rows("risks", rows).details_at(title_column)
 }
 
 /// The `ports` child: a table, and whatever hangs off one of its rows.
@@ -450,6 +488,16 @@ fn findings(
 /// value happens to be, not a section of its own.
 fn ports(style: Style, listing: &field::PortListing) -> Child {
     let mut rows = Vec::new();
+
+    // The renderer's own notes, about what this table covers and what it decided
+    // not to enumerate. First, because they are its scope rather than a footnote
+    // to it: nine rows mean something different once you know they are nine of a
+    // thousand, and a count arriving afterwards has already been read past.
+    // Faint, and with nothing in the column the port numbers are bold in, which
+    // is what makes them read as this program talking rather than as more ports.
+    for note in &listing.notes {
+        rows.push(Row::plain(style.faint(note)));
+    }
 
     for row in &listing.rows {
         // Every column is painted trimmed and padded after, so no escape
@@ -466,9 +514,29 @@ fn ports(style: Style, listing: &field::PortListing) -> Child {
         );
 
         if let Some(service) = &row.service {
+            let name = service.trim_end();
             text.push_str(&" ".repeat(row.state.len() - word.len()));
             text.push_str("  ");
-            text.push_str(&style.plain(service));
+
+            // Faint where the engine looked the name up from the port number,
+            // plain where a probe established it. The palette already said which
+            // ink belongs to what a scan established; drawing a guess in it was
+            // this crate claiming more than the engine had.
+            text.push_str(&if row.inferred {
+                style.faint(name)
+            } else {
+                style.plain(name)
+            });
+
+            // A column of its own, because what kind of thing a port is and what
+            // is answering on it are two facts. They used to be one string
+            // joined by a space, which is also the character inside
+            // `Epson_IPP-Server 2.0.0`, so nothing separated them.
+            if let Some(product) = &row.product {
+                text.push_str(&" ".repeat(service.chars().count() - name.chars().count()));
+                text.push_str("  ");
+                text.push_str(&style.plain(product));
+            }
         }
 
         rows.push(Row::with_detail(
@@ -477,14 +545,18 @@ fn ports(style: Style, listing: &field::PortListing) -> Child {
         ));
     }
 
-    // The renderer's own notes about what it decided not to enumerate. Faint,
-    // and with nothing in the column the port numbers are bold in, which is what
-    // makes them read as this program talking rather than as another port.
-    for note in &listing.notes {
-        rows.push(Row::plain(style.faint(note)));
-    }
+    Child::rows("ports", rows).details_at(service_column(listing))
+}
 
-    Child::rows("ports", rows)
+/// How far into a port row its description begins.
+///
+/// What hangs off a row belongs under that description rather than in a column
+/// of its own, so a certificate sits under the service it was presented for.
+/// Read off the first row, since every row in a listing is padded alike.
+fn service_column(listing: &field::PortListing) -> usize {
+    listing.rows.first().map_or(0, |row| {
+        row.port.chars().count() + block::GAP + row.state.chars().count() + block::GAP
+    })
 }
 
 /// A port's state, coloured by what it is.
@@ -537,21 +609,27 @@ impl Renderer for FancyRenderer {
         let hosts = field::sorted_hosts(report);
         let trustworthy = field::silence_means_something(report);
 
+        // Once, for the whole listing: a host whose highest port is `9100/tcp`
+        // and one whose highest is `80/tcp` used to put `open` in different
+        // columns, because each measured its own table.
+        let listings = field::port_listings(&hosts, trustworthy, self.showing);
+
         // Every block is built before any of it is drawn, because the columns
         // are measured across the listing: a handle right-aligned to the widest,
         // a verdict in a column the longest name allows. See `block::Columns`.
         let blocks: Vec<Block> = hosts
             .iter()
+            .zip(listings.iter())
             .enumerate()
-            .map(|(index, host)| Block {
+            .map(|(index, (host, listing))| Block {
                 header: header(self.style, self.reader, host, index + 1),
                 children: children(
                     self.style,
                     self.reader,
                     host,
+                    listing,
                     self.verbosity,
                     self.showing,
-                    trustworthy,
                 ),
             })
             .collect();
@@ -559,12 +637,18 @@ impl Renderer for FancyRenderer {
         // The separator belongs to the listing, so it goes on the record stream.
         // Above the first block only if there is commentary to separate it from.
         let narrates = self.narrator.narrates();
-        block::write_all(&mut self.records, self.style, &blocks, |out, index| {
-            if index > 0 || narrates {
-                writeln!(out)?;
-            }
-            Ok(())
-        })?;
+        block::write_all(
+            &mut self.records,
+            self.style,
+            &blocks,
+            self.width,
+            |out, index| {
+                if index > 0 || narrates {
+                    writeln!(out)?;
+                }
+                Ok(())
+            },
+        )?;
 
         self.records.flush()?;
         self.narrator.summary(report)
@@ -668,13 +752,15 @@ mod tests {
         verbosity: Verbosity,
         showing: field::Showing,
     ) -> String {
+        let listing = field::port_listings(&[host], true, showing);
         let blocks = vec![Block {
             header: header(style, reader, host, 1),
-            children: children(style, reader, host, verbosity, showing, true),
+            children: children(style, reader, host, &listing[0], verbosity, showing),
         }];
 
         let mut out = Vec::new();
-        block::write_all(&mut out, style, &blocks, |_, _| Ok(())).expect("a vector cannot fail");
+        block::write_all(&mut out, style, &blocks, WIDTH, |_, _| Ok(()))
+            .expect("a vector cannot fail");
         String::from_utf8(out).expect("the renderer writes text")
     }
 
@@ -693,24 +779,35 @@ mod tests {
             .collect();
 
         let mut out = Vec::new();
-        block::write_all(&mut out, style, &blocks, |_, _| Ok(())).expect("a vector cannot fail");
+        block::write_all(&mut out, style, &blocks, WIDTH, |_, _| Ok(()))
+            .expect("a vector cannot fail");
         String::from_utf8(out).expect("the renderer writes text")
     }
+
+    /// The width every test draws at, so a test's expectations do not depend on
+    /// the window it happens to run in.
+    const WIDTH: usize = crate::render::ASSUMED_WIDTH;
 
     /// The column every value in a one-block listing begins in.
     fn value_column(host: &Host) -> usize {
         let style = Style::bare();
-        block::Columns::of(&[Block {
-            header: header(style, field::Reader::default(), host, 1),
-            children: children(
-                style,
-                field::Reader::default(),
-                host,
-                Verbosity::default(),
-                field::Showing::default(),
-                true,
-            ),
-        }])
+        let showing = field::Showing::default();
+        let listing = field::port_listings(&[host], true, showing);
+
+        block::Columns::of(
+            &[Block {
+                header: header(style, field::Reader::default(), host, 1),
+                children: children(
+                    style,
+                    field::Reader::default(),
+                    host,
+                    &listing[0],
+                    Verbosity::default(),
+                    showing,
+                ),
+            }],
+            WIDTH,
+        )
         .value_column()
     }
 
@@ -832,8 +929,10 @@ mod tests {
     fn a_finding_is_drawn_worst_first_with_its_subject_and_reference() {
         let text = block(&at_risk());
 
+        // Past the header, which carries a risk count of its own now.
         let risks: Vec<&str> = text
             .lines()
+            .skip(1)
             .skip_while(|line| !line.contains("risks"))
             .collect();
 
@@ -907,6 +1006,54 @@ mod tests {
         assert_eq!(
             titles[0], titles[1],
             "the titles start in one column: {text}"
+        );
+    }
+
+    /// A verbose title does not take its own citation out of the column.
+    ///
+    /// The column used to be capped at forty-six characters without the titles
+    /// being capped, so a detection that wrote a long sentence carried its
+    /// reference past everybody else's — and the column the cap existed to
+    /// protect was ragged exactly where it mattered.
+    #[test]
+    fn a_long_title_does_not_break_the_citation_column() {
+        let mut host = host(11);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:http/unauthenticated-interface",
+                "the printer's web interface answers without a password at all",
+                Severity::Medium,
+                Confidence::Certain,
+            )
+            .with_reference(Reference::cwe(306)),
+        );
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:http/missing-security-headers",
+                "missing 2 of 4 HTTP security headers",
+                Severity::Low,
+                Confidence::Certain,
+            )
+            .with_reference(Reference::cwe(693)),
+        );
+
+        let text = block(&host);
+        let citation = |needle: &str| {
+            text.lines()
+                .find(|line| line.contains(needle))
+                .and_then(|line| line.find("CWE-"))
+                .unwrap_or_else(|| panic!("no citation beside {needle}: {text}"))
+        };
+
+        assert_eq!(
+            citation("without a password"),
+            citation("missing 2 of 4"),
+            "a title past the old cap took its citation with it: {text}"
         );
     }
 
@@ -1154,7 +1301,7 @@ mod tests {
     /// An excerpt is bounded at two kilobytes and may carry newlines, and a row
     /// is one line. Runs of whitespace close up and the rest is cut.
     #[test]
-    fn a_long_excerpt_is_flattened_and_cut() {
+    fn a_long_excerpt_is_flattened_and_folded() {
         let mut host = host(9);
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
         host.add_port_finding(
@@ -1185,10 +1332,21 @@ mod tests {
             .expect("the evidence hangs under the row");
 
         assert!(line.contains("HTTP/1.1 200 OK Server:"), "{text}");
-        assert!(line.ends_with('…'), "the rest is cut: {text}");
+
+        // Nothing is cut. A run that asked for the evidence asked for the
+        // evidence, and the terminal's width is what decides where it folds.
+        assert!(!text.contains('…'), "the excerpt was cut: {text}");
         assert!(
-            line.chars().count() < 140,
-            "and the line stays short: {text}"
+            text.contains(&"x".repeat(200)),
+            "the excerpt lost its tail: {text}"
+        );
+
+        // The header line the flattening left is inside the width; the run of
+        // two hundred x's is one word, and a word longer than the room it has
+        // takes its own line rather than being broken where nobody can paste it.
+        assert!(
+            line.chars().count() <= crate::render::ASSUMED_WIDTH,
+            "the folded line overran: {text}"
         );
     }
 
@@ -1355,26 +1513,46 @@ mod tests {
         assert!(block(&host).contains("no open ports"), "{}", block(&host));
     }
 
-    /// TLS and the certificate hang off the port that negotiated them, indented
-    /// past the port column so they cannot be read as ports themselves.
+    /// TLS and the certificate hang off the port that negotiated them, in that
+    /// port's own columns: the value under the service it was presented for, and
+    /// the second field in a column of its own so expiries compare down a
+    /// listing without being read.
     #[test]
     fn a_certificate_hangs_off_the_port_that_served_it() {
         let text = block(&serving_tls(away(12)));
 
-        assert!(text.contains("tls   1.3  X25519  alpn h2"), "{text}");
-        assert!(
-            text.contains("cert  printer.example  expires in 12d"),
-            "{text}"
+        let line = |needle: &str| {
+            text.lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("no line carrying {needle}: {text}"))
+        };
+        let at = |needle: &str| line(needle).find(needle).unwrap_or_else(|| unreachable!());
+
+        // The service column, which is where a detail's value belongs: what the
+        // handshake was and what the certificate is named are both facts about
+        // the thing `https` names.
+        assert_eq!(
+            at("https"),
+            at("1.3"),
+            "the tls value is not in the service column: {text}"
+        );
+        assert_eq!(
+            at("https"),
+            at("printer.example"),
+            "the certificate is not in the service column: {text}"
+        );
+
+        // And their second fields share a column of their own.
+        assert_eq!(
+            at("X25519"),
+            at("expires in 12d"),
+            "a detail's second field is not a column: {text}"
         );
 
         // Indented past the column the port numbers stand in, which is what
         // marks them as belonging to 443 rather than being ports themselves.
         // No glyph does that work any more, so the indent has to.
-        let port_column = text
-            .lines()
-            .find(|line| line.contains("443/tcp"))
-            .and_then(|line| line.find("443/tcp"))
-            .expect("the port");
+        let port_column = at("443/tcp");
 
         let hanging: Vec<&str> = text
             .lines()
@@ -1888,20 +2066,29 @@ mod hostile {
 
         let style = Style::bare();
         let reader = field::Reader::default();
+        let showing = field::Showing::default();
+        let listing = field::port_listings(&[&scanned], false, showing);
         let blocks = vec![Block {
             header: header(style, reader, &scanned, 1),
             children: children(
                 style,
                 reader,
                 &scanned,
+                &listing[0],
                 Verbosity::default(),
-                field::Showing::default(),
-                false,
+                showing,
             ),
         }];
 
         let mut out = Vec::new();
-        block::write_all(&mut out, style, &blocks, |_, _| Ok(())).expect("a vector cannot fail");
+        block::write_all(
+            &mut out,
+            style,
+            &blocks,
+            crate::render::ASSUMED_WIDTH,
+            |_, _| Ok(()),
+        )
+        .expect("a vector cannot fail");
 
         let text = String::from_utf8(out).expect("the renderer writes text");
         assert_eq!(

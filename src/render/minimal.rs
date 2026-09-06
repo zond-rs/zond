@@ -28,7 +28,7 @@
 //!   port: 22/tcp  open      ssh OpenSSH 9.6
 //!         80/tcp  open      http nginx 1.24
 //!         5/tcp   filtered
-//!         [996 closed ports omitted]
+//!         1000 probed, 996 closed
 //!
 //! * 2001:db8::4
 //!   mac:  02:00:5e:00:53:04
@@ -599,7 +599,7 @@ mod tests {
 
         let text = block(&host);
         assert!(text.contains("  port: 22/tcp  open  ssh OpenSSH"), "{text}");
-        assert!(text.contains("\n        [1 closed port omitted]"), "{text}");
+        assert!(text.contains("\n        2 probed, 1 closed"), "{text}");
     }
 
     #[test]

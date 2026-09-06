@@ -54,6 +54,7 @@ const DEFAULT_TOP_PORTS: usize = 1000;
 pub(crate) async fn run(
     args: &ScanArgs,
     recording: Recording,
+    reasons: bool,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
     // Before anything is sent: a misspelt extension is a mistake made in the
@@ -67,6 +68,13 @@ pub(crate) async fn run(
     let settings = command::engine_settings(args.engine.profile.as_deref())?;
     let mut config = settings.config;
     args.apply_to(&mut config);
+
+    // A SYN scan reaches `filtered` from silence and from a refusal alike, so it
+    // does not ask its capture for ICMP unless something wants to tell the two
+    // apart. `--reason` is that request.
+    if reasons {
+        config.icmp_evidence = true;
+    }
 
     let ports = ports(args, settings.ports);
 

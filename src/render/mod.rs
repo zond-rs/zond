@@ -49,6 +49,10 @@ pub(crate) mod diff;
 // only the lines that are about the command rather than about the network.
 pub(crate) mod merge;
 
+// The corpus a scan would run, listed for somebody deciding whether to run it.
+// Not a `Renderer`: nothing is happening while it draws.
+pub(crate) mod detections;
+
 // The shape every record is drawn in: one header line and its labelled facts,
 // with the whole listing measured before any of it is drawn. A scan, a
 // comparison and a stored record are the same six line types.
@@ -220,6 +224,64 @@ pub(crate) trait Renderer {
     /// The scan is over. This is where the results are written.
     fn finished(&mut self, report: &ScanReport) -> io::Result<()>;
 }
+
+/// How many columns the record stream has to work with.
+///
+/// Asked of the terminal, and answered with [`ASSUMED_WIDTH`] where there is no
+/// terminal to ask — a run piped to a file or a pager has no width of its own,
+/// and folding to whatever the window happened to be when it started would make
+/// the file depend on something that is not in it.
+///
+/// This is the only measurement in the crate that comes from outside the report.
+/// It exists because a value that has to fold has to know what it is folding to,
+/// and the alternative was to cut at a constant and hope — which is what the
+/// sixty-eight character excerpt was.
+#[must_use]
+pub(crate) fn width() -> usize {
+    columns_of(std::io::stdout()).unwrap_or(ASSUMED_WIDTH)
+}
+
+/// The same for the commentary stream, and [`None`] where it is not a terminal.
+///
+/// Asked separately from [`width`], the way [`Palette`] asks the two streams
+/// separately about colour: `zond discover lan | less` redirects one and not the
+/// other, and folding commentary to the width of a pipe that has none would fold
+/// it to a guess while the terminal beside it is twice that.
+///
+/// [`None`] rather than a fallback, because the two streams want different
+/// things from an absent terminal. A record that has to fold folds to something,
+/// since the alternative is a line of unbounded length in a file. Commentary
+/// that is being collected in a file is one event per line, and a program
+/// reading it back should not have to rejoin a sentence somebody's window
+/// happened to break.
+#[must_use]
+pub(crate) fn commentary_width() -> Option<usize> {
+    columns_of(std::io::stderr())
+}
+
+/// How many columns `stream` has, or [`None`] where it is not a terminal.
+#[cfg(unix)]
+fn columns_of<Fd: std::os::fd::AsFd>(stream: Fd) -> Option<usize> {
+    // `rustix` is already here for the key watcher's `tcsetattr`, with the same
+    // `termios` feature, so this costs no dependency and no `unsafe`.
+    rustix::termios::tcgetwinsize(stream)
+        .ok()
+        .map(|window| usize::from(window.ws_col))
+        .filter(|columns| *columns > 0)
+}
+
+/// The same, on a platform with no `termios` to ask.
+#[cfg(not(unix))]
+fn columns_of<Fd>(_stream: Fd) -> Option<usize> {
+    None
+}
+
+/// What a run assumes when nothing tells it otherwise.
+///
+/// A hundred: wide enough for a port table with a certificate under it, and
+/// close enough to the eighty every terminal still opens at that a run redirected
+/// to a file reads in one.
+pub(crate) const ASSUMED_WIDTH: usize = 100;
 
 /// The renderer to use for this run.
 ///

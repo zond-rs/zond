@@ -22,6 +22,10 @@ fn bare() -> Style {
     Style::bare()
 }
 
+/// The width every test draws at, so a test's expectations do not depend on the
+/// window it happens to run in.
+const WIDTH: usize = crate::render::ASSUMED_WIDTH;
+
 /// One block, drawn on its own.
 fn drawn(block: &Block) -> String {
     listing(std::slice::from_ref(block))
@@ -30,7 +34,7 @@ fn drawn(block: &Block) -> String {
 /// A whole listing, blank-separated the way a run writes it.
 fn listing(blocks: &[Block]) -> String {
     let mut out = Vec::new();
-    write_all(&mut out, bare(), blocks, |out, index| {
+    write_all(&mut out, bare(), blocks, WIDTH, |out, index| {
         if index > 0 {
             writeln!(out)?;
         }
@@ -199,11 +203,68 @@ fn a_scan_puts_its_ports_in_the_value_column() {
                fe80::1%en0
      ports     22/tcp   open      ssh    OpenSSH 9.6
                443/tcp  open      https  nginx 1.24
-                 tls   1.3  X25519  alpn h2
+                  tls  1.3  X25519  alpn h2
                  cert  router.example  expires in 12d
                5/tcp    filtered
                996 closed ports not listed
 "
+    );
+}
+
+/// The bug this file's whole detail arithmetic was rewritten for.
+///
+/// A finding's detail is labelled `evidence`, a certificate's is labelled
+/// `cert`, and one width used to be measured across both. Asking for detections
+/// therefore moved every certificate line four columns to the right, on hosts
+/// whose certificates had nothing to do with any finding.
+#[test]
+fn one_childs_details_do_not_move_anothers() {
+    let ports = || {
+        Child::rows(
+            "ports",
+            vec![Row::with_detail(
+                port("443/tcp", "open", Some(("https", "nginx"))),
+                vec![Detail::new("cert", "router.example".to_owned())],
+            )],
+        )
+    };
+
+    let alone = Block {
+        header: host(1, "192.0.2.1", None),
+        children: vec![ports()],
+    };
+
+    let beside_findings = Block {
+        header: host(1, "192.0.2.1", None),
+        children: vec![
+            ports(),
+            Child::rows(
+                "risks",
+                vec![Row::with_detail(
+                    bare().plain("MED  443/tcp  the certificate is close to expiry"),
+                    vec![Detail::new("evidence", "expires in 12d".to_owned())],
+                )],
+            ),
+        ],
+    };
+
+    // The value, not the label: the shared width moved where a detail's value
+    // began and left its label where it was, so a test watching the label would
+    // have watched the one part that never moved.
+    let column = |text: &str| {
+        text.lines()
+            .find(|line| line.contains("cert"))
+            .and_then(|line| line.find("router.example"))
+            .expect("the certificate")
+    };
+
+    assert_eq!(
+        column(&drawn(&alone)),
+        column(&drawn(&beside_findings)),
+        "an eight-character label under one child moved a four-character one \
+         under another:\n{}\n{}",
+        drawn(&alone),
+        drawn(&beside_findings)
     );
 }
 
@@ -411,7 +472,7 @@ fn detail_hangs_inside_the_value_it_belongs_to() {
     let text = drawn(&block);
     let lines: Vec<&str> = text.lines().collect();
 
-    let columns = Columns::of(std::slice::from_ref(&block));
+    let columns = Columns::of(std::slice::from_ref(&block), WIDTH);
     let detail = lines[2].find("cert").expect("the detail label");
 
     assert_eq!(detail, columns.value_column() + DETAIL_INDENT);

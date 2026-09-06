@@ -96,6 +96,24 @@ pub(crate) enum Command {
     Detections(DetectionsArgs),
 }
 
+impl Command {
+    /// Whether this command watches the network rather than reading what an
+    /// earlier one wrote down.
+    ///
+    /// The three that do produce a record of their own, and a record whose
+    /// transcript does not say which build made it or when is one nobody can
+    /// check a finding against a year later. The rest look things up: a stored
+    /// scan carries its own provenance inside it, and a catalogue of detections
+    /// is not a record of anything, so a build stamp on either is a line between
+    /// the reader and what they asked for.
+    pub(crate) const fn watches_the_network(&self) -> bool {
+        matches!(
+            self,
+            Command::Discover(_) | Command::Scan(_) | Command::Listen(_)
+        )
+    }
+}
+
 /// Where a scan's detections come from, beyond the corpus this build ships.
 ///
 /// Flattened into `zond scan`, which runs them, and into `zond detections`,
@@ -1681,17 +1699,24 @@ pub(crate) struct OutputArgs {
 
     /// Show the evidence behind every verdict.
     ///
-    /// A port says which packet settled it — `SYN/ACK`, `RST`, `ICMP
-    /// prohibited`, or `no reply` — with the TTL it carried and the round trip
-    /// it took. A host says what was observed and, where an ICMP error came
-    /// from a router rather than the host itself, which router.
+    /// A port says which packet settled it, `SYN/ACK`, `RST`, `ICMP prohibited`
+    /// or `no reply`, with the TTL it carried and the round trip it took. A host
+    /// says what was observed and, where an ICMP error came from a router rather
+    /// than the host itself, which router.
     ///
-    /// **This is what separates two verdicts that read alike.** A port reported
-    /// `filtered` because a firewall said so and one reported `filtered`
-    /// because nothing came back are the same word and different findings, and
-    /// only one of them is somebody's policy.
+    /// This separates two verdicts that read alike. A port reported `filtered`
+    /// because a firewall said so and one reported `filtered` because nothing
+    /// came back are the same word and different findings, and only one of them
+    /// is somebody's policy.
     ///
-    /// Works on a scan, on a record, and on a file — including one nmap wrote,
+    /// On a live SYN scan it also asks the capture to keep ICMP errors, which
+    /// that technique otherwise ignores because its verdict does not need them.
+    /// An ICMP error names no ports, so the kernel filter cannot narrow it and
+    /// every ICMP packet on every captured link is copied into userspace. That
+    /// is the cost of telling a refusal from a silence, and it is paid only when
+    /// this is set.
+    ///
+    /// Works on a scan, on a record, and on a file, including one nmap wrote,
     /// whose own reasons are read back. Not on `--pipe`, whose fields are a
     /// stable interface; a program reads the JSON, which carries all of it
     /// unconditionally.

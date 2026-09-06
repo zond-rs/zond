@@ -55,7 +55,9 @@ pub(super) fn write(
     // Above the first block as well as between them: `comparing` has just
     // written what is being compared, and one host butted against the next is
     // two findings a reader has to tell apart for themselves.
-    block::write_all(records, style, &blocks, |out, _| writeln!(out))?;
+    block::write_all(records, style, &blocks, crate::render::width(), |out, _| {
+        writeln!(out)
+    })?;
     records.flush()?;
 
     summary(diff, narration, narration_style)

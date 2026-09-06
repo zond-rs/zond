@@ -113,15 +113,23 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     // told how to draw.
     diagnostics::paint(Style::commentary(presentation, palette));
 
-    // The first line of every run, and the reason the two above are held back
-    // until here: a transcript that does not say which build produced it, or
-    // when, is a transcript nobody can check a finding against a year later.
-    tracing::info!(
-        "zond-cli {} \u{b7} zond-engine {} \u{b7} {}",
-        env!("CARGO_PKG_VERSION"),
-        zond_engine::report::ENGINE_VERSION,
-        render::field::moment(std::time::SystemTime::now())
-    );
+    // The first line of a run that watches the network, and the reason the two
+    // above are held back until here: a transcript that does not say which build
+    // produced it, or when, is a transcript nobody can check a finding against a
+    // year later.
+    //
+    // Only such a run. `read`, `diff`, `merge`, `journal` and `detections` look
+    // things up — a stored scan carries its own provenance inside it, and a
+    // catalogue is not a record of anything — so a build stamp there is a line
+    // standing between somebody and the answer they asked for.
+    if cli.command.watches_the_network() {
+        tracing::info!(
+            "zond-cli {} \u{b7} zond-engine {} \u{b7} {}",
+            env!("CARGO_PKG_VERSION"),
+            zond_engine::report::ENGINE_VERSION,
+            render::field::moment(std::time::SystemTime::now())
+        );
+    }
 
     report_provisioning(provisioned);
     for warning in warnings {
@@ -166,7 +174,13 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             command::discover::run(args, recording(args.no_journal), renderer.as_mut()).await
         }
         Command::Scan(args) => {
-            command::scan::run(args, recording(args.no_journal), renderer.as_mut()).await
+            command::scan::run(
+                args,
+                recording(args.no_journal),
+                showing.reasons,
+                renderer.as_mut(),
+            )
+            .await
         }
         Command::Listen(args) => {
             command::listen::run(args, recording(args.no_journal), renderer.as_mut()).await
@@ -176,7 +190,9 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             command::merge::run(args, presentation, verbosity, palette, showing)
         }
         Command::Read(args) => command::read::run(args, presentation, verbosity, palette, showing),
-        Command::Detections(args) => command::detections::run(args),
+        Command::Detections(args) => {
+            command::detections::run(args, presentation, verbosity, palette)
+        }
         Command::Journal(_) => unreachable!("handled above"),
     }
 }

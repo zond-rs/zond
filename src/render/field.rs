@@ -871,6 +871,14 @@ pub(crate) enum Urgency {
     /// Nothing to flag.
     #[default]
     None,
+    /// Ranked, and ranked below the grade worth looking at.
+    ///
+    /// Apart from [`None`](Urgency::None), which is the absence of a ranking
+    /// rather than the bottom of one: a certificate with years left carries no
+    /// urgency at all, and a finding graded `LOW` carries the lowest there is.
+    /// Drawing the two alike is what made a severity column stop being a column
+    /// of colour at exactly the grade where it should have been receding.
+    Muted,
     /// Approaching a deadline.
     Caution,
     /// Past it.
@@ -988,8 +996,18 @@ pub(crate) struct PortRow {
     /// The verdict unformatted, so a renderer can colour it without matching on
     /// the word it was spelled as.
     pub verdict: PortState,
-    /// `https nginx 1.24`, where a service was named.
+    /// `https`, padded likewise: what kind of thing this port is, and nothing
+    /// about what answered on it.
     pub service: Option<String>,
+    /// Whether that name was looked up from the port number rather than
+    /// established by a probe.
+    ///
+    /// The engine knows the difference and this used to throw it away, drawing a
+    /// guess in the same ink as a fingerprint. See `Service::is_inferred`.
+    pub inferred: bool,
+    /// `nginx 1.24`, where something identified itself. Unpadded: nothing
+    /// follows it.
+    pub product: Option<String>,
     /// TLS and certificate lines belonging to this port and to no other.
     pub detail: Vec<PortDetail>,
 }
@@ -1108,25 +1126,31 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
 
     let mut notes = Vec::new();
 
+    // What the table covers, before what is in it. A count of what was left out
+    // reads as an apology at the bottom of a list and as scope at the top of
+    // one, and it is scope: nine rows mean something different once you know
+    // they are nine of a thousand. The brackets go with the move — a faint line
+    // standing where a port number would be bold is already how a block marks
+    // the renderer's own asides.
+    if closed > 0 {
+        let probed = host.port_count();
+        notes.push(format!("{probed} probed, {closed} closed"));
+    }
+
     if filtered_over_limit > 0 {
         notes.push(format!(
-            "[{filtered_over_limit} more filtered {} omitted]",
+            "{filtered_over_limit} more filtered {} not listed",
             plural(filtered_over_limit as u128, "port")
         ));
     }
 
     if unreachable > 0 {
+        // Not "could not reach": the probes went out. What did not come back is
+        // the answer, and the scan was already losing those, so the one thing
+        // this cannot say is what a silent port means.
         notes.push(format!(
-            "[{unreachable} {} the scan could not reach; it was outrun, so these are \
-             not firewall verdicts]",
+            "{unreachable} {} unanswered; the scan was outrun, so silence is not a verdict",
             plural(unreachable as u128, "port")
-        ));
-    }
-
-    if closed > 0 {
-        notes.push(format!(
-            "[{closed} closed {} omitted]",
-            plural(closed as u128, "port")
         ));
     }
 
@@ -1203,38 +1227,130 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool, showing: Showing
 /// from one [`select`], so the two modes can never disagree about which ports a
 /// scan is entitled to claim.
 ///
-/// `evidence` decides what hangs off a row beyond the port itself. Everything
+/// `showing` decides what hangs off a row beyond the port itself. Everything
 /// else is unconditional.
-pub(crate) fn port_rows(
-    host: &Host,
+///
+/// # Every host at once, because the columns are between them
+///
+/// The port and state columns used to be measured from one host's ports, which
+/// meant a host whose highest port was `9100/tcp` and one whose highest was
+/// `80/tcp` put `open` in different places. [`block`](super::block) says the
+/// alignments worth having are the ones *between* blocks, and the port table was
+/// the one child that did not get them. So this takes the listing.
+pub(crate) fn port_listings(
+    hosts: &[&Host],
     silence_means_something: bool,
     showing: Showing,
-) -> PortListing {
-    let Some(selection) = select(host, silence_means_something) else {
-        return PortListing::default();
-    };
-
-    let (widest_port, widest_state) = column_widths(&selection.shown);
-
-    let rows = selection
-        .shown
+) -> Vec<PortListing> {
+    let selections: Vec<Option<Selection<'_>>> = hosts
         .iter()
-        .map(|port| PortRow {
-            port: format!(
-                "{:<widest_port$}",
-                format!("{}/{}", port.number(), protocol(port.protocol()))
-            ),
-            state: format!("{:<widest_state$}", state(port.state())),
-            verdict: port.state(),
-            service: describe(port),
-            detail: port_detail(port, showing),
-        })
+        .map(|host| select(host, silence_means_something))
         .collect();
 
-    PortListing {
-        rows,
-        notes: selection.notes,
+    let (mut widest_port, mut widest_state, mut widest_service) = (0, 0, 0);
+    for port in selections
+        .iter()
+        .flatten()
+        .flat_map(|selection| selection.shown.iter())
+    {
+        widest_port = widest_port.max(endpoint(port).chars().count());
+        widest_state = widest_state.max(state(port.state()).chars().count());
+        if let Some((name, _)) = service_name(port) {
+            widest_service = widest_service.max(name.chars().count());
+        }
     }
+
+    selections
+        .into_iter()
+        .map(|selection| {
+            let Some(selection) = selection else {
+                return PortListing::default();
+            };
+
+            let rows = selection
+                .shown
+                .iter()
+                .map(|port| {
+                    let named = service_name(port);
+                    PortRow {
+                        port: format!("{:<widest_port$}", endpoint(port)),
+                        state: format!("{:<widest_state$}", state(port.state())),
+                        verdict: port.state(),
+                        service: named
+                            .as_ref()
+                            .map(|(name, _)| format!("{name:<widest_service$}")),
+                        inferred: named.is_some_and(|(_, inferred)| inferred),
+                        product: product_text(port),
+                        detail: port_detail(port, showing),
+                    }
+                })
+                .collect();
+
+            PortListing {
+                rows,
+                notes: selection.notes,
+            }
+        })
+        .collect()
+}
+
+/// `text` broken at whitespace into pieces of at most `room` columns.
+///
+/// A word longer than `room` — a fingerprint, a cipher name, a URL — takes a line
+/// of its own and overruns it rather than being broken in the middle, because a
+/// broken identifier is one somebody cannot paste.
+///
+/// Named apart from [`fold`], which gathers claims into rows: that is the
+/// domain's word and this is the typesetter's.
+pub(crate) fn wrap(text: &str, room: usize) -> Vec<String> {
+    if text.chars().count() <= room {
+        return vec![text.to_owned()];
+    }
+
+    let mut pieces = Vec::new();
+    let mut piece = String::new();
+
+    for word in text.split_whitespace() {
+        if !piece.is_empty() && piece.chars().count() + 1 + word.chars().count() > room {
+            pieces.push(std::mem::take(&mut piece));
+        }
+        if !piece.is_empty() {
+            piece.push(' ');
+        }
+        piece.push_str(word);
+    }
+
+    if !piece.is_empty() {
+        pieces.push(piece);
+    }
+
+    pieces
+}
+
+/// A port as it is written: `443/tcp`.
+fn endpoint(port: &Port) -> String {
+    format!("{}/{}", port.number(), protocol(port.protocol()))
+}
+
+/// How many findings a host carries, and the worst grade among them.
+///
+/// `None` where it carries none, so a host with nothing wrong says nothing
+/// rather than reporting a zero. Counted over the findings themselves rather
+/// than over the rows [`findings`] folds them into, because the line at the
+/// bottom of a run counts findings and two numbers for one thing that disagree
+/// is worse than either.
+pub(crate) fn host_risks(host: &Host) -> Option<(usize, Severity)> {
+    let mut count = 0usize;
+    let mut worst: Option<Severity> = None;
+
+    for finding in host.findings().chain(host.ports().flat_map(Port::findings)) {
+        count += 1;
+        worst = Some(worst.map_or(finding.severity(), |held: Severity| {
+            held.max(finding.severity())
+        }));
+    }
+
+    worst.map(|worst| (count, worst))
 }
 
 /// How many of a host's ports are open, and how many were probed.
@@ -1300,6 +1416,10 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
     // negotiated session, and three lines for one handshake would outweigh the
     // port it belongs to. The word "TLS" is not among them, because the label
     // beside them is `tls`.
+    //
+    // The version is kept apart from the rest as the detail's own value, so that
+    // it lands in one column down a listing and the cipher lands in the next —
+    // the same two columns a certificate's name and its expiry land in.
     let mut session = Vec::new();
     if let Some(version) = security.tls_version() {
         session.push(version.to_owned());
@@ -1319,7 +1439,14 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
         ));
     }
     if !session.is_empty() {
-        detail.push(PortDetail::new("tls", session.join("  ")));
+        let mut session = session.into_iter();
+        let version = session.next().unwrap_or_default();
+        let rest: Vec<String> = session.collect();
+
+        detail.push(PortDetail {
+            note: (!rest.is_empty()).then(|| rest.join("  ")),
+            ..PortDetail::new("tls", version)
+        });
     }
 
     if let Some(certificate) = security.certificate() {
@@ -1405,7 +1532,7 @@ pub(crate) struct FindingView {
 pub(crate) fn severity_urgency(severity: Severity) -> Urgency {
     match severity {
         Severity::Critical | Severity::High => Urgency::Alarm,
-        Severity::Low | Severity::Info => Urgency::None,
+        Severity::Low | Severity::Info => Urgency::Muted,
         // Medium, and a severity a newer engine ranks that this build has no
         // place for: a caution. Drawn rather than hidden or made to shout, since
         // an unrankable finding is still a real one and neither silence nor an
@@ -1439,14 +1566,6 @@ pub(crate) fn severity_token(severity: Severity) -> String {
 
 /// The widest a severity token is allowed to be.
 const TOKEN_WIDTH: usize = 4;
-
-/// How wide the title column may grow before citations are left ragged.
-///
-/// A title is written by whoever wrote the detection and nothing bounds its
-/// length, so padding every row to the longest one would let a single verbose
-/// title push every citation on the block off the screen. Past this the row
-/// keeps its two spaces and its citation sits where it falls.
-const TITLE_CAP: usize = 46;
 
 /// How many subjects a row spells before it counts them instead.
 const SUBJECTS_SPELLED: usize = 3;
@@ -1547,16 +1666,21 @@ pub(crate) fn findings(host: &Host) -> Vec<FindingView> {
         .map(|(_, subject, _)| subject.chars().count())
         .max()
         .unwrap_or(0);
-    // From the titles that have something after them, and no wider than the cap:
-    // a row ending at its title needs no padding, so a long one that ends there
-    // should not push everything else out to meet it.
+    // From the titles that have something after them: a row ending at its title
+    // needs no padding, so a long one that ends there should not push everything
+    // else out to meet it.
+    //
+    // Uncapped, because a cap does not do what it looks like it does. It bounded
+    // the column without bounding the titles, so a title past the cap carried
+    // its own citation out past everybody else's and the column it was meant to
+    // protect was ragged exactly where it mattered. A column is measured from
+    // the things that share it or it is not a column.
     let title_width = rows
         .iter()
         .filter(|(key, ..)| key.reference.is_some() || key.confidence != Confidence::Certain)
         .map(|(key, ..)| width(&key.title))
         .max()
-        .unwrap_or(0)
-        .min(TITLE_CAP);
+        .unwrap_or(0);
 
     rows.into_iter()
         .map(|(key, subject, ports)| FindingView {
@@ -1596,36 +1720,26 @@ fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Fin
     }
 }
 
-/// An excerpt as the one line a block gives it.
+/// An excerpt with the shape taken out of it.
 ///
 /// The engine bounds an excerpt at two kilobytes and says nothing about its
 /// shape, so what arrives here may be a sentence, a list, or the bytes of a
-/// reply with newlines still in them. A row is one line, so runs of whitespace
-/// close up and what is left is cut to a width a terminal will not wrap. The
-/// bytes themselves are escaped later, by the painting, as every value a scanned
+/// reply with newlines still in them. Runs of whitespace close up, and that is
+/// all: what is left is one paragraph, and the presentation folds it to whatever
+/// the terminal is.
+///
+/// It used to be cut at sixty-eight characters and given an ellipsis, which is
+/// the wrong place to decide it twice over. A cut made here does not know the
+/// width it is cutting for, and the excerpt is opt-in anyway: somebody who asked
+/// for `--reason` asked for the evidence rather than for sixty-eight characters
+/// of it.
+///
+/// The bytes themselves are escaped by the painting, as every value a scanned
 /// host chose is.
 fn one_line(excerpt: &str) -> String {
     let flattened: String = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    // Escaped before it is cut, not after: a control byte the flattening left
-    // becomes four characters when it is drawn, and a cut measured before that
-    // happens is measured against a different string than the one a terminal
-    // gets. The painting escapes again and finds nothing left to do.
-    let printable = printable(&flattened);
-
-    match printable.char_indices().nth(EVIDENCE_WIDTH) {
-        Some((at, _)) => format!("{}…", &printable[..at]),
-        None => printable.into_owned(),
-    }
+    printable(&flattened).into_owned()
 }
-
-/// How much of an excerpt a row shows before cutting it.
-///
-/// A detail's value starts around column 27, so this is what keeps the line
-/// inside a hundred columns: enough for a sentence or a short list, and no more.
-/// Anything longer is in the exports, which are where a two-kilobyte excerpt
-/// belongs.
-const EVIDENCE_WIDTH: usize = 68;
 
 /// Claims alike in everything but their port, gathered into one row each.
 ///
@@ -1949,29 +2063,52 @@ pub(crate) fn silence_means_something(report: &ScanReport) -> bool {
 /// narrow enough that a row stays one line at any sensible terminal width.
 const EXTRAINFO_WIDTH: usize = 24;
 
-/// What is listening, where fingerprinting worked it out.
-fn describe(port: &Port) -> Option<String> {
+/// What kind of thing this port is, and whether anything confirmed it.
+///
+/// `http`, `ssl/http`, `jetdirect`: a classification out of a small vocabulary,
+/// which is a different fact from the software answering on the port and belongs
+/// in a different column from it. The two used to be joined into one string
+/// separated by a space — the same space that appears inside
+/// `Epson_IPP-Server 2.0.0`, which is why nothing separated them.
+///
+/// The flag is `Service::is_inferred`: whether the engine looked this name up
+/// from the port number or a probe established it. This crate had never asked,
+/// so a guess and a fingerprint were painted alike, which is the presentation
+/// claiming more than the engine did.
+fn service_name(port: &Port) -> Option<(String, bool)> {
     let service = port.service()?;
     if !named(&service.name()) {
         return None;
     }
 
-    let mut described = service.name().to_owned();
+    Some((service.name().to_owned(), service.is_inferred()))
+}
+
+/// What answered on the port, where fingerprinting worked it out.
+fn product_text(port: &Port) -> Option<String> {
+    let service = port.service()?;
+    let name = service.name();
+    if !named(&name) {
+        return None;
+    }
+
+    let mut described = String::new();
     if let Some(product) = service.product()
         // A product that merely repeats the service name says nothing twice:
         // `http http` is what an HTTP server nothing identified more precisely
         // renders as, and the second word is noise in every such row. A
         // tunnelled service names both halves, as in `ssl/http`, so the repeat
         // has to be looked for in each of them, or `ssl/http http` gets through.
-        && !described
+        && !name
             .split('/')
             .any(|part| part.eq_ignore_ascii_case(product))
     {
-        described.push(' ');
         described.push_str(product);
     }
     if let Some(version) = service.version() {
-        described.push(' ');
+        if !described.is_empty() {
+            described.push(' ');
+        }
         described.push_str(version);
     }
     // What is running *on* the server, as distinct from the server: the
@@ -1989,12 +2126,28 @@ fn describe(port: &Port) -> Option<String> {
         .extrainfo()
         .filter(|extra| extra.len() <= EXTRAINFO_WIDTH)
     {
-        described.push_str(" (");
+        if !described.is_empty() {
+            described.push(' ');
+        }
+        described.push('(');
         described.push_str(extra);
         described.push(')');
     }
 
-    Some(described)
+    (!described.is_empty()).then_some(described)
+}
+
+/// The two of them joined, for a mode with one column to put them in.
+///
+/// `minimal` is a tagged line per value and has nowhere to align a second
+/// column, so it takes the sentence the block used to draw.
+fn describe(port: &Port) -> Option<String> {
+    let (name, _) = service_name(port)?;
+
+    Some(match product_text(port) {
+        Some(product) => format!("{name} {product}"),
+        None => name,
+    })
 }
 
 /// The report's hosts, by address, so two runs can be diffed.
@@ -2500,11 +2653,11 @@ mod tests {
                 .with_discovery(Discovery::new(ScanResponse::TcpSynAck)),
         );
 
-        let quiet = port_rows(&host, true, Showing::default());
-        assert!(quiet.rows[0].detail.is_empty(), "{:?}", quiet.rows[0]);
+        let quiet = port_listings(&[&host], true, Showing::default());
+        assert!(quiet[0].rows[0].detail.is_empty(), "{:?}", quiet[0].rows[0]);
 
-        let asked = port_rows(
-            &host,
+        let asked = port_listings(
+            &[&host],
             true,
             Showing {
                 certificates: false,
@@ -2512,7 +2665,32 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(asked.rows[0].detail[0].label, "reason");
+        assert_eq!(asked[0].rows[0].detail[0].label, "reason");
+    }
+
+    /// The port table is measured across the listing, not across one host.
+    ///
+    /// A host whose highest port is `9100/tcp` and one whose highest is `80/tcp`
+    /// used to put `open` in different columns, because each measured its own
+    /// table. `block` says the alignments worth having are the ones between
+    /// blocks, and this was the one child that did not get them.
+    #[test]
+    fn two_hosts_put_their_port_states_in_one_column() {
+        let mut low = host(1);
+        low.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+
+        let mut high = host(2);
+        high.add_port(Port::new(9100, Protocol::Tcp, PortState::Open));
+
+        let listings = port_listings(&[&low, &high], true, Showing::default());
+
+        assert_eq!(
+            listings[0].rows[0].port.chars().count(),
+            listings[1].rows[0].port.chars().count(),
+            "{:?} and {:?} were padded apart",
+            listings[0].rows[0].port,
+            listings[1].rows[0].port
+        );
     }
 
     /// `minimal` has nothing to hang a line from, so the evidence rides on the
@@ -3082,8 +3260,9 @@ mod tests {
         assert!(
             outrun
                 .iter()
-                .any(|line| line.contains("40 ports the scan could not reach")),
-            "but says how many it could not reach: {outrun:?}"
+                .any(|line| line.contains("40 ports unanswered")
+                    && line.contains("silence is not a verdict")),
+            "but says how many went unanswered, and that it cannot read them: {outrun:?}"
         );
         assert!(
             outrun.iter().any(|line| line.starts_with("22/tcp")),
@@ -3335,7 +3514,7 @@ mod tests {
                 "53/udp   open",
                 "443/tcp  open",
                 "21/tcp   filtered",
-                "[1 closed port omitted]",
+                "5 probed, 1 closed",
             ]
         );
     }
@@ -3365,7 +3544,7 @@ mod tests {
         );
         assert_eq!(
             lines.last().map(String::as_str),
-            Some("[28 more filtered ports omitted]")
+            Some("28 more filtered ports not listed")
         );
     }
 
@@ -3396,7 +3575,7 @@ mod tests {
 
         assert_eq!(
             ports(&host, true, Showing::default()),
-            vec!["[1 closed port omitted]"]
+            vec!["1 probed, 1 closed"]
         );
     }
 
@@ -3409,7 +3588,7 @@ mod tests {
 
         assert_eq!(
             ports(&host, true, Showing::default()),
-            vec!["[2 closed ports omitted]"]
+            vec!["2 probed, 2 closed"]
         );
     }
 

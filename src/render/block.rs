@@ -43,10 +43,9 @@
 //!
 //! ## Depth is an indent and a weight, not a glyph
 //!
-//! A [`Detail`] sits [`DETAIL_INDENT`] columns into the value column and takes
-//! the same faint-label-plain-value shape as a fact two levels out. What marks
-//! it as subordinate is that the column carrying the weight above it, the port
-//! number, is empty on its line.
+//! A [`Detail`] takes the same faint-label-plain-value shape as a fact two
+//! levels out, one level in. What marks it as subordinate is that the column
+//! carrying the weight above it, the port number, is empty on its line.
 //!
 //! There are no box-drawing characters here at all, which is why there is no
 //! gate for a terminal that cannot draw one. A `├─` that means "this hangs off
@@ -64,6 +63,40 @@
 //! A block drawn in ignorance of its neighbours cannot have either, which is
 //! what made the old header line ragged.
 //!
+//! ## A detail's columns come from the row it hangs under
+//!
+//! A [`Detail`] is drawn in the columns of the value it belongs to, and in
+//! nobody else's. The column its label ends in is [`Child::details_at`], which
+//! the caller sets because the caller is the only thing that knows where its own
+//! table's columns fall; the width of the labels themselves is measured across
+//! the details of children with the *same label*, so `ports` details align down
+//! a listing and `risks` details align down a listing and neither moves the
+//! other.
+//!
+//! It used to be one width for every detail in the run. `evidence` is eight
+//! characters and `cert` is four, so asking for detections moved every
+//! certificate line four columns right — on hosts whose certificates had nothing
+//! to do with any finding. The label is also right-aligned now, ending one
+//! [`GAP`] before its value rather than starting a fixed indent in, so a longer
+//! label eats into the margin instead of pushing the value column along.
+//!
+//! ## A detail's columns come from the row it hangs under
+//!
+//! A [`Detail`] is drawn in the columns of the value it belongs to, and in
+//! nobody else's. The column its label ends in is [`Child::details_at`], which
+//! the caller sets because the caller is the only thing that knows where its own
+//! table's columns fall; the width of the labels themselves is measured across
+//! the details of children with the *same label*, so `ports` details align down
+//! a listing and `risks` details align down a listing and neither moves the
+//! other.
+//!
+//! It used to be one width for every detail in the run. `evidence` is eight
+//! characters and `cert` is four, so asking for detections moved every
+//! certificate line four columns right — on hosts whose certificates had nothing
+//! to do with any finding. The label is also right-aligned now, ending one
+//! [`GAP`] before its value rather than starting a fixed indent in, so a longer
+//! label eats into the margin instead of pushing the value column along.
+//!
 //! **A name is deliberately not aligned.** Padding every name to the widest
 //! would push the latency off a narrow terminal the moment one host is called
 //! something long, and a name is looked up rather than compared, so the column
@@ -78,7 +111,7 @@
 
 use std::io::{self, Write};
 
-use crate::render::field::Urgency;
+use crate::render::field::{self, Urgency};
 use crate::render::style::Style;
 
 /// The margin a block opens with, before its handle.
@@ -87,12 +120,20 @@ const GUTTER: usize = 2;
 /// What separates a handle from an identity, and a label from its value.
 ///
 /// Two rather than one, because one space is a word break and two is a column.
-const GAP: usize = 2;
+///
+/// Visible to the crate because a caller working out where its own table's
+/// columns fall, for [`Child::details_at`], has to measure them in the same
+/// units this module places them in.
+pub(crate) const GAP: usize = 2;
 
-/// How far a detail sits into the value column it hangs under.
+/// How far a detail sits into the value column when its parent has no columns
+/// of its own to hang it in.
 ///
 /// Two: short enough to read as "this belongs to the line above", long enough
-/// not to be taken for another row of the value itself.
+/// not to be taken for another row of the value itself. A value that *is* a
+/// table overrides it through [`Child::details_at`], so this is the floor rather
+/// than the rule — and it is a floor rather than nothing so that a detail can
+/// never be asked to start left of the value it hangs under.
 const DETAIL_INDENT: usize = 2;
 
 /// What separates a mark from the identity it classifies.
@@ -216,6 +257,16 @@ pub(crate) struct Child {
     pub label: &'static str,
     /// The value, one entry per line.
     pub rows: Vec<Row>,
+    /// How far into this child's value its details' own values begin.
+    ///
+    /// Zero unless the caller says otherwise, which is right for a value that is
+    /// one thing: a detail hanging off it starts where it starts. A value that
+    /// is a table sets this to the column its rows' descriptions begin in, so
+    /// that a certificate hangs in the same column as the service it belongs to
+    /// rather than in a column of its own invention.
+    ///
+    /// The caller's to state, because this module has no idea what a port is.
+    pub details_at: usize,
 }
 
 impl Child {
@@ -224,6 +275,7 @@ impl Child {
         Self {
             label,
             rows: vec![Row::plain(text)],
+            details_at: 0,
         }
     }
 
@@ -232,12 +284,26 @@ impl Child {
         Self {
             label,
             rows: texts.into_iter().map(Row::plain).collect(),
+            details_at: 0,
         }
     }
 
     /// A fact whose lines carry detail of their own.
     pub(crate) fn rows(label: &'static str, rows: Vec<Row>) -> Self {
-        Self { label, rows }
+        Self {
+            label,
+            rows,
+            details_at: 0,
+        }
+    }
+
+    /// The same, saying where the detail hanging off its rows belongs.
+    #[must_use]
+    pub(crate) fn details_at(self, column: usize) -> Self {
+        Self {
+            details_at: column,
+            ..self
+        }
     }
 }
 
@@ -323,7 +389,7 @@ pub(crate) struct Block {
 /// Measured from the whole listing at once. See the module's note on why: the
 /// alignments worth having are the ones between blocks, and a block drawn in
 /// ignorance of its neighbours cannot have them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Columns {
     /// How many digits the largest handle takes.
     number_width: usize,
@@ -336,16 +402,31 @@ pub(crate) struct Columns {
     label_column: usize,
     /// How wide the label field is.
     label_width: usize,
-    /// How wide a detail's own label field is.
-    detail_label_width: usize,
     /// The column a verdict begins in.
     verdict_column: usize,
+    /// How many columns the terminal has, for the one thing here that folds.
+    width: usize,
+    /// How wide details are, per child label. See the module note.
+    details: Vec<Detailing>,
+}
+
+/// How wide the details hanging off one kind of child are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Detailing {
+    /// The child label these were measured from.
+    of: &'static str,
+    /// How wide their own labels are.
+    label: usize,
+    /// How wide their values are, measured only from the ones that have
+    /// something after them: a detail ending at its value needs no padding, so a
+    /// long one that ends there should not push everything else out to meet it.
+    value: usize,
 }
 
 impl Columns {
-    /// The columns this listing draws in.
+    /// The columns this listing draws in, on a terminal `width` columns across.
     #[must_use]
-    pub(crate) fn of(blocks: &[Block]) -> Self {
+    pub(crate) fn of(blocks: &[Block], width: usize) -> Self {
         let widest = |counts: &mut dyn Iterator<Item = usize>| counts.max().unwrap_or(0);
 
         // A listing where nothing is numbered reserves no room for numbering,
@@ -384,14 +465,32 @@ impl Columns {
                 .map(|child| child.label.chars().count()),
         );
 
-        let detail_label_width = widest(
-            &mut blocks
-                .iter()
-                .flat_map(|block| block.children.iter())
-                .flat_map(|child| child.rows.iter())
-                .flat_map(|row| row.detail.iter())
-                .map(|detail| detail.label.chars().count()),
-        );
+        // Per child label rather than across the listing, which is the whole
+        // fix: `evidence` under `risks` has no business moving `cert` under
+        // `ports`. Gathered in first-seen order, since a listing has two or three
+        // kinds of child with details and a linear search over that is cheaper
+        // than a map.
+        let mut details: Vec<Detailing> = Vec::new();
+        for child in blocks.iter().flat_map(|block| block.children.iter()) {
+            if !details.iter().any(|entry| entry.of == child.label) {
+                details.push(Detailing {
+                    of: child.label,
+                    label: 0,
+                    value: 0,
+                });
+            }
+
+            let Some(entry) = details.iter_mut().find(|entry| entry.of == child.label) else {
+                continue;
+            };
+
+            for detail in child.rows.iter().flat_map(|row| row.detail.iter()) {
+                entry.label = entry.label.max(detail.label.chars().count());
+                if detail.note.is_some() {
+                    entry.value = entry.value.max(detail.value.chars().count());
+                }
+            }
+        }
 
         // Where the identities and names of this listing stop. The verdict
         // follows a gap past the longest of them, so it is as tight as the
@@ -411,21 +510,43 @@ impl Columns {
             tag_column,
             label_column,
             label_width,
-            detail_label_width,
             verdict_column: identity_end + VERDICT_GAP,
+            width,
+            details,
         }
     }
 
     /// The column every value in a block begins in.
     #[must_use]
-    pub(crate) fn value_column(self) -> usize {
+    pub(crate) fn value_column(&self) -> usize {
         self.label_column + self.label_width + GAP
     }
 
-    /// The column a detail's own value begins in.
-    #[must_use]
-    pub(crate) fn detail_value_column(self) -> usize {
-        self.value_column() + DETAIL_INDENT + self.detail_label_width + GAP
+    /// The column a detail's own value begins in, under this child.
+    ///
+    /// Where the child said, unless that is too far left to fit the labels that
+    /// hang there, in which case [`DETAIL_INDENT`] past the widest of them.
+    fn detail_value_column(&self, child: &Child) -> usize {
+        let floor = DETAIL_INDENT + self.detailing(child.label).label + GAP;
+        self.value_column() + child.details_at.max(floor)
+    }
+
+    /// How wide the values of that child's details are, where any is padded.
+    fn detail_value_width(&self, label: &str) -> usize {
+        self.detailing(label).value
+    }
+
+    /// What was measured from the details of children with this label.
+    fn detailing(&self, label: &str) -> Detailing {
+        self.details
+            .iter()
+            .find(|entry| entry.of == label)
+            .cloned()
+            .unwrap_or(Detailing {
+                of: "",
+                label: 0,
+                value: 0,
+            })
     }
 }
 
@@ -495,7 +616,7 @@ impl Line {
 pub(crate) fn write(
     out: &mut dyn Write,
     style: Style,
-    columns: Columns,
+    columns: &Columns,
     block: &Block,
 ) -> io::Result<()> {
     writeln!(out, "{}", header(style, columns, &block.header))?;
@@ -518,7 +639,9 @@ pub(crate) fn write(
             writeln!(out, "{}", line.finish())?;
 
             for detail in &row.detail {
-                writeln!(out, "{}", hanging(style, columns, detail))?;
+                for line in hanging(style, columns, child, detail) {
+                    writeln!(out, "{line}")?;
+                }
             }
         }
     }
@@ -535,20 +658,21 @@ pub(crate) fn write_all(
     out: &mut dyn Write,
     style: Style,
     blocks: &[Block],
+    width: usize,
     mut before_each: impl FnMut(&mut dyn Write, usize) -> io::Result<()>,
 ) -> io::Result<()> {
-    let columns = Columns::of(blocks);
+    let columns = Columns::of(blocks, width);
 
     for (index, block) in blocks.iter().enumerate() {
         before_each(out, index)?;
-        write(out, style, columns, block)?;
+        write(out, style, &columns, block)?;
     }
 
     Ok(())
 }
 
 /// The line a block opens with.
-fn header(style: Style, columns: Columns, header: &Header) -> String {
+fn header(style: Style, columns: &Columns, header: &Header) -> String {
     let mut line = Line::new();
     line.indent_to(GUTTER);
 
@@ -584,22 +708,65 @@ fn header(style: Style, columns: Columns, header: &Header) -> String {
     line.finish()
 }
 
-/// A detail line: the block's own grammar, one level in.
-fn hanging(style: Style, columns: Columns, detail: &Detail) -> String {
-    let mut line = Line::new();
-    line.indent_to(columns.value_column() + DETAIL_INDENT);
-    line.push(&style.faint(detail.label), detail.label.chars().count());
+/// A detail, in the block's own grammar one level in, as the lines it takes.
+///
+/// The label is right-aligned so that it *ends* one [`GAP`] before the value
+/// rather than starting a fixed indent in front of it. That is what keeps a long
+/// label from moving the column: `evidence` eats four columns of the margin that
+/// `cert` leaves empty, and the value begins in the same place either way.
+///
+/// A value too wide for the terminal folds and continues in its own column.
+/// Nothing here is ever cut: a detail is something a run asked to be shown, and
+/// an ellipsis is the presentation deciding it knew better.
+fn hanging(style: Style, columns: &Columns, child: &Child, detail: &Detail) -> Vec<String> {
+    let value_column = columns.detail_value_column(child);
+    let room = columns
+        .width
+        .saturating_sub(value_column)
+        .max(NARROWEST_VALUE);
 
-    line.indent_to(columns.detail_value_column());
-    line.push(&style.plain(&detail.value), detail.value.chars().count());
+    let folded = field::wrap(&detail.value, room);
+    let last = folded.len().saturating_sub(1);
 
-    if let Some(note) = &detail.note {
-        line.push("  ", GAP);
-        line.end_with(&style.by_urgency(detail.urgency, note));
-    }
+    folded
+        .iter()
+        .enumerate()
+        .map(|(index, piece)| {
+            let mut line = Line::new();
 
-    line.finish()
+            if index == 0 {
+                let label = detail.label;
+                let width = label.chars().count();
+                line.indent_to(value_column.saturating_sub(GAP + width));
+                line.push(&style.faint(label), width);
+                line.pad_to(value_column);
+            } else {
+                line.indent_to(value_column);
+            }
+
+            line.push(&style.plain(piece), piece.chars().count());
+
+            // On the last line, because that is where the value ends. A value
+            // that folded has nothing after it in practice; one that did not is
+            // the ordinary case, and its second field lines up down the listing.
+            if index == last
+                && let Some(note) = &detail.note
+            {
+                line.pad_to(value_column + columns.detail_value_width(child.label) + GAP);
+                line.end_with(&style.by_urgency(detail.urgency, note));
+            }
+
+            line.finish()
+        })
+        .collect()
 }
+
+/// The narrowest a value is asked to fit before the terminal is told it is wrong.
+///
+/// A deeply indented detail on a very narrow terminal would otherwise be folded
+/// to two or three characters, which is not a line. Past this the line overruns
+/// and the terminal wraps it, which is worse but honest.
+const NARROWEST_VALUE: usize = 24;
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║

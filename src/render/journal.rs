@@ -305,7 +305,7 @@ fn drawn(entry: &Entry, out: &mut dyn Write, style: Style) -> io::Result<()> {
         children,
     }];
 
-    block::write_all(out, style, &blocks, |_, _| Ok(()))
+    block::write_all(out, style, &blocks, crate::render::width(), |_, _| Ok(()))
 }
 
 /// Writes what a prune did.

@@ -94,6 +94,21 @@ use std::io::IsTerminal;
 use crate::render::field::{self, Urgency};
 use crate::settings::Presentation;
 
+/// What a wrapped commentary line is indented by: the glyph, and the space
+/// after it.
+///
+/// Two, and a constant rather than a measurement, because every [`Mark::glyph`]
+/// is one column wide and that is a property of the set rather than of any line.
+const HANGING: usize = 2;
+
+/// The narrowest a commentary line is broken to before the terminal is told it
+/// is wrong.
+///
+/// A window narrower than this would otherwise have a sentence folded to two or
+/// three characters, which is not a line. Past it the line overruns and the
+/// terminal wraps it, which is worse but honest.
+const NARROWEST_LINE: usize = 32;
+
 /// What starts every escape sequence.
 const ESC: &str = "\x1b";
 
@@ -742,9 +757,47 @@ impl Style {
     /// **The one place a line on standard error is composed.** A scan's
     /// narration, the engine's diagnostics and the journal's footer all pass
     /// through here, so this rule is drawn once and holds for the whole stream.
+    ///
+    /// # A wrapped line continues under its own words
+    ///
+    /// A line too wide for the terminal is broken here rather than left to the
+    /// terminal, which would begin the remainder in column zero — under the
+    /// glyph, where the eye reads it as a new event rather than as the rest of
+    /// this one. Every glyph is one column and one space follows it, so the
+    /// continuation is indented by [`HANGING`] and the sentence keeps one left
+    /// edge.
+    ///
+    /// **Only for a terminal.** Where standard error is a file or a pipe there
+    /// is no width to break to, and a collector reading events back should not
+    /// have to rejoin a sentence somebody's window happened to split. See
+    /// [`commentary_width`](crate::render::commentary_width).
     #[must_use]
     pub(crate) fn line(self, mark: Mark, text: &str) -> String {
-        format!("{} {}", self.mark(mark), self.faint(text))
+        let Some(width) = crate::render::commentary_width() else {
+            return format!("{} {}", self.mark(mark), self.faint(text));
+        };
+
+        // Escaped before it is broken, not after: a control byte a scanned host
+        // chose becomes four characters when it is drawn, and a break measured
+        // before that happens is measured against a different string than the
+        // one a terminal gets. The painting escapes again and finds nothing left
+        // to do.
+        let printable = field::printable(text);
+        let room = width.saturating_sub(HANGING).max(NARROWEST_LINE);
+
+        let mut drawn = String::new();
+        for (index, piece) in field::wrap(&printable, room).iter().enumerate() {
+            if index == 0 {
+                drawn.push_str(&self.mark(mark));
+                drawn.push(' ');
+            } else {
+                drawn.push('\n');
+                drawn.push_str(&" ".repeat(HANGING));
+            }
+            drawn.push_str(&self.faint(piece));
+        }
+
+        drawn
     }
 
     /// Text with no role.
@@ -758,10 +811,16 @@ impl Style {
     }
 
     /// `text` coloured by how close whatever it describes is to being a problem.
+    ///
+    /// [`Muted`](Urgency::Muted) is the one that subtracts rather than adds. A
+    /// scale whose bottom rank is drawn in the same ink as the words beside it is
+    /// a scale that stops being a column of colour exactly where it should be
+    /// receding, so the lowest grade recedes.
     #[must_use]
     pub(crate) fn by_urgency(self, urgency: Urgency, text: &str) -> String {
         match urgency {
             Urgency::None => self.plainly(text),
+            Urgency::Muted => self.faint(text),
             Urgency::Caution => self.caution(text),
             Urgency::Alarm => self.alarm(text),
         }
@@ -1012,6 +1071,64 @@ mod tests {
     /// thing you hand *one line* to. Whitespace a renderer wants for itself has
     /// to be written outside the paint, which is why the commentary writers have
     /// a separate call for a blank line.
+    /// A commentary line too wide for the terminal continues under its own
+    /// words. The terminal would begin the remainder in column zero, under the
+    /// glyph, where it reads as a new event rather than as the rest of this one.
+    #[test]
+    fn a_wrapped_commentary_line_continues_under_its_words() {
+        let style = Style::bare();
+        let text = "paced down to 16 in flight and 96% still unanswered; those may be \
+                    dropped probes rather than filtered ports";
+
+        // `line` asks the real stderr for its width, so the wrap itself is
+        // exercised through the piece that does it.
+        let pieces = field::wrap(text, 40);
+        assert!(pieces.len() > 1, "the fixture does not wrap: {pieces:?}");
+
+        let drawn = pieces
+            .iter()
+            .enumerate()
+            .map(|(index, piece)| {
+                if index == 0 {
+                    format!("{} {}", style.mark(Mark::Warning), style.faint(piece))
+                } else {
+                    format!("{}{}", " ".repeat(HANGING), style.faint(piece))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let lines: Vec<&str> = drawn.lines().collect();
+        let glyph = Mark::Warning.glyph().chars().count();
+        assert_eq!(glyph + 1, HANGING, "every glyph is one column and a space");
+
+        for line in &lines[1..] {
+            assert_eq!(
+                line.len() - line.trim_start().len(),
+                HANGING,
+                "a continuation does not start under the words above it: {drawn}"
+            );
+        }
+    }
+
+    /// Where standard error is not a terminal there is no width to break to, so
+    /// the line stays whole and a collector reads one event per line.
+    #[test]
+    fn a_line_is_whole_where_there_is_no_terminal_to_break_to() {
+        // The tests run with standard error captured, so there is no terminal
+        // and this is the branch `line` actually takes here.
+        if crate::render::commentary_width().is_some() {
+            return;
+        }
+
+        let drawn = Style::bare().line(
+            Mark::Info,
+            "a sentence long enough that any \
+             terminal narrower than it would have to break it somewhere",
+        );
+        assert_eq!(drawn.lines().count(), 1, "{drawn}");
+    }
+
     #[test]
     fn a_newline_is_escaped_too_so_a_role_takes_one_line() {
         let painted = painting().faint("above\nbelow");

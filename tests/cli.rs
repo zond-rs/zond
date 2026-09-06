@@ -1600,12 +1600,32 @@ fn a_detection_written_by_hand_is_compiled_and_listed() {
 
     let out = stdout(&listed);
     assert!(out.contains("cli-test-detection"), "{out}");
-    assert!(out.contains("flow"), "{out}");
     assert!(out.contains("active-benign"), "{out}");
     assert!(
         !out.contains("redis-unauth-access"),
         "the built-in corpus was listed anyway: {out}"
     );
+
+    // Which tier runs it is on the stable stream rather than in a drawn column,
+    // so that is where this asks for it. The drawn listing stamps the build that
+    // compiled the corpus instead: the tier is how a detection is implemented,
+    // and a person looking one up is after what it does.
+    let piped = zond_in(
+        &home,
+        &[
+            "--presentation",
+            "pipe",
+            "detections",
+            "--detections",
+            checks.to_str().expect("a utf-8 path"),
+            "--only-named-detections",
+        ],
+    );
+    assert_eq!(status(&piped), 0, "{}", stderr(&piped));
+
+    let listing = stdout(&piped);
+    let fields: Vec<&str> = listing.trim_end().split('\t').collect();
+    assert_eq!(fields[2], "flow", "{listing:?}");
 }
 
 /// A detection that will not compile stops the command, naming the file.
