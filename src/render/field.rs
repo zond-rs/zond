@@ -56,6 +56,23 @@ pub(crate) fn timestamp(time: std::time::SystemTime) -> String {
     zond_engine::format::time::rfc3339(time)
 }
 
+/// A version with its patch component dropped.
+///
+/// Everything before the second dot, so `0.14.0` and `0.14.0-rc1` both read
+/// `0.14`. A patch release changes neither what a detection does nor what a
+/// build finds, so the digit that moves for one is a digit nobody reads on a
+/// line that carries it every run.
+///
+/// The whole version is still written down where it is checked against
+/// something: a journal entry records the engine that produced it, and so does
+/// every export.
+pub(crate) fn major_minor(version: &str) -> &str {
+    match version.match_indices('.').nth(1) {
+        Some((at, _)) => &version[..at],
+        None => version,
+    }
+}
+
 /// A timestamp in the reader's own timezone, for a line somebody reads.
 ///
 /// The same instant [`timestamp`] gives, in the shape a person reads rather than
@@ -2494,6 +2511,16 @@ pub(crate) fn spoken_vendor(vendor: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    /// A patch component is a digit that moves for a release changing no
+    /// detection's behaviour, so it is not on a line a person reads.
+    #[test]
+    fn a_version_is_shown_to_major_and_minor() {
+        assert_eq!(major_minor("0.14.0"), "0.14");
+        assert_eq!(major_minor("0.14.0-rc1"), "0.14");
+        assert_eq!(major_minor("1.2"), "1.2");
+        assert_eq!(major_minor("7"), "7");
+    }
+
     // -----------------------------------------------------------------------
     // Who said the host is there
     // -----------------------------------------------------------------------

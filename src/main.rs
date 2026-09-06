@@ -125,8 +125,8 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     if cli.command.watches_the_network() {
         tracing::info!(
             "zond-cli {} \u{b7} zond-engine {} \u{b7} {}",
-            env!("CARGO_PKG_VERSION"),
-            zond_engine::report::ENGINE_VERSION,
+            render::field::major_minor(env!("CARGO_PKG_VERSION")),
+            render::field::major_minor(zond_engine::report::ENGINE_VERSION),
             render::field::moment(std::time::SystemTime::now())
         );
     }

@@ -178,7 +178,7 @@ fn drawn(
         // How it works and when it fires, under what it finds: a question asked
         // after the one the first line answers, and faint for the same reason a
         // label is.
-        let mut how = vec![format!("engine {}", major_minor(ENGINE_VERSION))];
+        let mut how = vec![format!("engine {}", field::major_minor(ENGINE_VERSION))];
         how.extend(gate(&detection.gate));
         writeln!(
             out,
@@ -287,18 +287,6 @@ fn rank(class: Class) -> u8 {
         // intrusiveness is not a safe one, and a summary that filed it at the
         // quiet end would be the wrong way to be wrong about it.
         _ => u8::MAX,
-    }
-}
-
-/// A version with its patch component dropped.
-///
-/// Everything before the second dot, so `0.14.0` and `0.14.0-rc1` both read
-/// `0.14`. A patch release changes no detection's behaviour, so the digit that
-/// moves for one is a digit on every line of the listing saying nothing.
-fn major_minor(version: &str) -> &str {
-    match version.match_indices('.').nth(1) {
-        Some((at, _)) => &version[..at],
-        None => version,
     }
 }
 
@@ -468,7 +456,7 @@ mod tests {
                 detection.id
             );
             assert!(
-                how.contains(&format!("engine {}", major_minor(ENGINE_VERSION))),
+                how.contains(&format!("engine {}", field::major_minor(ENGINE_VERSION))),
                 "the second line of {} does not stamp the build: {text}",
                 detection.id
             );
@@ -566,16 +554,6 @@ mod tests {
     #[test]
     fn an_empty_catalogue_says_only_its_count() {
         assert_eq!(summary(&[]), "0 detections");
-    }
-
-    /// A patch component is a digit that moves for a release changing no
-    /// detection's behaviour, so it is not on a line a person reads.
-    #[test]
-    fn a_version_is_shown_to_major_and_minor() {
-        assert_eq!(major_minor("0.14.0"), "0.14");
-        assert_eq!(major_minor("0.14.0-rc1"), "0.14");
-        assert_eq!(major_minor("1.2"), "1.2");
-        assert_eq!(major_minor("7"), "7");
     }
 
     /// The tier and the detection's own version are still on the stable stream,
