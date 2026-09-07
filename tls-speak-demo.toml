@@ -1,0 +1,32 @@
+# A throwaway detection to prove TLS speak + {host} seeding live. Not for the
+# corpus. It opens its own connection and speaks HTTP; on an ssl/http port that
+# connection now runs through a handshake, so a finding here on 443 is the new
+# path working. Before the change this drew nothing on 443, it spoke plaintext
+# to a TLS port. Run it with --detections against a host that answers HTTPS.
+
+[detection]
+id      = "tls-speak-demo"
+version = "0.1.0"
+title   = "HTTP reachable (TLS-speak demo)"
+
+[detection.when]
+speaks = "http"                     # fits http on 80 and ssl/http on 443 alike
+
+[detection.capabilities]
+class           = "active-benign"
+speak           = "target"
+max_bytes       = 8192
+max_millis      = 4000
+max_connections = 1
+
+[[step]]
+send   = "HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+expect = "HTTP/"
+bind   = { server = "[Ss]erver:[ ]*(?<server>[^\r\n]+)" }
+
+  [[step.finding]]
+  when         = "matched"
+  severity     = "info"
+  summary      = "port {port} answered HTTP through its own transport"
+  detail       = "the detection reached {host}:{port} and read: {server}"
+  excerpt_from = "$response"
