@@ -1761,13 +1761,38 @@ pub(crate) fn findings(host: &Host, floor: Risk) -> FindingListing {
     FindingListing { rows, withheld }
 }
 
+/// The most CVE identifiers one row spells out before counting the rest.
+///
+/// A finding correlated against a real vulnerability catalogue carries twenty,
+/// and twenty identifiers is not a table cell — it is four wrapped lines that
+/// push everything else off the screen. Two is enough to place the finding in
+/// time, which is most of what an identifier tells a reader at a glance: an
+/// OpenSSH whose oldest is from 2015 is an OpenSSH from 2015.
+///
+/// The rest are counted, not dropped. `--reason` prints the excerpt, which names
+/// the worst three in severity order, and the report carries all of them.
+const MAX_CITED_CVES: usize = 2;
+
 /// One finding as a [`Claim`], with its citations joined.
+///
+/// CVE identifiers are capped and everything else is kept whole. A CWE is one
+/// token and says what kind of weakness this is, which is worth a glance and is
+/// what every other row in the table shows; cutting citations by position would
+/// drop it, because a reference set is ordered and `CWE-` sorts after `CVE-`.
 fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Finding) -> Claim {
-    let mut references = finding.references().map(reference_text).peekable();
-    let reference = references
-        .peek()
-        .is_some()
-        .then(|| references.collect::<Vec<_>>().join("  "));
+    let (cve_refs, other_refs): (Vec<&Reference>, Vec<&Reference>) = finding
+        .references()
+        .partition(|reference| matches!(reference, Reference::Cve(_)));
+    let cves: Vec<String> = cve_refs.into_iter().map(reference_text).collect();
+    let others: Vec<String> = other_refs.into_iter().map(reference_text).collect();
+
+    let mut cited: Vec<String> = cves.iter().take(MAX_CITED_CVES).cloned().collect();
+    if cves.len() > MAX_CITED_CVES {
+        cited.push(format!("+{}", cves.len() - MAX_CITED_CVES));
+    }
+    cited.extend(others);
+
+    let reference = (!cited.is_empty()).then(|| cited.join("  "));
 
     let excerpt = finding.excerpt().as_str();
 
