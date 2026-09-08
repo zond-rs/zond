@@ -256,6 +256,14 @@ fn risk_lines(host: &Host, showing: field::Showing) -> Vec<String> {
                 line.push_str("  ");
                 line.push_str(reference);
             }
+            // Inline, where the fancy renderer gives them a line of their own.
+            // This format is one line per thing, for a reader who is grepping
+            // rather than looking, and a second line would break that for the
+            // only findings that carry CVEs. They are capped either way.
+            if let Some(cves) = &view.cves {
+                line.push_str("  ");
+                line.push_str(cves);
+            }
             if let Some(confidence) = view.confidence {
                 line.push_str("  [");
                 line.push_str(confidence);

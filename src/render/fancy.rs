@@ -473,6 +473,14 @@ fn findings(
         // which is also what lets the block measure it. Painting here would hand
         // the block escape bytes to escape again, and they would be drawn.
         let mut detail = Vec::new();
+        // Always, not behind a flag. A correlated finding says a host has
+        // forty-four known vulnerabilities and the first question is which; an
+        // answer that needs a second run with a flag on is not an answer. It is
+        // one line because it is capped, which is the whole reason it can be
+        // shown by default.
+        if let Some(cves) = &view.cves {
+            detail.push(Detail::new("cve", cves.clone()));
+        }
         if showing.excerpts
             && let Some(seen) = &view.evidence
         {
@@ -956,10 +964,16 @@ mod tests {
         host
     }
 
-    /// The worst finding leads, its severity and subject in the line, and its
-    /// reference beside the title.
+    /// The worst finding leads, its severity and subject in the line, and the
+    /// CVEs it cites on a line beneath.
+    ///
+    /// Beneath rather than beside: a correlated finding cites every CVE it
+    /// matched, and forty-four identifiers on a row buries the finding they
+    /// belong to and every row under it. The row keeps the shape every other row
+    /// has — severity, subject, title, weakness class — and the identifiers get
+    /// their own line, capped and worst first.
     #[test]
-    fn a_finding_is_drawn_worst_first_with_its_subject_and_reference() {
+    fn a_finding_is_drawn_worst_first_with_its_subject_and_its_cves_beneath() {
         let text = block(&at_risk());
 
         // Past the header, which carries a risk count of its own now.
@@ -972,9 +986,16 @@ mod tests {
         assert!(
             risks[0].contains("CRIT")
                 && risks[0].contains("443/tcp")
-                && risks[0].contains("Log4Shell")
-                && risks[0].contains("CVE-2021-44228"),
-            "the critical port finding should lead, with its subject and CVE: {text}"
+                && risks[0].contains("Log4Shell"),
+            "the critical port finding should lead, with its subject: {text}"
+        );
+        assert!(
+            !risks[0].contains("CVE-2021-44228"),
+            "the identifiers are not on the row: {text}"
+        );
+        assert!(
+            risks[1].contains("cve") && risks[1].contains("CVE-2021-44228"),
+            "they are on the line under it: {text}"
         );
         assert!(
             risks.iter().any(|line| line.contains("MED")

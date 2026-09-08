@@ -1546,6 +1546,10 @@ pub(crate) struct FindingView {
     pub pad: usize,
     /// `CVE-2021-44228`, where the finding cites anything.
     pub reference: Option<String>,
+    /// The CVEs it cites, worst first and capped, drawn on a line of its own
+    /// under the row. Apart from `reference` because a list of identifiers is
+    /// data rather than a label, and a row is a label.
+    pub cves: Option<String>,
     /// What the detection saw, bounded to one line. Shown under `--reason`,
     /// which is the flag for the evidence behind a verdict.
     pub evidence: Option<String>,
@@ -1633,6 +1637,8 @@ struct Claim {
     confidence: Confidence,
     title: String,
     reference: Option<String>,
+    /// The CVEs it cites, worst first and capped, drawn under the row.
+    cves: Option<String>,
     evidence: Option<String>,
     remediation: Option<String>,
 }
@@ -1650,6 +1656,7 @@ struct Fold {
     confidence: Confidence,
     title: String,
     reference: Option<String>,
+    cves: Option<String>,
     evidence: Option<String>,
     remediation: Option<String>,
 }
@@ -1750,6 +1757,7 @@ pub(crate) fn findings(host: &Host, floor: Risk) -> FindingListing {
             pad: title_width.saturating_sub(width(&key.title)),
             title: key.title,
             reference: key.reference,
+            cves: key.cves,
             evidence: key.evidence,
             confidence: (key.confidence != Confidence::Certain)
                 .then(|| wire::confidence_name(key.confidence)),
@@ -1761,38 +1769,42 @@ pub(crate) fn findings(host: &Host, floor: Risk) -> FindingListing {
     FindingListing { rows, withheld }
 }
 
-/// The most CVE identifiers one row spells out before counting the rest.
+/// The most CVE identifiers a row names before counting the rest.
 ///
-/// A finding correlated against a real vulnerability catalogue carries twenty,
-/// and twenty identifiers is not a table cell — it is four wrapped lines that
-/// push everything else off the screen. Two is enough to place the finding in
-/// time, which is most of what an identifier tells a reader at a glance: an
-/// OpenSSH whose oldest is from 2015 is an OpenSSH from 2015.
+/// A finding correlated against the vulnerability catalogue cites every CVE it
+/// matched, which for an OpenSSH from 2015 is forty-four. Three, worst first,
+/// and the rest counted.
 ///
-/// The rest are counted, not dropped. `--reason` prints the excerpt, which names
-/// the worst three in severity order, and the report carries all of them.
-const MAX_CITED_CVES: usize = 2;
+/// Worst rather than lowest-numbered because a finding states its references in
+/// the order its detection ranked them, and the correlator ranks by severity.
+/// Three of forty-four chosen by identifier would be a fact about numbering.
+const MAX_CITED_CVES: usize = 3;
 
-/// One finding as a [`Claim`], with its citations joined.
+/// One finding as a [`Claim`], with its citations split.
 ///
-/// CVE identifiers are capped and everything else is kept whole. A CWE is one
-/// token and says what kind of weakness this is, which is worth a glance and is
-/// what every other row in the table shows; cutting citations by position would
-/// drop it, because a reference set is ordered and `CWE-` sorts after `CVE-`.
+/// CVEs are held apart from everything else because they do not belong on the
+/// same line. A CWE is one token naming the kind of weakness, which is what
+/// every other row in the table carries beside its title; a CVE list is data,
+/// and forty-four identifiers wrapped across a row buries the finding they
+/// belong to and every row under it. So the CWE stays on the row and the CVEs
+/// go beneath it, where `evidence` and `remedy` already sit.
 fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Finding) -> Claim {
     let (cve_refs, other_refs): (Vec<&Reference>, Vec<&Reference>) = finding
         .references()
         .partition(|reference| matches!(reference, Reference::Cve(_)));
-    let cves: Vec<String> = cve_refs.into_iter().map(reference_text).collect();
-    let others: Vec<String> = other_refs.into_iter().map(reference_text).collect();
 
-    let mut cited: Vec<String> = cves.iter().take(MAX_CITED_CVES).cloned().collect();
-    if cves.len() > MAX_CITED_CVES {
-        cited.push(format!("+{}", cves.len() - MAX_CITED_CVES));
+    let mut cited: Vec<String> = cve_refs
+        .iter()
+        .take(MAX_CITED_CVES)
+        .map(|reference| reference_text(reference))
+        .collect();
+    if cve_refs.len() > MAX_CITED_CVES {
+        cited.push(format!("+{}", cve_refs.len() - MAX_CITED_CVES));
     }
-    cited.extend(others);
+    let cves = (!cited.is_empty()).then(|| cited.join("  "));
 
-    let reference = (!cited.is_empty()).then(|| cited.join("  "));
+    let others: Vec<String> = other_refs.into_iter().map(reference_text).collect();
+    let reference = (!others.is_empty()).then(|| others.join("  "));
 
     let excerpt = finding.excerpt().as_str();
 
@@ -1802,6 +1814,7 @@ fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Fin
         confidence: finding.confidence(),
         title: finding.title().to_owned(),
         reference,
+        cves,
         evidence: (!excerpt.trim().is_empty()).then(|| one_line(excerpt)),
         remediation: finding.remediation().map(ToOwned::to_owned),
     }
@@ -1841,6 +1854,7 @@ fn fold(claims: Vec<Claim>) -> Vec<Folded> {
             confidence: claim.confidence,
             title: claim.title,
             reference: claim.reference,
+            cves: claim.cves,
             evidence: claim.evidence,
             remediation: claim.remediation,
         };
