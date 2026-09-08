@@ -226,23 +226,35 @@ fn intrusiveness(style: Style, class: Class, label: &str) -> String {
 
 /// What the catalogue came to, for the commentary stream.
 ///
-/// The count, then what it is made of, worst first — the same ordering the risks
+/// The count, then what it is made of, worst first, the same ordering the risks
 /// under a host take, and for the same reason: somebody deciding whether to point
 /// this corpus at a network is asking what the loudest thing in it is before they
 /// ask anything else.
 ///
 /// A corpus of one class says so in a clause rather than repeating its own total,
 /// since `40 detections: 40 passive` is a number printed twice.
-pub(crate) fn summary(detections: &[DetectionSummary]) -> String {
+///
+/// `corpus` is how many compiled, against which `detections` is what a filter
+/// left. Where the two differ the line says so, `12 of 95 detections`, because
+/// the counts under a narrowed listing describe the answer to a question and not
+/// the corpus, and a reader who forgot which is which reads the wrong one
+/// silently.
+pub(crate) fn summary(detections: &[DetectionSummary], corpus: usize) -> String {
     let total = detections.len();
-    let counted = format!(
-        "{total} {}",
-        if total == 1 {
+    // The noun agrees with the number in front of it, which is the corpus once
+    // the line is naming two: `1 of 95 detections`, not `1 of 95 detection`.
+    let named = |count: usize| {
+        if count == 1 {
             "detection"
         } else {
             "detections"
         }
-    );
+    };
+    let counted = if total == corpus {
+        format!("{total} {}", named(total))
+    } else {
+        format!("{total} of {corpus} {}", named(corpus))
+    };
 
     let mut tally: Vec<(Class, usize)> = Vec::new();
     for detection in detections {
@@ -409,55 +421,93 @@ mod tests {
         )
     }
 
+    /// The listing split into one block of lines an entry.
+    ///
+    /// A block opens on the line carrying the id, which is the only line
+    /// indented to the gutter, and runs to the next one. Split by that rather
+    /// than by counting two lines an entry: a title wider than the terminal
+    /// folds into the title column, and the entry is still one entry.
+    fn blocks<'a>(text: &'a str, listing: &[DetectionSummary]) -> Vec<Vec<&'a str>> {
+        let gutter = " ".repeat(GUTTER);
+        let mut blocks: Vec<Vec<&str>> = Vec::new();
+
+        for line in text.lines() {
+            if line.starts_with(&gutter) && !line[GUTTER..].starts_with(' ') {
+                blocks.push(vec![line]);
+            } else {
+                blocks
+                    .last_mut()
+                    .unwrap_or_else(|| panic!("the listing opens indented: {text}"))
+                    .push(line);
+            }
+        }
+
+        assert_eq!(blocks.len(), listing.len(), "one block an entry: {text}");
+        blocks
+    }
+
+    /// Where a line's text begins.
+    fn indent(line: &str) -> usize {
+        line.len() - line.trim_start().len()
+    }
+
     /// The columns are measured across the catalogue, so entries whose ids and
     /// classes are of very different lengths still start their titles in one
-    /// place — which is the column the eye runs down.
+    /// place, which is the column the eye runs down. A title that folded starts
+    /// there too, on every line of it.
     #[test]
     fn every_title_starts_in_one_column() {
         let listing = corpus();
         let text = drawn_bare(&listing);
 
-        let columns: BTreeSet<usize> = listing
-            .iter()
-            .map(|detection| {
-                text.lines()
-                    .find_map(|line| line.find(detection.title.as_str()))
-                    .unwrap_or_else(|| panic!("no title drawn for {}: {text}", detection.id))
-            })
-            .collect();
+        let mut columns = BTreeSet::new();
+        for (block, detection) in blocks(&text, &listing).iter().zip(&listing) {
+            // Read off the lines that hang under the head, which is where the
+            // rest of a folded title and the line saying how it works both sit,
+            // and then measured against the head rather than searched for in it:
+            // a title's first word can occur in the id it is drawn beside.
+            for line in &block[1..] {
+                columns.insert(indent(line));
+            }
+
+            let column = indent(block[block.len() - 1]);
+            let opening = detection
+                .title
+                .split_whitespace()
+                .next()
+                .expect("a title has a word in it");
+            let head: String = block[0].chars().skip(column).collect();
+            assert!(
+                head.starts_with(opening),
+                "the title of {} does not start in the title's column: {:?}",
+                detection.id,
+                block[0]
+            );
+        }
 
         assert_eq!(columns.len(), 1, "the titles are not in one column: {text}");
     }
 
-    /// Two lines an entry: what it is, then how it works. The second starts in
-    /// the title's column, so a block of two reads as one thing.
+    /// What it finds first, then how it works, in the title's column, so an
+    /// entry reads as one block however far its title ran.
     #[test]
     fn how_it_works_hangs_under_what_it_finds() {
         let listing = corpus();
         let text = drawn_bare(&listing);
-        let lines: Vec<&str> = text.lines().collect();
+        let stamp = format!("engine {}", field::major_minor(ENGINE_VERSION));
 
-        assert_eq!(
-            lines.len(),
-            listing.len() * 2,
-            "an entry is two lines: {text}"
-        );
-
-        let title_column = lines[0]
-            .find(listing[0].title.as_str())
-            .unwrap_or_else(|| unreachable!());
-
-        for (index, detection) in listing.iter().enumerate() {
-            let how = lines[index * 2 + 1];
-            assert_eq!(
-                how.len() - how.trim_start().len(),
-                title_column,
-                "the second line of {} does not start in the title's column: {text}",
+        for (block, detection) in blocks(&text, &listing).iter().zip(&listing) {
+            let how = block.last().expect("a block opens with a line");
+            assert!(
+                how.contains(&stamp),
+                "the last line of {} does not stamp the build: {text}",
                 detection.id
             );
             assert!(
-                how.contains(&format!("engine {}", field::major_minor(ENGINE_VERSION))),
-                "the second line of {} does not stamp the build: {text}",
+                block[..block.len() - 1]
+                    .iter()
+                    .all(|line| !line.contains(&stamp)),
+                "{} stamps the build more than once: {text}",
                 detection.id
             );
         }
@@ -470,14 +520,13 @@ mod tests {
     fn every_entry_carries_a_class() {
         let listing = corpus();
         let text = drawn_bare(&listing);
-        let lines: Vec<&str> = text.lines().collect();
 
-        for (index, detection) in listing.iter().enumerate() {
-            let drawn = lines[index * 2];
+        for (block, detection) in blocks(&text, &listing).iter().zip(&listing) {
             assert!(
-                drawn.contains(detection.class.label()),
-                "{} is drawn without its class: {drawn:?}",
-                detection.id
+                block[0].contains(detection.class.label()),
+                "{} is drawn without its class: {:?}",
+                detection.id,
+                block[0]
             );
         }
 
@@ -495,7 +544,7 @@ mod tests {
     #[test]
     fn the_summary_counts_worst_first() {
         let listing = corpus();
-        let line = summary(&listing);
+        let line = summary(&listing, listing.len());
 
         assert!(
             line.starts_with(&format!("{} detections", listing.len())),
@@ -544,7 +593,7 @@ mod tests {
             !quiet.is_empty(),
             "the corpus has no passive detection to fold"
         );
-        let line = summary(&quiet);
+        let line = summary(&quiet, quiet.len());
         assert!(line.ends_with(", all passive"), "{line}");
         assert!(!line.contains(':'), "the total was printed twice: {line}");
     }
@@ -553,7 +602,47 @@ mod tests {
     /// colon with nothing after it.
     #[test]
     fn an_empty_catalogue_says_only_its_count() {
-        assert_eq!(summary(&[]), "0 detections");
+        assert_eq!(summary(&[], 0), "0 detections");
+    }
+
+    /// A listing a filter narrowed says what it was narrowed from, so a page of
+    /// twelve is not read as a corpus of twelve.
+    #[test]
+    fn a_narrowed_listing_says_what_it_was_narrowed_from() {
+        let listing = corpus();
+        let quiet: Vec<DetectionSummary> = listing
+            .iter()
+            .filter(|detection| detection.class == Class::Passive)
+            .cloned()
+            .collect();
+
+        assert!(!quiet.is_empty(), "the corpus has no passive detection");
+        let line = summary(&quiet, listing.len());
+        assert!(
+            line.starts_with(&format!("{} of {} ", quiet.len(), listing.len())),
+            "{line}"
+        );
+    }
+
+    /// The noun agrees with the number in front of it, so one row out of many
+    /// is one of ninety-five detections rather than one of ninety-five
+    /// detection.
+    #[test]
+    fn the_noun_agrees_with_the_number_beside_it() {
+        let listing = corpus();
+        let one: Vec<DetectionSummary> = listing[..1].to_vec();
+
+        let narrowed = summary(&one, listing.len());
+        assert!(
+            narrowed.starts_with(&format!("1 of {} detections", listing.len())),
+            "{narrowed}"
+        );
+
+        assert!(
+            summary(&one, 1).starts_with("1 detection,"),
+            "{}",
+            summary(&one, 1)
+        );
     }
 
     /// The tier and the detection's own version are still on the stable stream,

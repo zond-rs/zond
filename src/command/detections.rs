@@ -44,6 +44,7 @@ use zond_engine::{PortSet, scan};
 use crate::cli::{
     DetectionArgs, DetectionsAction, DetectionsArgs, KeygenArgs, ReplayArgs, SignArgs, TestArgs,
 };
+use crate::command::{catalogue, page};
 use crate::diagnostics::Verbosity;
 use crate::error::Error;
 use crate::exit::Outcome;
@@ -135,11 +136,30 @@ pub(crate) fn run(
     }
 
     let corpus = corpus(&args.detections)?;
-    let listing = corpus.listing();
+    let compiled = corpus.listing();
+    let whole = compiled.len();
+
+    // Narrowed and ordered before anything is measured, because the catalogue's
+    // columns are measured across what it draws: a listing of one class should
+    // not carry the width of a class name that was filtered out.
+    let listing = catalogue::select(compiled, &args.catalogue);
+
+    if listing.is_empty() && whole > 0 {
+        // The conditions read back, not a bare absence. Somebody who asked for
+        // `--class dos` against a corpus that has none is owed the reason their
+        // screen is empty, and the reason is what they typed.
+        tracing::info!(
+            "no detection among the {whole} matches {}",
+            catalogue::asked_for(&args.catalogue)
+        );
+        return Ok(Outcome::Complete);
+    }
+
+    let page = page::paginate(&args.page, presentation, listing.len())?;
 
     let mut out = std::io::stdout().lock();
     render::detections::list(
-        &listing,
+        &listing[page.shown.clone()],
         presentation,
         verbosity,
         &mut out,
@@ -156,7 +176,13 @@ pub(crate) fn run(
         let _ = writeln!(std::io::stderr());
     }
 
-    tracing::info!("{}", render::detections::summary(&listing));
+    // What the whole catalogue came to first, then where in it this page fell.
+    // The counts describe everything the filter admitted rather than the rows on
+    // screen, so a page of ten out of ninety is not read as a corpus of ten.
+    tracing::info!("{}", render::detections::summary(&listing, whole));
+    if let Some(footer) = page::footer(&page, listing.len(), "detections") {
+        tracing::info!("{footer}");
+    }
 
     Ok(Outcome::Complete)
 }

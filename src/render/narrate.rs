@@ -359,8 +359,6 @@ impl Narrator {
             })?;
         }
 
-        self.ceiling_note(report)?;
-
         // The result most likely to be read as a broken tool rather than an
         // answer: nothing scanned, and no reason given for it.
         //
@@ -421,28 +419,6 @@ impl Narrator {
         }
 
         self.out.flush()
-    }
-
-    /// Detections a higher ceiling would have run on what this scan reached but
-    /// the ceiling in force held back.
-    ///
-    /// The engine counts only detections that gated onto a port this scan
-    /// reached, so the line appears on a box where raising the ceiling would find
-    /// more and stays silent on one where it would not. The remedy names the
-    /// flag, which the front end maps from the class the hint carries.
-    fn ceiling_note(&mut self, report: &ScanReport) -> io::Result<()> {
-        let Some(hint) = report.ceiling_suppressed() else {
-            return Ok(());
-        };
-        let count = hint.matched();
-        self.note(&format!(
-            "{count} {} matched a port here but {} above the detection ceiling. \
-             Re-run with --detection {} to run {}.",
-            plural(count as u128, "detection"),
-            if count == 1 { "sits" } else { "sit" },
-            hint.raise_to().label(),
-            if count == 1 { "it" } else { "them" },
-        ))
     }
 }
 

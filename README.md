@@ -512,6 +512,21 @@ wrong with it. `zond detections` lists what a scan would run:
 zond detections
 ```
 
+The corpus runs to ninety-odd and grows with every release, so the listing comes
+ten at a time and narrows the way any catalogue should:
+
+```bash
+zond detections --all                           # every one of them
+zond detections --page 2                        # the next ten
+zond detections --search redis                  # by id or by title
+zond detections --class exploit --class dos     # what a scan will not run
+zond detections --service http --sort class     # written for HTTP, loudest first
+```
+
+Each condition narrows and a repeated one widens itself, `--sort` takes `id`,
+`class`, `tier` or `title`, and none of it changes what a scan runs. `--pipe`
+hands the whole selection to a program, unpaged.
+
 The corpus is not fixed. A detection is a TOML document, and `--detections`
 takes a file or a directory of them:
 

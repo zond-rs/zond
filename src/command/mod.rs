@@ -19,12 +19,14 @@
 //! Nothing here formats anything, and nothing here decides an exit code. Those
 //! belong to [`render`](crate::render) and [`exit`](crate::exit).
 
+pub(crate) mod catalogue;
 pub(crate) mod detections;
 pub(crate) mod diff;
 pub(crate) mod discover;
 pub(crate) mod journal;
 pub(crate) mod listen;
 pub(crate) mod merge;
+pub(crate) mod page;
 pub(crate) mod read;
 pub(crate) mod scan;
 

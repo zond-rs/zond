@@ -220,18 +220,25 @@ fn summarise(plan: &TargetMap) -> String {
     }
 }
 
-/// The ports to probe: `--ports`, then `--top-ports`, then the settings file,
-/// then the engine's ranked default.
+/// The ports to probe: `--ports`, then the two top-ports flags, then the
+/// settings file, then the engine's ranked default.
 ///
-/// `--top-ports` outranks the settings file deliberately. A flag typed on the
-/// command line is a decision about this run, and a default written in a
-/// configuration file is a decision about every other one.
+/// The top-ports flags combine, so `--top-ports 100 --top-ports-udp 50` probes
+/// both lists and either one alone probes only its own transport. Naming one of
+/// them is naming the whole port set for this run, which is why the TCP default
+/// is not folded back in when only the UDP flag is given.
+///
+/// Either outranks the settings file deliberately. A flag typed on the command
+/// line is a decision about this run, and a default written in a configuration
+/// file is a decision about every other one.
 fn ports(args: &ScanArgs, configured: Option<PortSet>) -> PortSet {
     if let Some(ports) = args.ports.clone() {
         return ports;
     }
-    if let Some(count) = args.top_ports {
-        return PortSet::top_tcp(count);
+    if args.top_ports.is_some() || args.top_ports_udp.is_some() {
+        let tcp = PortSet::top_tcp(args.top_ports.unwrap_or(0));
+        let udp = PortSet::top_udp(args.top_ports_udp.unwrap_or(0));
+        return tcp.union(&udp);
     }
     configured.unwrap_or_else(|| PortSet::top_tcp(DEFAULT_TOP_PORTS))
 }

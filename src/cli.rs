@@ -177,6 +177,156 @@ pub(crate) struct DetectionsArgs {
     /// Which detections to compile.
     #[command(flatten)]
     pub detections: DetectionArgs,
+
+    /// Which of the compiled ones to list, and in what order.
+    #[command(flatten)]
+    pub catalogue: CatalogueArgs,
+
+    /// How much of the listing to show at once.
+    #[command(flatten)]
+    pub page: PageArgs,
+}
+
+/// Which detections a listing shows, and in what order.
+///
+/// Attached to the listing rather than to [`DetectionArgs`], which every command
+/// that runs detections flattens. Narrowing a catalogue is reading; narrowing
+/// what a scan runs is `--detection` and the gates, and a flag that did both
+/// would be a way to believe a check ran when nothing had compiled it.
+///
+/// Every condition here ANDs, and a repeatable one ORs within itself:
+/// `--class exploit --class dos --service http` is the loud detections that
+/// name HTTP.
+#[derive(Debug, Args, Default)]
+pub(crate) struct CatalogueArgs {
+    /// List only detections whose id or title contains this text.
+    ///
+    /// Case-insensitive, and matched against both, so `--search redis` finds
+    /// `redis-unauth` by the id you would name on a command line and finds
+    /// anything whose title says Redis without you knowing what it is called.
+    #[arg(long, value_name = "TEXT")]
+    pub search: Option<String>,
+
+    /// List only detections of this class. Repeatable.
+    ///
+    /// The class is what a detection will do to the target, and a corpus is read
+    /// for that before anything else: `--class exploit --class dos` is the whole
+    /// of what a scan will not run until an operator raises the ceiling.
+    #[arg(long, value_name = "CLASS")]
+    pub class: Vec<ClassName>,
+
+    /// List only detections the named tier runs. Repeatable.
+    ///
+    /// `flow` for a declarative sequence of probes, `compute` for a sandboxed
+    /// module, `host` for a correlation across a host's ports. Only `compute`
+    /// records a tape, so this is also how to see what `replay` will have.
+    #[arg(long, value_name = "TIER")]
+    pub tier: Vec<TierName>,
+
+    /// List only detections whose gate names this service.
+    ///
+    /// Matched against every service a gate names and against the protocol it
+    /// asks the port to speak, so `--service http` finds the ones gated on the
+    /// `http` service, the ones that accept it among several, and the ones
+    /// written about anything speaking HTTP.
+    #[arg(long, value_name = "NAME")]
+    pub service: Option<String>,
+
+    /// List only detections whose gate names this port.
+    ///
+    /// The number as the gate spells it, which is not every detection that can
+    /// fire there: one gated on a service runs wherever that service was
+    /// identified. Use it to find what a port number was written about.
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+
+    /// The order to list them in. `id` by default.
+    ///
+    /// `class` is loudest first, the order the summary counts them in, so the
+    /// detections an operator has to decide about come first. `tier` is the
+    /// order the tiers run in, which is the order the corpus itself is in.
+    #[arg(long, value_name = "FIELD", default_value = "id")]
+    pub sort: SortBy,
+
+    /// Reverse whatever order `--sort` asked for.
+    #[arg(long)]
+    pub reverse: bool,
+}
+
+/// A detection class, as a command line spells one.
+///
+/// Its own enum rather than the engine's `Class`, which is `non_exhaustive` and
+/// carries no parser. What a build can be asked to filter on is the set of
+/// classes it has a word for, and clap lists them in `--help` and completes
+/// them in a shell for free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ClassName {
+    /// Sends nothing of its own; recombines ports the scan already settled.
+    Derived,
+    /// Reads bytes the scan already gathered.
+    Passive,
+    /// Speaks to the service, and asks it for nothing it would not tell anyone.
+    ActiveBenign,
+    /// Changes something on the target.
+    ActiveMutating,
+    /// Triggers a weakness to confirm it.
+    Exploit,
+    /// May take the service down.
+    Dos,
+}
+
+impl ClassName {
+    /// The engine's spelling of it.
+    pub(crate) const fn class(self) -> zond_engine::detect::manifest::Class {
+        use zond_engine::detect::manifest::Class;
+
+        match self {
+            ClassName::Derived => Class::Derived,
+            ClassName::Passive => Class::Passive,
+            ClassName::ActiveBenign => Class::ActiveBenign,
+            ClassName::ActiveMutating => Class::ActiveMutating,
+            ClassName::Exploit => Class::Exploit,
+            ClassName::Dos => Class::Dos,
+        }
+    }
+}
+
+/// Which tier runs a detection, as a command line spells one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum TierName {
+    /// A declarative sequence of probes and matches, carrying no code.
+    Flow,
+    /// A sandboxed module, reaching the network through granted verbs alone.
+    Compute,
+    /// A correlation across the ports of one host.
+    Host,
+}
+
+impl TierName {
+    /// The engine's spelling of it.
+    pub(crate) const fn tier(self) -> zond_engine::detect::bundle::Tier {
+        use zond_engine::detect::bundle::Tier;
+
+        match self {
+            TierName::Flow => Tier::Flow,
+            TierName::Compute => Tier::Compute,
+            TierName::Host => Tier::Host,
+        }
+    }
+}
+
+/// What a catalogue is ordered by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub(crate) enum SortBy {
+    /// The id, alphabetically: the column the eye runs down.
+    #[default]
+    Id,
+    /// The class, loudest first.
+    Class,
+    /// The tier, in the order the tiers run.
+    Tier,
+    /// The title, alphabetically.
+    Title,
 }
 
 /// What `zond detections` was asked to do beyond listing.
@@ -312,8 +462,12 @@ pub(crate) struct SignArgs {
 fn detections_help() -> String {
     "\
 Examples:
+  zond detections                             the first page of the corpus this build ships
+  zond detections --all                       every one of them
+  zond detections --search redis              the ones about Redis, by id or by title
+  zond detections --class exploit --class dos the loud ones, which a scan will not run
+  zond detections --service http --sort class what is written for HTTP, loudest first
   zond detections --detections ./checks       compile a directory and list what is in it
-  zond detections                             list the corpus this build ships
   zond detections --detections ./checks --only-named-detections
                                               just yours, without the built-in corpus
   zond detections keygen ~/.zond/acme         a key to publish under
@@ -328,6 +482,14 @@ What it does:
   The class matters as much as the gate. A scan runs detections up to the
   ceiling `--detection` names, `active-benign` by default, so a detection above
   it is listed here and still does not run until an operator raises the ceiling.
+
+Finding one:
+  The corpus is long enough to page, ten at a time, `--page 2` for the next ten
+  and `--all` for the lot. `--search`, `--class`, `--tier`, `--service` and
+  `--port` narrow it, each one ANDing with the rest and a repeated one widening
+  itself, and `--sort` orders what is left. None of them changes what a scan
+  runs: this is reading, and `--pipe` hands the whole selection to a program
+  unpaged.
 
 Writing one:
   A detection is TOML. `[[step]]` makes it a flow: a bounded sequence of probes
@@ -590,15 +752,16 @@ impl ExportArgs {
 /// meant "show everything" on one subcommand and "delete everything" on the
 /// next is not a convenience.
 ///
-/// So the set is attached in the two places a listing happens: `zond journal`,
-/// which lists when nothing else is asked, and `zond journal list`.
+/// So the set is attached in the places a listing happens: `zond journal` and
+/// `zond journal list`, which page the scans this machine has a record of, and
+/// `zond detections`, which pages a corpus that has grown past a screen.
 #[derive(Debug, Args, Default)]
 pub(crate) struct PageArgs {
-    /// How many records to list at once.
+    /// How many rows to list at once.
     ///
-    /// Ten by default, newest first, which is the handful anybody is usually
-    /// looking for. `page_size` in `cli.toml` changes that for every run, and
-    /// 0 means no limit.
+    /// Ten by default, which is the handful anybody is usually looking for.
+    /// `page_size` in `cli.toml` changes that for every run, and 0 means no
+    /// limit.
     #[arg(long, short = 'n', value_name = "COUNT", conflicts_with = "all")]
     pub limit: Option<usize>,
 
@@ -609,7 +772,7 @@ pub(crate) struct PageArgs {
     #[arg(long, value_name = "N", conflicts_with = "all")]
     pub page: Option<usize>,
 
-    /// List every record, however many there are.
+    /// List every row, however many there are.
     #[arg(long, short = 'a')]
     pub all: bool,
 }
@@ -893,7 +1056,7 @@ pub(crate) struct ScanArgs {
         short = 'p',
         long,
         value_name = "PORTS",
-        conflicts_with = "top_ports",
+        conflicts_with_all = ["top_ports", "top_ports_udp"],
         // `-p-` is the spelling everybody arrives with, and without this clap
         // reads the `-` as the start of another flag and refuses it.
         //
@@ -914,11 +1077,26 @@ pub(crate) struct ScanArgs {
     /// the default without any port flag is the whole ranked list, which is a
     /// thousand.
     ///
-    /// TCP only, because a UDP port costs far more to classify and far more of
-    /// them come back open|filtered whatever is done. Name UDP ports with
-    /// `-p u:53,u:161` when you want them.
+    /// TCP only. `--top-ports-udp` asks for the UDP list, and `-p u:53,u:161`
+    /// names particular UDP ports.
     #[arg(long, value_name = "N", conflicts_with = "ports")]
     pub top_ports: Option<usize>,
+
+    /// Probe the N UDP ports most likely to be listening.
+    ///
+    /// Its own flag rather than something `--top-ports` quietly includes,
+    /// because the two are not the same purchase. A UDP probe is answered only
+    /// by a service that recognises the payload sent to it, or by an ICMP port
+    /// unreachable the host is rate-limited to emitting roughly once a second,
+    /// so each port costs far more to classify and far more of them come back
+    /// open|filtered whatever is done. That is worth asking for out loud.
+    ///
+    /// The ranked UDP list is 250 ports long, and asking for more than it holds
+    /// yields all of it. The two flags combine: `--top-ports 100
+    /// --top-ports-udp 50` probes both lists, and either one on its own probes
+    /// only its own transport.
+    #[arg(long, value_name = "N", conflicts_with = "ports")]
+    pub top_ports_udp: Option<usize>,
 
     /// Do not write down how far this scan gets.
     ///
@@ -1226,6 +1404,7 @@ Examples:
   sudo zond s 192.168.0.0/24 --top-ports 100
   sudo zond s 10.0.0.1:8080 lan -p 80,443
   sudo zond s 2001:db8::1 -p u:53
+  sudo zond s 192.168.0.150 --top-ports-udp 50
   sudo zond s 192.168.0.150 -p-            every port there is
   sudo zond s 192.168.0.150 -p 8000-       every port from 8000 up
   sudo zond s 10.0.0.0/24 --exclude 10.0.0.7 -p 22
@@ -2013,6 +2192,43 @@ mod tests {
     #[test]
     fn a_target_is_required() {
         assert!(Cli::try_parse_from(["zond", "discover"]).is_err());
+    }
+
+    /// The two top-ports flags are independent: either may be given alone, and
+    /// given together they are two decisions rather than one overwriting the
+    /// other. Neither shares a run with `-p`, which names the whole port set
+    /// itself.
+    #[test]
+    fn the_top_ports_flags_stand_alone_or_together_but_not_beside_a_port_list() {
+        let both = Cli::try_parse_from([
+            "zond",
+            "s",
+            "10.0.0.1",
+            "--top-ports",
+            "100",
+            "--top-ports-udp",
+            "50",
+        ])
+        .expect("should parse");
+        let Command::Scan(args) = both.command else {
+            panic!("s is the scan alias");
+        };
+        assert_eq!(args.top_ports, Some(100));
+        assert_eq!(args.top_ports_udp, Some(50));
+
+        let udp_only = Cli::try_parse_from(["zond", "s", "10.0.0.1", "--top-ports-udp", "250"])
+            .expect("parses");
+        let Command::Scan(args) = udp_only.command else {
+            panic!("s is the scan alias");
+        };
+        assert_eq!(args.top_ports, None);
+        assert_eq!(args.top_ports_udp, Some(250));
+
+        assert!(
+            Cli::try_parse_from(["zond", "s", "10.0.0.1", "-p", "22", "--top-ports-udp", "50"])
+                .is_err(),
+            "a port list and a ranked list are two answers to the same question"
+        );
     }
 
     /// The comparison policy is parsed by the same `FromStr` a settings file

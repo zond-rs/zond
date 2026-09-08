@@ -519,6 +519,46 @@ fn the_ports_flag_decides_how_many_probes_are_spent() {
     );
 }
 
+/// `--top-ports-udp` probes the engine's ranked UDP list, the two top-ports
+/// flags add up rather than one replacing the other, and asking for more UDP
+/// ports than the list holds yields the whole of it.
+#[test]
+fn the_top_ports_flags_decide_which_ranked_lists_are_probed() {
+    let udp = zond("scan-top-udp", &["s", "192.0.2.1", "--top-ports-udp", "20"]);
+    assert!(
+        stderr(&udp).contains("scanning 20 probes across 1 host"),
+        "{}",
+        stderr(&udp)
+    );
+
+    let both = zond(
+        "scan-top-both",
+        &[
+            "s",
+            "192.0.2.1",
+            "--top-ports",
+            "10",
+            "--top-ports-udp",
+            "20",
+        ],
+    );
+    assert!(
+        stderr(&both).contains("scanning 30 probes across 1 host"),
+        "the two lists add up: {}",
+        stderr(&both)
+    );
+
+    let clamped = zond(
+        "scan-top-udp-all",
+        &["s", "192.0.2.1", "--top-ports-udp", "400"],
+    );
+    assert!(
+        stderr(&clamped).contains("scanning 250 probes across 1 host"),
+        "the ranked UDP list is 250 long: {}",
+        stderr(&clamped)
+    );
+}
+
 /// The spelling everybody arrives with, in all three of its forms.
 ///
 /// `-p-` has to survive the argument parser as much as the port grammar: clap
@@ -1626,6 +1666,116 @@ fn a_detection_written_by_hand_is_compiled_and_listed() {
     let listing = stdout(&piped);
     let fields: Vec<&str> = listing.trim_end().split('\t').collect();
     assert_eq!(fields[2], "flow", "{listing:?}");
+}
+
+/// The corpus is longer than a screen, so the listing is paged, narrowed and
+/// ordered like every other listing this tool has.
+///
+/// Read against the built-in corpus rather than a fixture, because paging exists
+/// for the size the real one has grown to and a fixture of two would not have
+/// a second page to go to.
+#[test]
+fn the_corpus_is_paged_narrowed_and_ordered() {
+    /// How many entries a drawn listing holds: an entry opens on the only line
+    /// indented to the gutter, and everything under it hangs further in.
+    fn entries(listing: &str) -> usize {
+        listing
+            .lines()
+            .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
+            .count()
+    }
+
+    let home = config_home("detections_paged");
+
+    let first = zond_in(&home, &["detections"]);
+    assert_eq!(status(&first), 0, "{}", stderr(&first));
+    assert_eq!(entries(&stdout(&first)), 10, "{}", stdout(&first));
+    assert!(
+        stderr(&first).contains("page 1 of"),
+        "the listing does not say where it sits: {}",
+        stderr(&first)
+    );
+
+    let whole = zond_in(&home, &["detections", "--all"]);
+    assert_eq!(status(&whole), 0, "{}", stderr(&whole));
+    let all = entries(&stdout(&whole));
+    assert!(all > 10, "the corpus fits on one page: {all}");
+    assert!(
+        !stderr(&whole).contains("page 1 of"),
+        "a listing that showed everything talked about pages: {}",
+        stderr(&whole)
+    );
+
+    // The second page carries different entries and points back at the first.
+    let second = zond_in(&home, &["detections", "--page", "2"]);
+    assert_eq!(status(&second), 0, "{}", stderr(&second));
+    assert_ne!(stdout(&second), stdout(&first));
+    assert!(stderr(&second).contains("page 2 of"), "{}", stderr(&second));
+
+    // A page past the end is refused rather than answered with nothing, which
+    // would read as a corpus that compiled to nothing.
+    let past = zond_in(&home, &["detections", "--page", "9999"]);
+    assert_ne!(status(&past), 0, "{}", stdout(&past));
+
+    // `pipe` is a stable interface, so no default truncates it.
+    let piped = zond_in(&home, &["--pipe", "detections"]);
+    assert_eq!(status(&piped), 0, "{}", stderr(&piped));
+    assert_eq!(stdout(&piped).lines().count(), all);
+
+    // Narrowing says what it narrowed from, so a short listing is not read as a
+    // short corpus.
+    let loud = zond_in(&home, &["--pipe", "detections", "--class", "exploit"]);
+    assert_eq!(status(&loud), 0, "{}", stderr(&loud));
+    let found = stdout(&loud);
+    assert!(!found.trim().is_empty(), "nothing in the corpus is exploit");
+    for line in found.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields[3], "exploit", "{line}");
+    }
+    assert!(
+        stderr(&loud).contains(&format!("of {all} detections")),
+        "the summary does not say what it narrowed from: {}",
+        stderr(&loud)
+    );
+
+    // A filter that matched nothing reads back the conditions that found none.
+    let none = zond_in(
+        &home,
+        &["detections", "--class", "exploit", "--service", "redis"],
+    );
+    assert_eq!(status(&none), 0, "{}", stderr(&none));
+    assert!(stdout(&none).trim().is_empty(), "{}", stdout(&none));
+    assert!(
+        stderr(&none).contains("--class exploit --service redis"),
+        "the conditions were not read back: {}",
+        stderr(&none)
+    );
+
+    // The order is asked for and honoured, id ascending by default.
+    let ordered = zond_in(&home, &["--pipe", "detections", "--search", "http"]);
+    assert_eq!(status(&ordered), 0, "{}", stderr(&ordered));
+    let listing = stdout(&ordered);
+    let ids: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.split('\t').next())
+        .collect();
+    assert!(ids.len() > 1, "one match does not test an order: {ids:?}");
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted);
+
+    let reversed = zond_in(
+        &home,
+        &["--pipe", "detections", "--search", "http", "--reverse"],
+    );
+    assert_eq!(status(&reversed), 0, "{}", stderr(&reversed));
+    let turned = stdout(&reversed);
+    let backwards: Vec<&str> = turned
+        .lines()
+        .filter_map(|line| line.split('\t').next())
+        .collect();
+    sorted.reverse();
+    assert_eq!(backwards, sorted);
 }
 
 /// A detection that will not compile stops the command, naming the file.
