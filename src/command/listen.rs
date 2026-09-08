@@ -96,7 +96,16 @@ pub(crate) async fn run(
         Stopping::Completes
     };
 
-    command::drive(session, task, &destinations, redaction, stopping, renderer).await
+    command::drive(
+        session,
+        task,
+        &destinations,
+        redaction,
+        stopping,
+        None,
+        renderer,
+    )
+    .await
 }
 
 /// A watch of what the command line asked for.

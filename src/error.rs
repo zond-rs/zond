@@ -140,6 +140,19 @@ pub(crate) enum Error {
     #[error("{0}")]
     Detections(zond_engine::detect::DetectionError),
 
+    /// A vulnerability catalogue named by `--cve-catalogue` would not read.
+    ///
+    /// Named separately from [`Io`](Self::Io) so the message says which file was
+    /// meant: a scan naming a catalogue and a scan naming a report both fail with
+    /// a path, and "no such file" on its own does not say which one.
+    #[error("the catalogue '{path}' could not be read: {source}")]
+    Catalogue {
+        /// What was named.
+        path: std::path::PathBuf,
+        /// Why it would not read.
+        source: zond_engine::cve::CatalogueError,
+    },
+
     /// A detection bundle did not verify against the key it was checked with.
     #[error("{0}")]
     Bundle(zond_engine::detect::bundle::BundleError),
@@ -322,6 +335,7 @@ impl Error {
             | Error::DuplicateDetection { .. }
             | Error::NoDetections { .. }
             | Error::Detections(_)
+            | Error::Catalogue { .. }
             | Error::Bundle(_)
             | Error::Signature(_)
             | Error::MalformedKey { .. }

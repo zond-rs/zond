@@ -1070,6 +1070,23 @@ pub(crate) struct ScanArgs {
     )]
     pub ports: Option<PortSet>,
 
+    /// Correlate against a vulnerability catalogue on disk, beside the one this
+    /// build ships.
+    ///
+    /// The shipped catalogue is a starting set, not a complete one. This is how
+    /// a scan is pointed at real data: convert a feed once with
+    /// `zond_engine::import::nvd` or `::kev` and name the result here.
+    ///
+    /// It is a file rather than a URL on purpose. A scan that fetched a dataset
+    /// would depend on somebody else's server being up to say what it found, and
+    /// a report nobody can reproduce next week is not evidence. Convert once,
+    /// keep the file, and every re-run says the same thing.
+    ///
+    /// Findings deduplicate by claim, so an entry both catalogues carry is
+    /// recorded once, and the report names which dataset concluded what.
+    #[arg(long, value_name = "PATH")]
+    pub cve_catalogue: Option<std::path::PathBuf>,
+
     /// Probe the N TCP ports most likely to be listening.
     ///
     /// The engine ranks them, most likely first, and this takes the first N.
@@ -1191,14 +1208,45 @@ pub(crate) struct ScanArgs {
     ///
     /// After a service is named, the detection corpus can probe it further for
     /// what is wrong with it, and this is the ceiling on how far that goes.
-    /// `passive` reads only what the scan already gathered; `active-benign`, the
-    /// default, may exchange bytes with a port to decide; the classes above it —
-    /// `active-mutating`, `exploit`, `dos` — change or degrade the target and
+    /// `off` runs none at all; `passive`, the default, reads only what the scan
+    /// already gathered and sends nothing of its own; `active-benign` opens a
+    /// connection per check, which is what `-d` asks for; the classes above it,
+    /// `active-mutating`, `exploit` and `dos`, change or degrade the target and
     /// run only when an operator names them here.
     ///
-    /// [possible values: passive, active-benign, active-mutating, exploit, dos]
+    /// Takes the step number as readily as the word, which is what `-d` passes.
+    ///
+    /// [possible values: off, passive, active-benign, active-mutating, exploit, dos]
     #[arg(long, value_name = "CLASS")]
     pub detection: Option<DetectionEnvelope>,
+
+    /// How far to go past reading what the scan gathered, as a step from 0 to 5.
+    ///
+    /// `-d` on its own is `2`, which probes what the scan identified: the corpus
+    /// asks a web port about three dozen products by name, one connection each,
+    /// whether it is a Grafana with a traversable plugin path, a Vault left
+    /// unsealed, a WordPress with a readable config backup. Each is a real
+    /// finding on the box that runs that product and a wasted round trip on the
+    /// box that does not, so it is asked for rather than assumed.
+    ///
+    /// The steps are the same scale `--detection` names in words, `0` off
+    /// through `5` dos, so `-d=4` is `--detection exploit` and `-d=0` turns
+    /// detections off entirely and leaves a scan its ports and services. Written
+    /// with an equals sign: without one, `zond scan -d 192.0.2.1` would read the
+    /// address as a step and scan nothing.
+    ///
+    /// [possible values: 0 off, 1 passive, 2 active-benign, 3 active-mutating,
+    /// 4 exploit, 5 dos]
+    #[arg(
+        short = 'd',
+        long = "detect",
+        value_name = "N",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "active-benign",
+        conflicts_with = "detection"
+    )]
+    pub detect: Option<DetectionEnvelope>,
 
     /// Which detections the scan runs, beyond the ones built in.
     #[command(flatten)]
@@ -1250,7 +1298,7 @@ impl ScanArgs {
         if let Some(protocols) = &self.ip_protocols {
             config.ip_protocols.clone_from(protocols);
         }
-        if let Some(envelope) = self.detection {
+        if let Some(envelope) = self.detection.or(self.detect) {
             config.detection = envelope;
         }
         if let Some(idle) = self.idle_scan {
@@ -2176,6 +2224,75 @@ mod tests {
         let mut config = ZondConfig::default();
         args.engine.apply_to(&mut config);
         assert_eq!(config.os_detection, OsDetection::Aggressive);
+    }
+
+    /// `-d` walks the same scale `--detection` names in words, and bare it is the
+    /// step that probes what the scan identified.
+    ///
+    /// The default reads what the scan already gathered and sends nothing, so a
+    /// run without this flag is a run whose detections cost no round trips. The
+    /// corpus asks a web port about three dozen products by name, one connection
+    /// each, and that is a question worth being asked for rather than assumed.
+    #[test]
+    fn the_detect_step_walks_the_scale_and_does_not_eat_the_target() {
+        use zond_engine::model::finding::DetectionClass;
+
+        let ceiling = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).expect("should parse");
+            let Command::Scan(scan) = cli.command else {
+                panic!("s is the scan alias");
+            };
+            assert_eq!(scan.targets, ["192.0.2.1"], "the target was eaten");
+            let mut config = ZondConfig::default();
+            scan.apply_to(&mut config);
+            config.detection
+        };
+
+        assert!(
+            !ceiling(&["zond", "s", "192.0.2.1"]).permits(DetectionClass::ActiveBenign),
+            "a scan probes the services it found without being asked to"
+        );
+        assert_eq!(
+            ceiling(&["zond", "s", "-d", "192.0.2.1"]),
+            DetectionEnvelope::up_to(DetectionClass::ActiveBenign),
+            "bare -d is the step that probes"
+        );
+        assert_eq!(
+            ceiling(&["zond", "s", "-d=0", "192.0.2.1"]),
+            DetectionEnvelope::none(),
+            "the bottom of the scale runs nothing"
+        );
+        assert_eq!(
+            ceiling(&["zond", "s", "-d=4", "192.0.2.1"]),
+            DetectionEnvelope::up_to(DetectionClass::Exploit),
+        );
+
+        // The same steps `--detection` names in words, so the two spellings of
+        // one dial cannot drift apart.
+        for (step, class) in DetectionClass::ALL.into_iter().enumerate() {
+            let numbered = format!("-d={}", step + 1);
+            assert_eq!(
+                ceiling(&["zond", "s", &numbered, "192.0.2.1"]),
+                ceiling(&["zond", "s", "--detection", class.label(), "192.0.2.1"]),
+                "{numbered} and --detection {} are not the same step",
+                class.label()
+            );
+        }
+
+        assert!(
+            Cli::try_parse_from(["zond", "s", "-d=9", "192.0.2.1"]).is_err(),
+            "a step past the top of the scale was accepted"
+        );
+    }
+
+    /// `-d` and a ceiling named outright are two ways of saying the same thing,
+    /// and giving both says two things at once. Refused at the parser.
+    #[test]
+    fn the_detect_step_and_an_explicit_ceiling_cannot_both_be_given() {
+        assert!(
+            Cli::try_parse_from(["zond", "s", "-d", "--detection", "exploit", "192.0.2.1"])
+                .is_err()
+        );
     }
 
     /// Asking for both a shorthand and a level is asking for two different

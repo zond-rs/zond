@@ -30,6 +30,7 @@ pub(crate) mod page;
 pub(crate) mod read;
 pub(crate) mod scan;
 
+use zond_engine::cve::Catalogue;
 use zond_engine::export::Redaction;
 use zond_engine::import::report::{ReportFormat, ReportOptions};
 
@@ -99,6 +100,24 @@ fn scan_in_file(path: &std::path::Path) -> Result<ScanReport, Error> {
     let mut reader = std::io::BufReader::new(file);
 
     Ok(format.read(&mut reader, ReportOptions::new())?)
+}
+
+/// A vulnerability catalogue read off disk.
+///
+/// The whole file, through the engine's own reader, so a document that reaches a
+/// scan is one the engine would accept anywhere else: the size ceiling, the
+/// reserved-namespace rule and the version grammar are all its, not this
+/// command's.
+pub(crate) fn cve_catalogue(path: &std::path::Path) -> Result<Catalogue, Error> {
+    let file = std::fs::File::open(path).map_err(|source| Error::Catalogue {
+        path: path.to_path_buf(),
+        source: source.into(),
+    })?;
+
+    Catalogue::read(&mut std::io::BufReader::new(file)).map_err(|source| Error::Catalogue {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// What the engine's settings files said, with what they could not be used for
@@ -367,12 +386,23 @@ pub(crate) enum Stopping {
 /// after a silence, stops cleanly when they ask it to, and says what the run
 /// amounted to. See [`input`] for what counts as asking, and [`Stopping`] for
 /// what this run takes that to mean.
+///
+/// `catalogue` is a vulnerability dataset the operator supplied, correlated over
+/// the finished report before anything renders or is written. [`None`] leaves the
+/// scan's own correlation — against the catalogue the engine ships — as the only
+/// one, which is what a run that named no dataset asked for.
+///
+/// Here rather than inside the engine because a catalogue is not a scan setting:
+/// it changes no packet and no timing, and the engine says so where it runs its
+/// own correlation. What it needs is the finished report, which is a thing this
+/// process owns and the engine does not.
 async fn drive(
     session: ScanSession,
     task: ScanTask,
     destinations: &[Destination],
     redaction: Redaction,
     stopping: Stopping,
+    catalogue: Option<&Catalogue>,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
     // Taken apart because holding the whole session would borrow it twice in
@@ -421,7 +451,15 @@ async fn drive(
         }
     }
 
-    let report = task.join().await?;
+    let mut report = task.join().await?;
+
+    // Before rendering and before export, so the terminal, the JSON and the
+    // journal all say the same thing. A dataset an operator pointed at is
+    // additional to the engine's own pass rather than instead of it: findings
+    // deduplicate by claim, so an entry both catalogues carry records once.
+    if let Some(catalogue) = catalogue {
+        zond_engine::cve::correlate_report(&mut report, catalogue);
+    }
 
     // The terminal first. A file that could not be written must not take the
     // findings with it, and by here they are already in hand.

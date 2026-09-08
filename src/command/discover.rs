@@ -70,6 +70,7 @@ pub(crate) async fn run(
         redaction,
         // A plan half-walked: stopping leaves ground uncovered.
         Stopping::CutsShort,
+        None,
         renderer,
     )
     .await

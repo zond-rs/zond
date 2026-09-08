@@ -98,6 +98,16 @@ pub(crate) async fn run(
     // and the end of one is the worst moment to be told.
     let detections = command::detections::corpus(&args.detections)?;
 
+    // Read before the scan starts, for the reason the export destinations are:
+    // a catalogue that will not parse is a mistake made in the first second of a
+    // run that may take hours, and the end of one is the worst moment to hear
+    // about it.
+    let catalogue = args
+        .cve_catalogue
+        .as_deref()
+        .map(command::cve_catalogue)
+        .transpose()?;
+
     let (session, task) = match journal {
         Some(journal) => scan_with_journal(plan, &config, detections, journal).await?,
         None => scan(plan, &config, detections).await?,
@@ -110,6 +120,7 @@ pub(crate) async fn run(
         redaction,
         // A plan half-walked: stopping leaves ground uncovered.
         Stopping::CutsShort,
+        catalogue.as_ref(),
         renderer,
     )
     .await

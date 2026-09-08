@@ -254,6 +254,7 @@ pub(crate) async fn test(
         &[],
         redaction,
         crate::command::Stopping::CutsShort,
+        None,
         renderer.as_mut(),
     )
     .await
