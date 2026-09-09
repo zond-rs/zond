@@ -32,7 +32,7 @@ use zond_engine::model::host::protocol::{IpProtocolState, ip_protocol_name};
 use zond_engine::model::host::status::{StatusProtocol, StatusReason};
 use zond_engine::model::ip::scoped::ScopedIp;
 use zond_engine::model::ip::set::IpSet;
-use zond_engine::model::port::discovery::ScanResponse;
+use zond_engine::model::port::discovery::{Discovery, ScanResponse};
 use zond_engine::record::wire;
 use zond_engine::report::{ScanKind, ScanPhase};
 use zond_engine::system::privilege::Privilege;
@@ -1153,7 +1153,12 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
         0
     } else {
         let before = shown.len();
-        shown.retain(|port| port.state() != PortState::Filtered);
+        // Silence goes; an answer stays. A port a firewall refused in so many
+        // words was not read out of silence at all, and the pacing that made
+        // this scan's quiet meaningless has no bearing on an ICMP error that
+        // arrived. Dropping those with the rest is how a scan that had seven
+        // ports positively refused told its reader nothing about any of them.
+        shown.retain(|port| port.state() != PortState::Filtered || refused_in_words(port));
         before - shown.len()
     };
 
@@ -1202,6 +1207,20 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
     }
 
     Some(Selection { shown, notes })
+}
+
+/// Whether this port's verdict came from something that arrived rather than
+/// from nothing arriving.
+///
+/// Only an ICMP error qualifies, which is the only way a port that is not open
+/// can be *told* to a scan rather than inferred from quiet. It is what separates
+/// a firewall that answered from a probe that went missing, on a run where the
+/// scan's own pacing has made silence unreadable.
+fn refused_in_words(port: &Port) -> bool {
+    matches!(
+        port.discovery().map(Discovery::reason),
+        Some(ScanResponse::IcmpUnreachable | ScanResponse::IcmpProhibited)
+    )
 }
 
 /// Keeps the first `limit` ports in `state` and drops the rest, answering how
@@ -3693,6 +3712,32 @@ mod tests {
         assert_eq!(
             lines.last().map(String::as_str),
             Some("28 more filtered ports not listed")
+        );
+    }
+
+    /// A scan whose own pacing made its silence unreadable still knows what an
+    /// ICMP error told it. Dropping those alongside the quiet ports is how a
+    /// host that refused seven of them in so many words was reported as one the
+    /// reader was told nothing certain about.
+    #[test]
+    fn a_port_refused_in_words_survives_a_scan_that_was_outrun() {
+        let mut host = host(1);
+        let quiet = Port::new(81, Protocol::Tcp, PortState::Filtered)
+            .with_discovery(Discovery::new(ScanResponse::NoResponse));
+        let refused = Port::new(82, Protocol::Tcp, PortState::Filtered)
+            .with_discovery(Discovery::new(ScanResponse::IcmpProhibited));
+        host.add_port(quiet);
+        host.add_port(refused);
+
+        let lines = ports(&host, false, Showing::default());
+
+        assert!(
+            lines.iter().any(|line| line.starts_with("82/tcp")),
+            "the firewall answered for this one: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.starts_with("81/tcp")),
+            "and this one is still only silence: {lines:?}"
         );
     }
 
