@@ -793,15 +793,8 @@ const NO_SERVICE: &str = "???";
 const MAX_LISTED_FILTERED: usize = 12;
 
 /// The most unasked ports listed one per line before the rest are counted.
-///
-/// Fewer than [`MAX_LISTED_FILTERED`], because an unasked port carries less per
-/// line than a filtered one. *Which* ports a firewall refuses is a policy worth
-/// reading; which ports a scan failed to ask is whichever probes this machine
-/// swallowed, and no two runs pick the same ones. The count and the reason are
-/// the finding; the numbers are in the report for anyone who needs them.
-///
-/// Measured: a ten-thousand port scan that lost four thousand of its own sends
-/// printed fourteen hundred lines of `unasked` and buried twelve open ports.
+/// Fewer than [`MAX_LISTED_FILTERED`]: which ports went unasked is arbitrary per
+/// run, so the count is the finding and the numbers stay in the report.
 const MAX_LISTED_UNASKED: usize = 6;
 
 /// One line per router on the way to this host, nearest first.
@@ -1153,20 +1146,13 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
         0
     } else {
         let before = shown.len();
-        // Silence goes; an answer stays. A port a firewall refused in so many
-        // words was not read out of silence at all, and the pacing that made
-        // this scan's quiet meaningless has no bearing on an ICMP error that
-        // arrived. Dropping those with the rest is how a scan that had seven
-        // ports positively refused told its reader nothing about any of them.
+        // Silence goes, an ICMP refusal stays: the pacing that made this scan's
+        // quiet unreadable has no bearing on an error that arrived.
         shown.retain(|port| port.state() != PortState::Filtered || refused_in_words(port));
         before - shown.len()
     };
 
     let filtered_over_limit = elide_beyond(&mut shown, PortState::Filtered, MAX_LISTED_FILTERED);
-    // The same treatment, and it became necessary the moment a scan could tell
-    // a port it never asked from one that stayed quiet: what used to be a
-    // handful of ports left over from a scan cut short is now every port whose
-    // probe this machine swallowed, which on a wide range is thousands.
     let unasked_over_limit = elide_beyond(&mut shown, PortState::Unasked, MAX_LISTED_UNASKED);
 
     let mut notes = Vec::new();
@@ -1209,13 +1195,8 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
     Some(Selection { shown, notes })
 }
 
-/// Whether this port's verdict came from something that arrived rather than
-/// from nothing arriving.
-///
-/// Only an ICMP error qualifies, which is the only way a port that is not open
-/// can be *told* to a scan rather than inferred from quiet. It is what separates
-/// a firewall that answered from a probe that went missing, on a run where the
-/// scan's own pacing has made silence unreadable.
+/// Whether this port's verdict came from an ICMP error rather than from silence,
+/// so it survives the suppression an outrun scan applies to quiet ports.
 fn refused_in_words(port: &Port) -> bool {
     matches!(
         port.discovery().map(Discovery::reason),
@@ -1223,12 +1204,8 @@ fn refused_in_words(port: &Port) -> bool {
     )
 }
 
-/// Keeps the first `limit` ports in `state` and drops the rest, answering how
-/// many were dropped.
-///
-/// One rule for every state that arrives in bulk. A wall of identical verdicts
-/// says one thing however many lines it is given, and the first few still carry
-/// what the wall cannot: which ports they were.
+/// Keeps the first `limit` ports in `state` and drops the rest, returning how
+/// many were dropped. One rule for every state that arrives in bulk.
 fn elide_beyond(shown: &mut Vec<&Port>, state: PortState, limit: usize) -> usize {
     let over = shown
         .iter()
@@ -3715,10 +3692,8 @@ mod tests {
         );
     }
 
-    /// A scan whose own pacing made its silence unreadable still knows what an
-    /// ICMP error told it. Dropping those alongside the quiet ports is how a
-    /// host that refused seven of them in so many words was reported as one the
-    /// reader was told nothing certain about.
+    /// An ICMP-refused port survives the suppression an outrun scan applies to
+    /// its silent ports.
     #[test]
     fn a_port_refused_in_words_survives_a_scan_that_was_outrun() {
         let mut host = host(1);
@@ -3741,13 +3716,8 @@ mod tests {
         );
     }
 
-    /// The same for a wall of unasked ports, which is what a scan losing its
-    /// own sends now produces.
-    ///
-    /// Measured, against one host: a ten-thousand port scan whose machine
-    /// swallowed four thousand of its probes printed fourteen hundred lines of
-    /// `unasked` and buried the twelve open ports that were the result. The
-    /// count is the finding; which arbitrary ports went unasked is not.
+    /// A wall of unasked ports is counted, not listed, as a flood of filtered
+    /// ones already is.
     #[test]
     fn a_flood_of_unasked_ports_is_counted_rather_than_listed() {
         let mut host = host(1);
@@ -3771,9 +3741,7 @@ mod tests {
         );
     }
 
-    /// A scan cut short with a few targets still queued reads in full, which is
-    /// every unasked port there was before a scan could see its own sends being
-    /// swallowed. The rollup is for the flood, not for the handful.
+    /// A handful of unasked ports reads in full; the rollup is for the flood.
     #[test]
     fn a_handful_of_unasked_ports_is_listed_in_full() {
         let mut host = host(1);
