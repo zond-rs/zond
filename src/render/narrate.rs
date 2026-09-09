@@ -326,7 +326,18 @@ impl Narrator {
         };
 
         self.remark(&line)?;
+        self.qualifications(report)?;
 
+        self.out.flush()
+    }
+
+    /// What qualifies the count above it: the ground the run did not
+    /// cover, the tier it was not asked to run, and the strategies that
+    /// did not finish.
+    ///
+    /// Its own method because a summary is one line and a page of
+    /// caveats, and the line is the part every run prints.
+    fn qualifications(&mut self, report: &ScanReport) -> io::Result<()> {
         // After the count rather than before the scan: both notes say the count
         // is an undercount, which matters when somebody is looking at it. The
         // engine already announced the privilege level; this adds the remedy.
@@ -418,7 +429,7 @@ impl Narrator {
             ))?;
         }
 
-        self.out.flush()
+        Ok(())
     }
 }
 

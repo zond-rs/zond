@@ -116,7 +116,8 @@ const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 /// Short enough that the whole line fits a narrow terminal without wrapping. The
 /// erase sequence takes back one line, so a line that wrapped would leave its
 /// first half behind.
-const TIPS: [&str; 6] = [
+const TIPS: [&str; 7] = [
+    "-d asks what is wrong with the services a scan found",
     "--assume-up scans a host that answers no liveness probe",
     "-n keeps the run from generating any DNS traffic",
     "zond journal lists what is on record",

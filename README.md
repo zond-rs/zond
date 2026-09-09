@@ -505,8 +505,29 @@ JSON, which carries all of it unconditionally.
 
 ## Detections, including your own
 
-After a service is named, the detection corpus probes it further for what is
-wrong with it. `zond detections` lists what a scan would run:
+After a service is named, the detection corpus can go further and say what is
+*wrong* with it. A scan reads what it already gathered, which costs nothing and
+is on by default; `-d` lets it ask questions of its own:
+
+```bash
+zond scan 10.0.0.0/24                          # ports, services, and read-only findings
+zond scan 10.0.0.1 -d                          # and probe what it identified
+zond scan 10.0.0.0/24 -d=0                     # ports and services, no findings at all
+```
+
+`-d` is a step from `0` off to `5` dos, the same scale `--detection` names in
+words, and bare it is `2`.
+
+The split is about cost, not caution. The corpus asks a web port about three
+dozen products by name, one connection each, and each is a real finding on the
+box running that product and a wasted round trip on the box that is not. Against
+a device that accepts a connection and then says nothing, which is most consumer
+and embedded gear, a wasted round trip costs seconds: four such ports took 13.8s
+under `-d` to reach the same findings the default reached in 3.5s. So the tier
+that pays for itself everywhere runs, and the tier that pays for itself against a
+chosen target is asked for.
+
+`zond detections` lists the corpus either way:
 
 ```bash
 zond detections
@@ -546,13 +567,14 @@ What a detection may do is not its own decision. Each declares a class, and
 `--detection` is the ceiling an operator permits:
 
 ```bash
-zond scan 10.0.0.0/24 --detection passive       # read only what the scan gathered
+zond scan 10.0.0.0/24 --detection off           # run none of them
+zond scan 10.0.0.0/24 --detection passive       # the default: read what the scan gathered
+zond scan 10.0.0.0/24 --detection active-benign # what -d is short for
 zond scan 10.0.0.0/24 --detection exploit       # prove it rather than infer it
 ```
 
-The default stops at `active-benign`, so a detection that mutates, exploits or
-degrades a target is listed by `zond detections` and does not run until somebody
-raises the ceiling.
+The default stops at `passive`, so anything that opens a connection of its own is
+listed by `zond detections` and does not run until somebody raises the ceiling.
 
 ### Giving them to somebody else
 
