@@ -792,6 +792,18 @@ const NO_SERVICE: &str = "???";
 /// does not bury the open ports that are the actual result.
 const MAX_LISTED_FILTERED: usize = 12;
 
+/// The most unasked ports listed one per line before the rest are counted.
+///
+/// Fewer than [`MAX_LISTED_FILTERED`], because an unasked port carries less per
+/// line than a filtered one. *Which* ports a firewall refuses is a policy worth
+/// reading; which ports a scan failed to ask is whichever probes this machine
+/// swallowed, and no two runs pick the same ones. The count and the reason are
+/// the finding; the numbers are in the report for anyone who needs them.
+///
+/// Measured: a ten-thousand port scan that lost four thousand of its own sends
+/// printed fourteen hundred lines of `unasked` and buried twelve open ports.
+const MAX_LISTED_UNASKED: usize = 6;
+
 /// One line per router on the way to this host, nearest first.
 ///
 /// Empty when no trace ran, which is every scan that did not ask for one.
@@ -1145,22 +1157,12 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
         before - shown.len()
     };
 
-    let filtered_over_limit = shown
-        .iter()
-        .filter(|port| port.state() == PortState::Filtered)
-        .count()
-        .saturating_sub(MAX_LISTED_FILTERED);
-
-    if filtered_over_limit > 0 {
-        let mut kept = 0usize;
-        shown.retain(|port| {
-            if port.state() != PortState::Filtered {
-                return true;
-            }
-            kept += 1;
-            kept <= MAX_LISTED_FILTERED
-        });
-    }
+    let filtered_over_limit = elide_beyond(&mut shown, PortState::Filtered, MAX_LISTED_FILTERED);
+    // The same treatment, and it became necessary the moment a scan could tell
+    // a port it never asked from one that stayed quiet: what used to be a
+    // handful of ports left over from a scan cut short is now every port whose
+    // probe this machine swallowed, which on a wide range is thousands.
+    let unasked_over_limit = elide_beyond(&mut shown, PortState::Unasked, MAX_LISTED_UNASKED);
 
     let mut notes = Vec::new();
 
@@ -1182,6 +1184,13 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
         ));
     }
 
+    if unasked_over_limit > 0 {
+        notes.push(format!(
+            "{unasked_over_limit} more unasked {} not listed",
+            plural(unasked_over_limit as u128, "port")
+        ));
+    }
+
     if unreachable > 0 {
         // Not "could not reach": the probes went out. What did not come back is
         // the answer, and the scan was already losing those, so the one thing
@@ -1193,6 +1202,33 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
     }
 
     Some(Selection { shown, notes })
+}
+
+/// Keeps the first `limit` ports in `state` and drops the rest, answering how
+/// many were dropped.
+///
+/// One rule for every state that arrives in bulk. A wall of identical verdicts
+/// says one thing however many lines it is given, and the first few still carry
+/// what the wall cannot: which ports they were.
+fn elide_beyond(shown: &mut Vec<&Port>, state: PortState, limit: usize) -> usize {
+    let over = shown
+        .iter()
+        .filter(|port| port.state() == state)
+        .count()
+        .saturating_sub(limit);
+
+    if over > 0 {
+        let mut kept = 0usize;
+        shown.retain(|port| {
+            if port.state() != state {
+                return true;
+            }
+            kept += 1;
+            kept <= limit
+        });
+    }
+
+    over
 }
 
 /// How wide the port and state columns have to be for `shown`.
@@ -3241,6 +3277,7 @@ mod tests {
             elapsed: Duration::from_secs(1),
             sends_attempted: 0,
             sends_failed: 0,
+            sends_witnessed: 0,
             segments_seen: 0,
             window: Some(WindowSummary {
                 capacity: 1,
@@ -3656,6 +3693,54 @@ mod tests {
         assert_eq!(
             lines.last().map(String::as_str),
             Some("28 more filtered ports not listed")
+        );
+    }
+
+    /// The same for a wall of unasked ports, which is what a scan losing its
+    /// own sends now produces.
+    ///
+    /// Measured, against one host: a ten-thousand port scan whose machine
+    /// swallowed four thousand of its probes printed fourteen hundred lines of
+    /// `unasked` and buried the twelve open ports that were the result. The
+    /// count is the finding; which arbitrary ports went unasked is not.
+    #[test]
+    fn a_flood_of_unasked_ports_is_counted_rather_than_listed() {
+        let mut host = host(1);
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        for port in 1..=40u16 {
+            host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Unasked));
+        }
+
+        let lines = ports(&host, true, Showing::default());
+
+        // The open port, six unasked, and the rollup.
+        assert_eq!(lines.len(), 1 + MAX_LISTED_UNASKED + 1);
+        assert!(lines[0].starts_with("80/tcp"), "open first: {lines:?}");
+        assert!(
+            lines[1].starts_with("1001/tcp"),
+            "and the lowest unasked ones are the ones kept: {lines:?}"
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("34 more unasked ports not listed")
+        );
+    }
+
+    /// A scan cut short with a few targets still queued reads in full, which is
+    /// every unasked port there was before a scan could see its own sends being
+    /// swallowed. The rollup is for the flood, not for the handful.
+    #[test]
+    fn a_handful_of_unasked_ports_is_listed_in_full() {
+        let mut host = host(1);
+        for port in [22u16, 23, 111] {
+            host.add_port(Port::new(port, Protocol::Tcp, PortState::Unasked));
+        }
+
+        let lines = ports(&host, true, Showing::default());
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines.iter().all(|line| !line.contains("not listed")),
+            "{lines:?}"
         );
     }
 
