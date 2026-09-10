@@ -9,7 +9,7 @@
 //! # The line that says the scan is still running
 //!
 //! ```text
-//! ⠹  12 hosts found so far
+//! ⠹  ━━━━━━━━────────  50%  ports · 12 hosts found so far
 //! ```
 //!
 //! One line, held at the bottom of standard error and rewritten in place while a
@@ -82,6 +82,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use zond_engine::Progress;
+
 use crate::render::style::Style;
 
 /// How often the line is redrawn.
@@ -89,6 +91,16 @@ use crate::render::style::Style;
 /// Eight frames a second: fast enough to read as motion, slow enough that a
 /// terminal being written to over ssh is not spending its bandwidth on it.
 const TICK: Duration = Duration::from_millis(125);
+
+/// How many cells the bar is drawn in.
+///
+/// Sixteen: wide enough to show a long scan creeping, coarse enough that one
+/// cell is worth about six percent rather than a rounding error. The spinner, a
+/// full bar and the longest of [`TIPS`] come to sixty-nine columns together, so
+/// the line still fits a narrow terminal, and it has to. The erase sequence
+/// takes back one line, so a line that wrapped would leave its first half on
+/// the screen.
+const BAR_CELLS: u64 = 16;
 
 /// How long the count keeps the screen.
 ///
@@ -113,17 +125,17 @@ const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 /// What a run is told while it waits.
 ///
-/// Short enough that the whole line fits a narrow terminal without wrapping. The
-/// erase sequence takes back one line, so a line that wrapped would leave its
-/// first half behind.
+/// Forty-three characters at the outside, which is what a narrow terminal has
+/// left once the spinner and a full bar have taken their share. See
+/// [`BAR_CELLS`] for the rest of that arithmetic.
 const TIPS: [&str; 7] = [
-    "-d asks what is wrong with the services a scan found",
-    "--assume-up scans a host that answers no liveness probe",
-    "-n keeps the run from generating any DNS traffic",
+    "-d asks what is wrong with what it found",
+    "--assume-up scans a host that never answers",
+    "-n runs without a single DNS query",
     "zond journal lists what is on record",
-    "--resume continues a scan that stopped part way",
+    "--resume continues a scan that stopped",
     "zond diff compares two records",
-    "accent_colour in cli.toml sets the one hue you choose",
+    "accent_colour in cli.toml sets the hue",
 ];
 
 /// What the line counts, which is whatever the run is for.
@@ -209,6 +221,13 @@ struct Live {
 /// The one line, or none.
 static LIVE: Mutex<Option<Live>> = Mutex::new(None);
 
+/// How far the scan has got, once a caller hands its view over.
+///
+/// Separate from [`LIVE`] because it comes from the engine rather than from the
+/// renderer, and it arrives when the session is taken apart rather than when the
+/// line starts. Neither has to wait for the other.
+static PLAN: Mutex<Option<Progress>> = Mutex::new(None);
+
 /// Whether the drawing thread should keep going.
 ///
 /// Separate from [`LIVE`] so the thread can be told to stop without waiting for
@@ -283,6 +302,17 @@ pub(crate) fn seen(hosts: usize, open: usize) {
     }
 }
 
+/// The scan's own account of how far through its plan it is.
+///
+/// Handed over once, by whoever took the session apart, and read on every tick
+/// from then on. A run that never calls this, or one whose targets cannot be
+/// numbered, draws the line that was drawn before there was a bar to put on it.
+pub(crate) fn planning(progress: Progress) {
+    if let Ok(mut plan) = PLAN.lock() {
+        *plan = Some(progress);
+    }
+}
+
 /// Takes the line back, so something permanent can be written where it was.
 ///
 /// The next tick puts it back. Cheap enough to call before every line on this
@@ -305,6 +335,10 @@ pub(crate) fn clear() {
 /// Stops the line and takes it back for good.
 pub(crate) fn stop() {
     RUNNING.store(false, Ordering::Release);
+
+    if let Ok(mut plan) = PLAN.lock() {
+        *plan = None;
+    }
 
     let Some(mut live) = held() else {
         return;
@@ -445,7 +479,76 @@ fn line(live: &mut Live) -> String {
     let style = live.style;
     let spinner = style.accent(FRAMES[live.frame]);
 
-    format!("{spinner}  {}", said(live))
+    match measured(style) {
+        Some(bar) => format!("{spinner}  {bar}  {}", said(live)),
+        None => format!("{spinner}  {}", said(live)),
+    }
+}
+
+/// The bar, for a run whose plan can be counted.
+///
+/// One bar for the whole run rather than one per stage. The engine works out
+/// which stages a scan expects to run and how far through them it is, so this
+/// fills once instead of emptying every time the scan moves on to something
+/// else. It can jump forward, when a stage that was expected turns out to have
+/// no work in it, and it never goes back.
+///
+/// [`None`] leaves the line as it was, a spinner and whichever half is up. A
+/// listener is the honest case: having asked for nothing, it can never be
+/// complete.
+fn measured(style: Style) -> Option<String> {
+    let plan = PLAN.lock().ok()?;
+    let (done, total) = plan.as_ref()?.overall()?;
+
+    Some(bar(style, done, total))
+}
+
+/// The drawn part of the bar.
+///
+/// A heavy horizontal rather than a block: it is a single stroke on the line's
+/// own centre, so a bar sits inside the row of text instead of standing a full
+/// character height above it.
+const FILL: &str = "━";
+
+/// The undrawn part, the same stroke at a lighter weight.
+const TRACK: &str = "─";
+
+/// A fixed-width bar and the figure it stands for.
+///
+/// The figure is padded to three columns so the sentence beside it does not step
+/// sideways as the run passes ten and a hundred percent of the way through.
+fn bar(style: Style, settled: u64, planned: u64) -> String {
+    let filled = usize::try_from(scaled(settled, planned, BAR_CELLS)).unwrap_or(0);
+    let empty = usize::try_from(BAR_CELLS)
+        .unwrap_or(0)
+        .saturating_sub(filled);
+    let percent = scaled(settled, planned, 100);
+
+    format!(
+        "{}{} {}",
+        style.accent(&FILL.repeat(filled)),
+        style.faint(&TRACK.repeat(empty)),
+        style.strong(&format!("{percent:>3}%"))
+    )
+}
+
+/// `settled` out of `planned`, scaled into `range`.
+///
+/// Integer division throughout, which floors: a bar reads full and a figure
+/// reads 100% only once every target in the plan has settled, and a run with one
+/// address still outstanding says 99% however large the plan is. A plan of
+/// nothing has nothing left to do.
+///
+/// Scaled through `u128` because a port scan's plan is addresses times ports,
+/// and multiplying that by a hundred is how a large one would wrap.
+fn scaled(settled: u64, planned: u64, range: u64) -> u64 {
+    if planned == 0 {
+        return range;
+    }
+
+    let scaled = u128::from(settled.min(planned)) * u128::from(range) / u128::from(planned);
+
+    u64::try_from(scaled).unwrap_or(range)
 }
 
 /// Whichever half is up, turning the line over first if that half has had its
@@ -465,11 +568,7 @@ fn said(live: &mut Live) -> String {
 
     match live.saying {
         Saying::Count => counted(live),
-        Saying::Insight => {
-            let style = live.style;
-            let tip = TIPS[live.tip % TIPS.len()];
-            format!("{} {}", style.faint("tip"), style.plain(tip))
-        }
+        Saying::Insight => live.style.plain(TIPS[live.tip % TIPS.len()]),
     }
 }
 
@@ -478,7 +577,7 @@ fn said(live: &mut Live) -> String {
 fn counted(live: &Live) -> String {
     let style = live.style;
 
-    match live.counting {
+    let tally = match live.counting {
         Counting::Hosts => tally(style, live.hosts, "host found so far", "hosts found so far"),
         Counting::Ports => format!(
             "{} {} {}",
@@ -486,7 +585,24 @@ fn counted(live: &Live) -> String {
             style.faint("on"),
             tally(style, live.hosts, "host", "hosts")
         ),
+    };
+
+    match staged() {
+        Some(stage) => format!("{} {} {tally}", style.plain(&stage), style.faint("·")),
+        None => tally,
     }
+}
+
+/// What the scan says it is working on.
+///
+/// The figures beside it mean different things from one stage to the next: an
+/// open port found during the port sweep and one being asked what it is running
+/// are the same number and not the same news. Naming the stage is what keeps a
+/// bar that restarts from reading as a bar that went backwards.
+fn staged() -> Option<String> {
+    let plan = PLAN.lock().ok()?;
+
+    Some(plan.as_ref()?.stage().to_string())
 }
 
 /// A figure and the word for it.
@@ -583,6 +699,129 @@ mod tests {
         );
     }
 
+    /// The whole chain, from what the engine settles to what the line says.
+    ///
+    /// The figure comes from the scan's own counters rather than from anything
+    /// this module tallies, so a change on either side of that boundary shows up
+    /// here. It also pins the composition: the bar keeps its place while the
+    /// half beside it turns over, which is the reason it sits left of both.
+    #[test]
+    fn the_bar_comes_from_the_scan_and_the_other_half_turns_beside_it() {
+        use zond_engine::journal::settle::Outcome;
+
+        let (session, ctx) = zond_engine::ScanSession::builder()
+            .planning(zond_engine::Stage::Discovery, Some(4))
+            .staging(vec![
+                zond_engine::Stage::Discovery,
+                zond_engine::Stage::Detections,
+            ])
+            .build();
+        ctx.record_outcome(Outcome::Answered { position: 0 });
+        ctx.record_outcome(Outcome::Answered { position: 1 });
+        planning(session.progress().clone());
+
+        let counted = line(&mut live(7, Counting::Hosts, Saying::Count));
+        let tipped = line(&mut live(7, Counting::Hosts, Saying::Insight));
+
+        // Half of the first stage of two, so a quarter of the run.
+        assert_eq!(
+            counted,
+            "\u{280B}  \u{2501}\u{2501}\u{2501}\u{2501}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}  25%  discovery \u{b7} 7 hosts found so far",
+            "the line, composed"
+        );
+        assert!(
+            tipped.contains("25%"),
+            "the bar does not leave with the count"
+        );
+        assert!(tipped.ends_with(TIPS[0]), "{tipped}");
+
+        // The tail of a scan is its own work, and the one bar carries on into it
+        // rather than emptying and filling again.
+        ctx.enter_stage(zond_engine::Stage::Detections, Some(8));
+        let detecting = line(&mut live(7, Counting::Hosts, Saying::Count));
+        assert!(detecting.contains("detections \u{b7}"), "{detecting}");
+        assert!(
+            detecting.contains(" 50%"),
+            "one stage of two behind it: {detecting}"
+        );
+        assert!(
+            !detecting.contains("  0%"),
+            "a new stage does not send the run back to the start: {detecting}"
+        );
+
+        stop();
+        let after = line(&mut live(7, Counting::Hosts, Saying::Count));
+        assert!(
+            !after.contains('%'),
+            "a finished run leaves no plan for the next one: {after}"
+        );
+    }
+
+    /// The widest the line ever gets still fits a narrow terminal.
+    ///
+    /// The erase sequence takes back one line, so a line that wrapped would
+    /// leave its first half on the screen and every redraw after it would write
+    /// underneath. This is the guard on widening the bar or adding a longer tip:
+    /// the cost of getting it wrong is a failing test rather than a smeared
+    /// terminal on somebody's machine.
+    #[test]
+    fn the_widest_line_fits_a_narrow_terminal() {
+        let longest = TIPS
+            .iter()
+            .map(|tip| tip.chars().count())
+            .max()
+            .expect("there is at least one tip");
+
+        // The spinner, two spaces, a full bar, two spaces, and the sentence.
+        let width = 1 + 2 + bar(Style::bare(), 1, 1).chars().count() + 2 + longest;
+
+        assert!(width < 80, "the widest the line gets is {width} columns");
+    }
+
+    /// The bar keeps its width whatever it is showing, so the sentence beside
+    /// it sits in one column for the whole run.
+    ///
+    /// The line is redrawn eight times a second. Text that moved sideways every
+    /// time the figure gained a digit would be the one thing on the screen the
+    /// reader could not ignore, which is the same reason the spinner is braille.
+    #[test]
+    fn the_bar_is_one_width_from_empty_to_full() {
+        let bare = Style::bare();
+        let widths: Vec<usize> = [0, 7, 50, 999, 1000]
+            .into_iter()
+            .map(|settled| bar(bare, settled, 1000).chars().count())
+            .collect();
+
+        assert!(
+            widths.windows(2).all(|pair| pair[0] == pair[1]),
+            "every bar is the same width, got {widths:?}"
+        );
+    }
+
+    /// A hundred percent is something only a scan that settled its whole plan
+    /// says.
+    ///
+    /// Rounding would put a full bar and a full figure on a run with targets
+    /// still outstanding, which is the one reading of this line that would be a
+    /// lie rather than a rough edge.
+    #[test]
+    fn a_run_short_of_its_plan_never_reads_as_finished() {
+        let bare = Style::bare();
+
+        assert!(bar(bare, 999, 1000).contains("99%"), "one target short");
+        assert!(
+            bar(bare, 1000, 1000).contains("100%"),
+            "every target settled"
+        );
+        assert!(bar(bare, 0, 1000).contains("0%"), "nothing settled yet");
+        let full = FILL.repeat(usize::try_from(BAR_CELLS).unwrap_or(0));
+        assert!(
+            !bar(bare, 999, 1000).contains(&full),
+            "a bar one target short of the plan is not a full bar"
+        );
+        assert!(bar(bare, 1000, 1000).contains(&full), "a settled plan is");
+    }
+
     /// One is one. A count that says `1 hosts` is a count nobody wrote on
     /// purpose.
     #[test]
@@ -642,20 +881,14 @@ mod tests {
     #[test]
     fn the_space_bar_turns_the_line_over_now() {
         let mut line = live(7, Counting::Hosts, Saying::Insight);
-        assert!(said(&mut line).starts_with("tip "));
+        assert_eq!(said(&mut line), TIPS[0], "a tip is up");
 
         turn(&mut line);
         assert_eq!(said(&mut line), "7 hosts found so far", "space did nothing");
 
         turn(&mut line);
-        assert!(
-            said(&mut line).starts_with("tip "),
-            "and back again: {}",
-            said(&mut line)
-        );
-
         // Not the tip that was up before, since that one has had its turn.
-        assert!(said(&mut line).contains(TIPS[1]), "{}", said(&mut line));
+        assert_eq!(said(&mut line), TIPS[1], "and back again, to the next one");
     }
 
     /// A sweep asks who is there. A port scan was told who is there, so what it

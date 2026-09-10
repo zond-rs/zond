@@ -427,7 +427,8 @@ async fn drive(
 ) -> Result<Outcome, Error> {
     // Taken apart because holding the whole session would borrow it twice in
     // the `select!` below.
-    let (hosts, mut events, handle) = session.into_parts();
+    let (hosts, mut events, handle, progress) = session.into_parts();
+    crate::render::progress::planning(progress);
     let mut stops = input::watch(&handle);
 
     // Gates the message and the escalation only. What the run amounted to is
