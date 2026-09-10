@@ -1591,6 +1591,15 @@ pub(crate) struct EngineArgs {
     #[arg(long, value_name = "MODE")]
     pub send_mode: Option<SendMode>,
 
+    /// Send every probe from this interface, whatever the routing table says.
+    ///
+    /// The escape from a full-tunnel VPN: pinned to a LAN interface, a scan of
+    /// a routed target leaves from that interface's address rather than the
+    /// tunnel the default route points down. Named by interface, not address;
+    /// the interface's own addresses become the source, one per family.
+    #[arg(long, value_name = "NAME")]
+    pub send_interface: Option<String>,
+
     /// How far to go identifying the system behind each host.
     ///
     /// `passive` sends nothing of its own. `active` and above send probes, and
@@ -1930,6 +1939,12 @@ impl EngineArgs {
         if let Some(mode) = self.send_mode {
             config.send_mode = mode;
         }
+        if let Some(name) = &self.send_interface {
+            let sources = source_addresses_of(name);
+            if !sources.is_empty() {
+                config.send_source = sources;
+            }
+        }
         // Mutually exclusive at the parser, so there is no precedence to settle
         // here: a caller who writes both is told, rather than served whichever
         // this happens to check second.
@@ -1947,6 +1962,44 @@ impl EngineArgs {
         }
         self.evasion.apply_to(&mut config.evasion);
     }
+}
+
+/// The addresses `--send-interface` forces a scan's probes to leave from: the
+/// named interface's own, one per family, skipping the loopback and link-local
+/// ones no routed target can be reached from. Empty when the name matches no
+/// interface or the interface holds nothing usable, which the caller reports.
+fn source_addresses_of(name: &str) -> Vec<std::net::IpAddr> {
+    use std::net::IpAddr;
+
+    let Some(link) = zond_engine::system::interface::interfaces()
+        .into_iter()
+        .find(|link| link.name() == name)
+    else {
+        tracing::warn!("no interface named {name}; --send-interface ignored");
+        return Vec::new();
+    };
+
+    let mut v4 = None;
+    let mut v6 = None;
+    for held in link.addresses() {
+        match held.address() {
+            IpAddr::V4(addr) if v4.is_none() && !addr.is_loopback() && !addr.is_link_local() => {
+                v4 = Some(IpAddr::V4(addr));
+            }
+            IpAddr::V6(addr)
+                if v6.is_none() && !addr.is_loopback() && !addr.is_unicast_link_local() =>
+            {
+                v6 = Some(IpAddr::V6(addr));
+            }
+            _ => {}
+        }
+    }
+
+    let sources: Vec<IpAddr> = v4.into_iter().chain(v6).collect();
+    if sources.is_empty() {
+        tracing::warn!("no usable address on {name}; --send-interface ignored");
+    }
+    sources
 }
 
 /// How much a run says about itself while it happens.
