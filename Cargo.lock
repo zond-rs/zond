@@ -2621,6 +2621,8 @@ dependencies = [
 [[package]]
 name = "zond-engine"
 version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36f9be754ee5830ccb0263612258e23ec6a2d443c2bd3ff5c3b1160a036b3d09"
 dependencies = [
  "aho-corasick",
  "async-trait",
