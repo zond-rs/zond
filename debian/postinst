@@ -1,0 +1,46 @@
+#!/bin/sh
+# Grant the capabilities a scan needs, so that `zond` runs as whoever owns the
+# results instead of under sudo.
+#
+# The engine decides what it may do by opening a raw socket and seeing whether
+# the kernel allows it, rather than by comparing a uid against zero, so a binary
+# carrying CAP_NET_RAW takes the same scan paths root would. What it does not
+# take is root's identity: the journal and the settings file a run creates land
+# in the invoking user's home, which is where somebody looking for them later
+# will look. CAP_NET_ADMIN is the second half of the pair, on the same reasoning
+# that gives it to wireshark's dumpcap: the capture is promiscuous.
+set -e
+
+BINARY=/usr/bin/zond
+
+# A file whose permitted set is not contained in the bounding set of whoever
+# execs it cannot be run at all: the kernel fails the execve with EPERM and says
+# nothing about why. Containers ship a trimmed bounding set that keeps
+# CAP_NET_RAW and drops CAP_NET_ADMIN, so asking for both there would install a
+# binary nobody can start. Ask for what this kernel will carry instead.
+#
+# CAP_NET_ADMIN is bit 12 of the mask in CapBnd.
+wanted_capabilities() {
+    bounding=$(awk '/^CapBnd:/ { print $2 }' /proc/self/status 2>/dev/null)
+    if [ -n "$bounding" ] && [ "$(( 0x$bounding >> 12 & 1 ))" -eq 0 ]; then
+        echo "cap_net_raw+eip"
+    else
+        echo "cap_net_raw,cap_net_admin+eip"
+    fi
+}
+
+case "$1" in
+    configure)
+        capabilities=$(wanted_capabilities)
+        if setcap "$capabilities" "$BINARY"; then
+            if [ "$capabilities" = "cap_net_raw+eip" ]; then
+                echo "zond: granted cap_net_raw only. This kernel's bounding set has no CAP_NET_ADMIN, and a binary asking for one it cannot be given will not start at all. Promiscuous capture needs it, so 'zond listen' will see less here than it would on a full kernel." >&2
+            fi
+        else
+            echo "zond: could not grant capabilities to $BINARY." >&2
+            echo "zond: the filesystem it landed on may not carry them. Scans will need 'sudo zond' until that is sorted out." >&2
+        fi
+        ;;
+esac
+
+exit 0

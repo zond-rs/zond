@@ -4,9 +4,10 @@
 # the crate says it is unsupported and it is, and a permanently red job teaches
 # everyone to ignore a failing one.
 #
-# There is no release job yet. When there is, it belongs here rather than in the
-# engine — a library's release is `cargo publish`, and this is the repository
-# that actually produces a binary somebody downloads.
+# Releases live in `release.yml` beside this file, which builds the Debian
+# packages a tag ships. They belong in this repository rather than in the
+# engine: a library's release is `cargo publish`, and this is the one that
+# produces a binary somebody downloads.
 name: CI
 
 on:

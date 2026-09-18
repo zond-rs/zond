@@ -23,6 +23,18 @@
 
 ## Installing
 
+On Debian, Ubuntu and Kali, from the [latest release](https://github.com/zond-rs/zond/releases/latest).
+Packages are built for `amd64` and `arm64`.
+
+```bash
+sudo apt install ./zond_*.deb
+```
+
+Installing grants the binary `cap_net_raw`, so a scan runs without `sudo` and
+the journals it writes belong to the user who ran it.
+
+With a Rust toolchain, from crates.io.
+
 ```bash
 cargo install zond-cli
 ```

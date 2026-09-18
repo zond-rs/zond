@@ -1,0 +1,127 @@
+# Builds the Debian packages a tagged release ships, and attaches them to it.
+#
+# `cargo install zond-cli` already serves anybody who has a Rust toolchain. This
+# is for everybody else. On Kali, which is where this program has its audience,
+# a tool arrives as a .deb or it does not arrive.
+#
+# Windows is absent for the same reason it is absent from `ci.yml`, plus one of
+# its own: `pcap` needs the Npcap SDK to build against and Npcap installed to
+# run, and Npcap cannot be redistributed inside an installer without a licence
+# from the Nmap Project. An installer that can only send somebody to npcap.com
+# is not worth maintaining yet.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # For building a package off a branch to try before a tag exists. Nothing is
+  # published in that case; the artifacts are on the run.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Debian package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Kali on its own hardware, and Kali in a virtual machine on an Apple
+          # Silicon host, which is arm64 and is what a good deal of this gets
+          # tried on first. Both runners are native, so nothing cross-compiles
+          # and `libpcap-dev` comes from the runner's own apt.
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+
+    steps:
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      # The engine is a path dependency while the two repositories move together
+      # and a crates.io dependency at the moment one is published, and which of
+      # the two is in `Cargo.toml` depends on where in that cycle the tag falls.
+      # Checking it out costs a few seconds and covers the first case.
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Install cargo-deb
+        uses: taiki-e/install-action@cargo-deb
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zond-cli
+
+      # A package whose filename disagrees with the tag it came from is worse
+      # than no package, because the disagreement travels with the file.
+      - name: Check the tag against the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: zond-cli
+        run: |
+          crate="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$crate" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, Cargo.toml says $crate" >&2
+            exit 1
+          fi
+          echo "tag and crate agree on $crate"
+
+      - name: Build the package
+        working-directory: zond-cli
+        run: cargo deb
+
+      # What the package ended up claiming about itself, on the run rather than
+      # only inside the file, so a dependency that resolved to an unexpected
+      # name is visible without downloading anything.
+      - name: Show what it declares
+        working-directory: zond-cli
+        run: dpkg-deb --info target/debian/*.deb
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zond-${{ matrix.arch }}
+          path: zond-cli/target/debian/*.deb
+          if-no-files-found: error
+
+  publish:
+    name: Attach the packages to the release
+    needs: package
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Collect both packages
+        uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" packages/*.deb \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" packages/*.deb \
+              --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          fi

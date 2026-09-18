@@ -31,6 +31,45 @@ name = "zond"
 path = "src/main.rs"
 
 
+# What `cargo deb` builds from, driven by the `release` workflow.
+#
+# The package is named for the command rather than for the crate. `zond-cli`
+# exists because crates.io already has an unrelated `zond`, and that constraint
+# does not follow the binary onto a Debian system, where `apt install ./zond_*`
+# and the thing it puts on the PATH should read as the same program.
+[package.metadata.deb]
+name = "zond"
+maintainer = "hollowpointer <hollowpointer@pm.me>"
+copyright = "2026 Erik Lening (hollowpointer) and Contributors"
+license-file = ["LICENSE", "0"]
+section = "net"
+priority = "optional"
+extended-description = """
+Zond maps a network and says what is wrong with what it finds: which hosts are \
+alive, which of their ports are open, what is listening behind each one, and \
+which advisories name the versions it read off the wire.
+
+Scans are journalled while they run, so one that was interrupted can be \
+continued and two of them can be compared. Reports are written as JSON, JSONL, \
+CSV, HTML, or nmap-compatible XML, for the pipelines that already read those.
+"""
+# `$auto` reads the linked libraries out of the built binary. It is the only way
+# to get the libc constraint right for both architectures this ships for, and it
+# resolves libpcap to whatever the build host calls it: a package built on a
+# post-t64 runner depends on `libpcap0.8t64`, which is the name Kali and Debian
+# trixie use. Building for anything older than that transition means naming
+# `libpcap0.8` here instead.
+#
+# `libcap2-bin` is named rather than discovered, because nothing in the binary
+# links it. It is there for the `setcap` the postinst calls.
+depends = "$auto, libcap2-bin"
+assets = [
+    ["target/release/zond", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/zond/README.md", "644"],
+]
+maintainer-scripts = "debian/"
+
+
 [dependencies]
 # Every format the engine can write, because a scanner nobody can get results
 # out of is not much of a scanner. `export-csv`, `export-html` and `export-nmap`
