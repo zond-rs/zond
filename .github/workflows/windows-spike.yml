@@ -39,3 +39,17 @@ jobs:
       - name: Build
         working-directory: zond-cli
         run: cargo build --release
+
+      - name: What it linked against
+        shell: pwsh
+        working-directory: zond-cli
+        run: |
+          dir target\release\zond.exe
+          dumpbin /dependents target\release\zond.exe
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: zond-windows-x86_64
+          path: zond-cli/target/release/zond.exe
+          if-no-files-found: error
