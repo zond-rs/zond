@@ -1,0 +1,41 @@
+# Throwaway. Answers one question: what does a Windows build of this binary
+# actually fail on today. Delete the branch and this file once it has.
+name: Windows spike
+
+on:
+  push:
+    branches: ["spike/windows"]
+
+jobs:
+  build:
+    name: Windows build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+          ref: feat/main
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `pcap` links against Npcap on Windows and finds it through LIB. The SDK
+      # is the build-time half and is freely downloadable; the driver a user
+      # installs is the other half and is not ours to ship.
+      - name: Install the Npcap SDK
+        shell: pwsh
+        run: |
+          curl.exe -L -o sdk.zip https://npcap.com/dist/npcap-sdk-1.15.zip
+          Expand-Archive sdk.zip -DestinationPath npcap-sdk
+          "LIB=$PWD\npcap-sdk\Lib\x64;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build
+        working-directory: zond-cli
+        run: cargo build --release
