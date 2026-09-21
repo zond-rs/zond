@@ -40,14 +40,21 @@ jobs:
         working-directory: zond-cli
         run: cargo build --release
 
+      # Diagnostic only. `dumpbin` lives in the VS toolchain rather than on the
+      # default PATH, so this must never decide whether the job passed.
       - name: What it linked against
+        continue-on-error: true
         shell: pwsh
         working-directory: zond-cli
         run: |
           dir target\release\zond.exe
-          dumpbin /dependents target\release\zond.exe
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Filter dumpbin.exe -Recurse |
+            Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
+          & $dumpbin.FullName /dependents target\release\zond.exe
 
       - name: Upload the binary
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zond-windows-x86_64
