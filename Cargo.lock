@@ -1582,9 +1582,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.43"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -2605,7 +2605,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zond-cli"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "clap",
  "rustix",
@@ -2620,9 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "zond-engine"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36f9be754ee5830ccb0263612258e23ec6a2d443c2bd3ff5c3b1160a036b3d09"
+version = "0.16.0"
 dependencies = [
  "aho-corasick",
  "async-trait",

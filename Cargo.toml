@@ -7,7 +7,7 @@ name = "zond-cli"
 # The engine's line, so that `zond --version` and the engine it wraps are one
 # number a person can compare. Not the same field as the dependency requirement
 # below, which is what actually decides which engine is built against.
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 # The engine's minimum, because this crate cannot compile on a toolchain that
 # cannot compile what it wraps. Raising it here without raising it there would
@@ -75,7 +75,7 @@ maintainer-scripts = "debian/"
 # out of is not much of a scanner. `export-csv`, `export-html` and `export-nmap`
 # add no dependencies at all; the JSON pair shares the `serde_json` the journal
 # already pulls in.
-zond-engine = { version = "0.15.0",features = [
+zond-engine = { version = "0.16.0", path = "../zond-engine", features = [
     "import-settings",
     "export-all",
     "import-json",
