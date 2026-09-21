@@ -35,12 +35,16 @@ jobs:
           path: zond-cli
 
       # The engine is a path dependency while the two repositories move
-      # together, so a checkout of this one alone does not build.
+      # together, so a checkout of this one alone does not build. It follows
+      # this repository's branch rather than its own default: development
+      # happens on `feat/main` in both, and the engine version this crate
+      # declares is often one the default branch has not reached yet.
       - name: Checkout the engine beside it
         uses: actions/checkout@v4
         with:
           repository: zond-rs/zond-engine
           path: zond-engine
+          ref: ${{ (github.head_ref || github.ref_name) == 'feat/main' && 'feat/main' || 'main' }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -75,6 +79,7 @@ jobs:
         with:
           repository: zond-rs/zond-engine
           path: zond-engine
+          ref: ${{ (github.head_ref || github.ref_name) == 'feat/main' && 'feat/main' || 'main' }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -111,6 +116,7 @@ jobs:
         with:
           repository: zond-rs/zond-engine
           path: zond-engine
+          ref: ${{ (github.head_ref || github.ref_name) == 'feat/main' && 'feat/main' || 'main' }}
 
       # Pinned to the exact version `Cargo.toml` declares. Without this the
       # `rust-version` field is an assertion nobody checks, and the README badge
