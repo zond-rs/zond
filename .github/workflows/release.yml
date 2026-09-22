@@ -28,6 +28,17 @@ jobs:
   package:
     name: Debian package (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    # Built on Debian 12 rather than on the runner's own Ubuntu, because the
+    # package has to install on both sides of the 64-bit time_t transition.
+    # `cargo deb` reads the dependency names off the build host: on a post-t64
+    # base that is `libpcap0.8t64`, which does not exist on bookworm, Parrot or
+    # Ubuntu 22.04, and apt there can only refuse the package. Bookworm still
+    # calls it `libpcap0.8`, and the t64 package declares `Provides:
+    # libpcap0.8`, so the older name is the one that resolves everywhere.
+    #
+    # It sets the glibc floor to bookworm's for the same reason: a binary built
+    # against a newer one will not start on an older distribution.
+    container: rust:1.93-bookworm
     strategy:
       fail-fast: false
       matrix:
@@ -55,11 +66,11 @@ jobs:
           repository: zond-rs/zond-engine
           path: zond-engine
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
+      # No toolchain step: the container carries the one its tag names, which
+      # also pins what a release is built with. No `sudo` either, there being
+      # no user here to escalate from.
       - name: Install libpcap
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: apt-get update && apt-get install -y libpcap-dev
 
       - name: Install cargo-deb
         uses: taiki-e/install-action@cargo-deb
