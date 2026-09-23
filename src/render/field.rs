@@ -984,12 +984,17 @@ impl PortDetail {
 /// `None` for a port carrying no telemetry, which is what a report from a
 /// scanner that recorded none reads as. Nothing is invented to fill the line.
 ///
-/// Everything the telemetry has, and only what it has. A raw scan records the
-/// packet, the round trip and the hop counter the reply arrived under; a connect
-/// scan records the packet alone, having no header to read. The source address
-/// is read back from documents that carry one and no scanner sets it. A line
-/// that named a field the scan never filled would be the one way to make this
-/// lie, so each is shown when present and omitted when not.
+/// What the telemetry has, and only what it has. A raw scan records the packet,
+/// the round trip and the hop counter the reply arrived under; a connect scan
+/// records the packet alone, having no header to read. A line that named a
+/// field the scan never filled would be the one way to make this lie, so each
+/// is shown when present and omitted when not.
+///
+/// The reply's sender, the source address its IP header carried, is the one
+/// field left off. No scanner records it, so it arrives only on a port read
+/// back from a document that carries one. A sender identifies a machine as
+/// surely as the host's own address does, so drawing it needs the redaction
+/// [`Reader`] the host's evidence goes through, which this line does not hold.
 ///
 /// The hop counter is worth its place beside the verdict rather than only on the
 /// host: it is the initial value less the distance travelled, so a reply whose
