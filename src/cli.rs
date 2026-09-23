@@ -1175,14 +1175,13 @@ pub(crate) struct ScanArgs {
     #[arg(long, value_name = "TECHNIQUE")]
     pub sctp_technique: Option<SctpScanTechnique>,
 
-    /// Enumerate the TLS versions and cipher suites each HTTPS port accepts.
+    /// Enumerate the TLS versions and cipher suites each TLS port accepts.
     ///
-    /// A pass of its own after service detection, one handshake per version
-    /// offered, so it costs several connections per TLS port. What it turns up
-    /// that is wrong — a protocol version long deprecated, a suite nobody should
-    /// still accept — is reported as a finding against the port. A version the
-    /// endpoint stopped answering about, or the scan stopped asking about, is
-    /// marked unfinished under the port, since what was found for it is a floor.
+    /// A pass after service detection that costs a connection per suite a port
+    /// accepts: a dozen or so for a current server, some 250 for an old one that
+    /// accepts everything. --host-timeout bounds it. A deprecated version
+    /// or a weak suite is reported as a finding against the port, and a version
+    /// whose walk was cut short is marked unfinished.
     #[arg(long)]
     pub tls_enum: bool,
 

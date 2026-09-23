@@ -47,12 +47,9 @@
 //! levels out, one level in. What marks it as subordinate is that the column
 //! carrying the weight above it, the port number, is empty on its line.
 //!
-//! There are no box-drawing characters here at all, which is why there is no
-//! gate for a terminal that cannot draw one. A `├─` that means "this hangs off
-//! the line above" is a glyph spent saying what an indent already said, and the
-//! rules were never painted in the first place: the module they lived in
-//! documented them as grey and emitted them in whatever the terminal's default
-//! foreground happened to be.
+//! There are no box-drawing characters here at all, so there is no gate for a
+//! terminal that cannot draw one. A `├─` that means "this hangs off the line
+//! above" is a glyph spent saying what an indent already says.
 //!
 //! ## The listing is measured before any of it is drawn
 //!
@@ -60,48 +57,31 @@
 //! having are the ones *between* blocks: a handle right-aligned to the width of
 //! the largest, so every identity starts in one column; a latency right-aligned
 //! and decimal-aligned, so two of them compare at a glance without being read.
-//! A block drawn in ignorance of its neighbours cannot have either, which is
-//! what made the old header line ragged.
-//!
-//! ## A detail's columns come from the row it hangs under
-//!
-//! A [`Detail`] is drawn in the columns of the value it belongs to, and in
-//! nobody else's. The column its label ends in is [`Child::details_at`], which
-//! the caller sets because the caller is the only thing that knows where its own
-//! table's columns fall; the width of the labels themselves is measured across
-//! the details of children with the *same label*, so `ports` details align down
-//! a listing and `risks` details align down a listing and neither moves the
-//! other.
-//!
-//! It used to be one width for every detail in the run. `evidence` is eight
-//! characters and `cert` is four, so asking for detections moved every
-//! certificate line four columns right — on hosts whose certificates had nothing
-//! to do with any finding. The label is also right-aligned now, ending one
-//! [`GAP`] before its value rather than starting a fixed indent in, so a longer
-//! label eats into the margin instead of pushing the value column along.
-//!
-//! ## A detail's columns come from the row it hangs under
-//!
-//! A [`Detail`] is drawn in the columns of the value it belongs to, and in
-//! nobody else's. The column its label ends in is [`Child::details_at`], which
-//! the caller sets because the caller is the only thing that knows where its own
-//! table's columns fall; the width of the labels themselves is measured across
-//! the details of children with the *same label*, so `ports` details align down
-//! a listing and `risks` details align down a listing and neither moves the
-//! other.
-//!
-//! It used to be one width for every detail in the run. `evidence` is eight
-//! characters and `cert` is four, so asking for detections moved every
-//! certificate line four columns right — on hosts whose certificates had nothing
-//! to do with any finding. The label is also right-aligned now, ending one
-//! [`GAP`] before its value rather than starting a fixed indent in, so a longer
-//! label eats into the margin instead of pushing the value column along.
+//! A block drawn in ignorance of its neighbours cannot have either, and its
+//! header line comes out ragged.
 //!
 //! **A name is deliberately not aligned.** Padding every name to the widest
 //! would push the latency off a narrow terminal the moment one host is called
 //! something long, and a name is looked up rather than compared, so the column
 //! would buy nothing. Aligning what is compared and leaving what is not is the
 //! difference between this and a table.
+//!
+//! ## A detail's columns come from the row it hangs under
+//!
+//! A [`Detail`] is drawn in the columns of the value it belongs to, and in
+//! nobody else's. The column its label ends in is [`Child::details_at`], which
+//! the caller sets because the caller is the only thing that knows where its own
+//! table's columns fall; the width of the labels themselves is measured across
+//! the details of children with the *same label*, so `ports` details align down
+//! a listing and `risks` details align down a listing and neither moves the
+//! other.
+//!
+//! One width for every detail in the run would tie unrelated lines together:
+//! `evidence` is eight characters and `cert` is four, so asking for detections
+//! would move every certificate line four columns right, on hosts whose
+//! certificates have nothing to do with any finding. The label is right-aligned,
+//! ending one [`GAP`] before its value rather than starting a fixed indent in, so
+//! a longer label eats into the margin instead of pushing the value column along.
 //!
 //! ## Widths are measured before paint, never after
 //!

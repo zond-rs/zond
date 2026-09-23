@@ -452,6 +452,10 @@ fn erase() {
 }
 
 /// Rewrites the line where it stands.
+///
+/// The one reader of the statics on the drawing path. Everything below it is
+/// handed the line and the plan, so what a line says is a function of what it
+/// is given and can be asked of a line nobody started.
 fn draw() {
     let Some(mut live) = held() else {
         return;
@@ -461,7 +465,10 @@ fn draw() {
     };
 
     live.frame = (live.frame + 1) % FRAMES.len();
-    let text = line(live);
+    let text = match PLAN.lock() {
+        Ok(plan) => line(live, plan.as_ref()),
+        Err(_) => line(live, None),
+    };
 
     let mut stderr = std::io::stderr().lock();
     let _ = write!(stderr, "\r\u{1b}[2K{text}");
@@ -475,13 +482,15 @@ fn draw() {
 /// permanent line's text sits: those open with a glyph and one space, and a
 /// spinner that shifted the column every time it turned would be the one moving
 /// thing on the screen that moved sideways.
-fn line(live: &mut Live) -> String {
+///
+/// `plan` is the scan's account of how far it has got, where it has given one.
+fn line(live: &mut Live, plan: Option<&Progress>) -> String {
     let style = live.style;
     let spinner = style.accent(FRAMES[live.frame]);
 
-    match measured(style) {
-        Some(bar) => format!("{spinner}  {bar}  {}", said(live)),
-        None => format!("{spinner}  {}", said(live)),
+    match measured(style, plan) {
+        Some(bar) => format!("{spinner}  {bar}  {}", said(live, plan)),
+        None => format!("{spinner}  {}", said(live, plan)),
     }
 }
 
@@ -496,9 +505,8 @@ fn line(live: &mut Live) -> String {
 /// [`None`] leaves the line as it was, a spinner and whichever half is up. A
 /// listener is the honest case: having asked for nothing, it can never be
 /// complete.
-fn measured(style: Style) -> Option<String> {
-    let plan = PLAN.lock().ok()?;
-    let (done, total) = plan.as_ref()?.overall()?;
+fn measured(style: Style, plan: Option<&Progress>) -> Option<String> {
+    let (done, total) = plan?.overall()?;
 
     Some(bar(style, done, total))
 }
@@ -561,20 +569,25 @@ fn scaled(settled: u64, planned: u64, range: u64) -> u64 {
 /// future edit to [`draw`] can leave out, and the failure that produces — a
 /// line that comes up and never changes again — reads exactly like a scan that
 /// finished in the first two seconds.
-fn said(live: &mut Live) -> String {
+fn said(live: &mut Live, plan: Option<&Progress>) -> String {
     if live.turned_at.elapsed() >= live.saying.window() {
         turn(live);
     }
 
     match live.saying {
-        Saying::Count => counted(live),
+        Saying::Count => counted(live, plan),
         Saying::Insight => live.style.plain(TIPS[live.tip % TIPS.len()]),
     }
 }
 
 /// The count, with the figures carrying the weight and the words around them
-/// not.
-fn counted(live: &Live) -> String {
+/// not, after the stage the scan says it is working on.
+///
+/// The figures mean different things from one stage to the next: an open port
+/// found during the port sweep and one being asked what it is running are the
+/// same number and not the same news. Naming the stage is what keeps a bar that
+/// restarts from reading as a bar that went backwards.
+fn counted(live: &Live, plan: Option<&Progress>) -> String {
     let style = live.style;
 
     let tally = match live.counting {
@@ -587,22 +600,14 @@ fn counted(live: &Live) -> String {
         ),
     };
 
-    match staged() {
-        Some(stage) => format!("{} {} {tally}", style.plain(&stage), style.faint("·")),
+    match plan {
+        Some(plan) => format!(
+            "{} {} {tally}",
+            style.plain(&plan.stage().to_string()),
+            style.faint("·")
+        ),
         None => tally,
     }
-}
-
-/// What the scan says it is working on.
-///
-/// The figures beside it mean different things from one stage to the next: an
-/// open port found during the port sweep and one being asked what it is running
-/// are the same number and not the same news. Naming the stage is what keeps a
-/// bar that restarts from reading as a bar that went backwards.
-fn staged() -> Option<String> {
-    let plan = PLAN.lock().ok()?;
-
-    Some(plan.as_ref()?.stage().to_string())
 }
 
 /// A figure and the word for it.
@@ -652,13 +657,28 @@ mod tests {
     /// Through `said` rather than a copy of its rule, so that a turn the drawing
     /// path stopped taking is a turn these tests stop seeing.
     fn after_drawing(mut live: Live) -> Saying {
-        let _ = said(&mut live);
+        let _ = said(&mut live, None);
         live.saying
     }
 
-    /// What a line says, asked the way the drawing path asks it.
+    /// What a line with no plan says, asked the way the drawing path asks it.
+    ///
+    /// No plan, rather than whatever the process-wide one holds: a test that
+    /// read [`PLAN`] would say whatever another test running beside it had put
+    /// there.
     fn says(mut live: Live) -> String {
-        said(&mut live)
+        said(&mut live, None)
+    }
+
+    /// Held by every test that touches the line's statics, which are one set
+    /// for the whole test binary.
+    static STATICS: Mutex<()> = Mutex::new(());
+
+    /// Takes [`STATICS`], whether or not a test holding it before panicked.
+    fn statics() -> MutexGuard<'static, ()> {
+        STATICS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// How many of each remainder inside a millisecond the sweep below walks.
@@ -718,10 +738,10 @@ mod tests {
             .build();
         ctx.record_outcome(Outcome::Answered { position: 0 });
         ctx.record_outcome(Outcome::Answered { position: 1 });
-        planning(session.progress().clone());
+        let plan = Some(session.progress());
 
-        let counted = line(&mut live(7, Counting::Hosts, Saying::Count));
-        let tipped = line(&mut live(7, Counting::Hosts, Saying::Insight));
+        let counted = line(&mut live(7, Counting::Hosts, Saying::Count), plan);
+        let tipped = line(&mut live(7, Counting::Hosts, Saying::Insight), plan);
 
         // Half of the first stage of two, so a quarter of the run.
         assert_eq!(
@@ -738,7 +758,7 @@ mod tests {
         // The tail of a scan is its own work, and the one bar carries on into it
         // rather than emptying and filling again.
         ctx.enter_stage(zond_engine::Stage::Detections, Some(8));
-        let detecting = line(&mut live(7, Counting::Hosts, Saying::Count));
+        let detecting = line(&mut live(7, Counting::Hosts, Saying::Count), plan);
         assert!(detecting.contains("detections \u{b7}"), "{detecting}");
         assert!(
             detecting.contains(" 50%"),
@@ -748,9 +768,26 @@ mod tests {
             !detecting.contains("  0%"),
             "a new stage does not send the run back to the start: {detecting}"
         );
+    }
 
+    /// A line with no plan to read draws no bar, and a stopped run leaves none
+    /// behind for the next line to read.
+    ///
+    /// The plan is handed over once and read on every tick until [`stop`], so a
+    /// plan that outlived its run would put the last scan's figure on the next
+    /// one.
+    #[test]
+    fn a_stopped_run_leaves_no_plan_for_the_next_one() {
+        let _statics = statics();
+
+        let (session, _ctx) = zond_engine::ScanSession::builder()
+            .planning(zond_engine::Stage::Discovery, Some(4))
+            .build();
+        planning(session.progress().clone());
         stop();
-        let after = line(&mut live(7, Counting::Hosts, Saying::Count));
+
+        let left = PLAN.lock().expect("the lock").clone();
+        let after = line(&mut live(7, Counting::Hosts, Saying::Count), left.as_ref());
         assert!(
             !after.contains('%'),
             "a finished run leaves no plan for the next one: {after}"
@@ -865,12 +902,12 @@ mod tests {
             live(7, Counting::Hosts, Saying::Insight),
             Duration::from_millis(5_100),
         );
-        let _ = said(&mut line);
+        let _ = said(&mut line, None);
         assert_eq!(line.saying, Saying::Count, "the tip had had its five");
 
         // Its predecessor was four seconds over its window; none of that is
         // charged to the half that replaced it.
-        let _ = said(&mut line);
+        let _ = said(&mut line, None);
         assert_eq!(line.saying, Saying::Count, "the count was cut short");
     }
 
@@ -881,14 +918,22 @@ mod tests {
     #[test]
     fn the_space_bar_turns_the_line_over_now() {
         let mut line = live(7, Counting::Hosts, Saying::Insight);
-        assert_eq!(said(&mut line), TIPS[0], "a tip is up");
+        assert_eq!(said(&mut line, None), TIPS[0], "a tip is up");
 
         turn(&mut line);
-        assert_eq!(said(&mut line), "7 hosts found so far", "space did nothing");
+        assert_eq!(
+            said(&mut line, None),
+            "7 hosts found so far",
+            "space did nothing"
+        );
 
         turn(&mut line);
         // Not the tip that was up before, since that one has had its turn.
-        assert_eq!(said(&mut line), TIPS[1], "and back again, to the next one");
+        assert_eq!(
+            said(&mut line, None),
+            TIPS[1],
+            "and back again, to the next one"
+        );
     }
 
     /// A sweep asks who is there. A port scan was told who is there, so what it
@@ -922,7 +967,7 @@ mod tests {
 
             let mut seen = Vec::new();
             for _ in 0..TIPS.len() {
-                seen.push(said(&mut line));
+                seen.push(said(&mut line, None));
                 // Off to the count and back, which is the only way round.
                 turn(&mut line);
                 turn(&mut line);
@@ -948,7 +993,7 @@ mod tests {
             .map(|tip| {
                 let mut line = live(0, Counting::Hosts, Saying::Insight);
                 line.tip = tip;
-                said(&mut line)
+                said(&mut line, None)
             })
             .collect();
 
@@ -1022,6 +1067,8 @@ mod tests {
     /// is what lets every writer on this stream call `clear` unconditionally.
     #[test]
     fn the_line_is_inert_when_it_was_never_started() {
+        let _statics = statics();
+
         clear();
         seen(1, 1);
         // Including the key: `input` reads it wherever stdin is a terminal, and
