@@ -1180,7 +1180,9 @@ pub(crate) struct ScanArgs {
     /// A pass of its own after service detection, one handshake per version
     /// offered, so it costs several connections per TLS port. What it turns up
     /// that is wrong — a protocol version long deprecated, a suite nobody should
-    /// still accept — is reported as a finding against the port.
+    /// still accept — is reported as a finding against the port. A version the
+    /// endpoint stopped answering about, or the scan stopped asking about, is
+    /// marked unfinished under the port, since what was found for it is a floor.
     #[arg(long)]
     pub tls_enum: bool,
 

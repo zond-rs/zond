@@ -33,6 +33,7 @@ use zond_engine::model::host::status::{StatusProtocol, StatusReason};
 use zond_engine::model::ip::scoped::ScopedIp;
 use zond_engine::model::ip::set::IpSet;
 use zond_engine::model::port::discovery::{Discovery, ScanResponse};
+use zond_engine::model::tls::Interruption;
 use zond_engine::record::wire;
 use zond_engine::report::{ScanKind, ScanPhase};
 use zond_engine::system::privilege::Privilege;
@@ -1273,16 +1274,25 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool, showing: Showing
             );
             // A port with no service would otherwise carry the padding it was
             // never going to fill.
-            let line = line.trim_end().to_owned();
+            let mut line = line.trim_end().to_owned();
 
             // Appended rather than hung, because this mode has nothing to hang
             // from: `minimal` is one tagged line per value and a second line
             // under a port would be a value with no tag. Bracketed so the
             // evidence reads as qualifying the row rather than extending it.
-            match showing.reasons.then(|| reason_detail(port)).flatten() {
-                Some(reason) => format!("{line}  [{}]", reason.value),
-                None => line,
+            if let Some(reason) = showing.reasons.then(|| reason_detail(port)).flatten() {
+                line = format!("{line}  [{}]", reason.value);
             }
+
+            // An unfinished TLS walk rides the row the same way, unasked for:
+            // it qualifies the `risk` lines drawn from that walk, which are
+            // drawn whatever the flags say. The label comes with it, since
+            // nothing else on the row says what is unfinished.
+            for walk in unfinished_walks(port) {
+                line = format!("{line}  [{} {}]", walk.label, walk.value);
+            }
+
+            line
         })
         .collect();
 
@@ -1457,9 +1467,6 @@ pub(crate) const FINGERPRINT_SHOWN: usize = 12;
 /// skip the line on the one host where it matters.
 const EXPIRY_HORIZON: Duration = Duration::from_secs(30 * 86_400);
 
-/// What is known about the transport under a port, as lines that hang off it.
-///
-/// Empty for every port nothing negotiated a session on, which is most of them.
 /// Everything hanging off one port row, in the order it is drawn.
 ///
 /// The reason first: it is what the row's own verdict rests on, and a reader
@@ -1475,6 +1482,10 @@ fn port_detail(port: &Port, showing: Showing) -> Vec<PortDetail> {
     detail
 }
 
+/// What is known about the transport under a port, as lines that hang off it.
+///
+/// Empty for every port no handshake or enumeration reached, which is most of
+/// them.
 fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
     let Some(security) = port.security() else {
         return Vec::new();
@@ -1519,6 +1530,11 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
         });
     }
 
+    // Directly under the negotiated version, so the versions an enumeration
+    // could not settle are read beside the one a handshake did rather than
+    // past a certificate.
+    detail.extend(unfinished_walks(port));
+
     if let Some(certificate) = security.certificate() {
         let (note, urgency) = expiry(certificate.validity_end());
         detail.push(PortDetail {
@@ -1550,6 +1566,47 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
     }
 
     detail
+}
+
+/// What a TLS enumeration of this port left unfinished, one line per cause.
+///
+/// A version's walk finishes when the endpoint declines what is left of the
+/// offer. One that ended any other way found a floor or nothing, so what the
+/// port's findings say about that version is a floor too, and a version it
+/// never settled is neither accepted nor refused. Without this line the first
+/// reads as the whole answer and the second as a refusal.
+///
+/// Grouped by cause, because the cause is what a reader acts on: `unanswered`
+/// is the endpoint going quiet, which a slower scan gets past, and `stopped` is
+/// this scan's own budget or stop, which a longer one does. The versions are
+/// the value and nothing is a note, so a long list of them never moves the
+/// column every other port's certificate expiry is drawn in.
+///
+/// Empty for every port whose walks all finished, and for every port no scan
+/// enumerated.
+fn unfinished_walks(port: &Port) -> Vec<PortDetail> {
+    let Some(security) = port.security() else {
+        return Vec::new();
+    };
+    let unfinished = security.support().unfinished();
+
+    Interruption::ALL
+        .into_iter()
+        .filter_map(|cause| {
+            let versions: Vec<&str> = unfinished
+                .iter()
+                .filter(|walk| walk.interruption() == cause)
+                .map(|walk| walk.version().name())
+                .collect();
+
+            (!versions.is_empty()).then(|| {
+                PortDetail::new(
+                    "suites",
+                    format!("{}  unfinished, {cause}", versions.join(" ")),
+                )
+            })
+        })
+        .collect()
 }
 
 /// One finding worth a line, with its columns padded and its citations kept
@@ -2858,6 +2915,31 @@ mod tests {
             },
         );
         assert!(lines[0].ends_with("[SYN/ACK]"), "{}", lines[0]);
+    }
+
+    /// An unfinished TLS walk rides on the row too, unasked for: it qualifies
+    /// the `risk` lines this mode draws from the same walk, and those are
+    /// drawn whatever the flags say.
+    #[test]
+    fn the_terse_mode_carries_an_unfinished_tls_walk_on_the_row() {
+        use zond_engine::model::port::Security;
+        use zond_engine::model::tls::{Interruption, TlsSupport, TlsVersion, UnfinishedVersion};
+
+        let mut host = host(1);
+        host.add_port(
+            Port::new(443, Protocol::Tcp, PortState::Open).with_security(
+                Security::new().with_support(TlsSupport::new().leaving_unfinished(
+                    UnfinishedVersion::new(TlsVersion::Tls12, Interruption::Unanswered),
+                )),
+            ),
+        );
+
+        let lines = ports(&host, true, Showing::default());
+        assert!(
+            lines[0].ends_with("[suites TLSv1.2  unfinished, unanswered]"),
+            "{}",
+            lines[0]
+        );
     }
 
     /// A response this build has no word for is spelled as the wire spells it,

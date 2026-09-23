@@ -705,6 +705,9 @@ mod tests {
     use zond_engine::model::host::status::{StatusProtocol, StatusReason};
     use zond_engine::model::ip::scoped::Zone;
     use zond_engine::model::port::security::{CertificateInfo, Security};
+    use zond_engine::model::tls::{
+        CipherSuite, Interruption, TlsSupport, TlsVersion, UnfinishedVersion, VersionSupport,
+    };
     use zond_engine::{Port, Protocol, Service};
 
     use std::str::FromStr;
@@ -902,6 +905,32 @@ mod tests {
                 ),
         );
         host
+    }
+
+    /// A host serving TLS 1.3 on 443, whose enumeration established `support`.
+    fn enumerated(support: TlsSupport) -> Host {
+        let mut host = host(31);
+        host.add_port(
+            Port::new(443, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("https", 100).with_product("nginx"))
+                .with_security(
+                    Security::new()
+                        .with_tls_version("TLSv1.3")
+                        .with_cipher_suite("TLS_AES_256_GCM_SHA384")
+                        .with_support(support),
+                ),
+        );
+        host
+    }
+
+    /// What an endpoint accepting one TLS 1.2 suite is recorded as accepting.
+    fn accepting_tls12() -> TlsSupport {
+        let suite = CipherSuite::from_code(0xC02F).expect("a suite the registry carries");
+        TlsSupport::new().accepting(VersionSupport::new(
+            TlsVersion::Tls12,
+            vec![suite],
+            Vec::new(),
+        ))
     }
 
     /// A finding of `severity` about `title`, from a detection named `id`.
@@ -1773,6 +1802,64 @@ mod tests {
             "{}",
             explained(&host)
         );
+    }
+
+    /// A TLS walk cut short says so under its port, and says why.
+    ///
+    /// Drawn like a finished walk, what a version accepted before the cut
+    /// reads as everything it accepts, and a version never settled reads as
+    /// refused. One line per cause, because the cause is what a reader acts
+    /// on, with the versions under the one the handshake negotiated.
+    #[test]
+    fn an_unfinished_tls_walk_hangs_off_its_port_with_why() {
+        let support = accepting_tls12()
+            .leaving_unfinished(UnfinishedVersion::new(
+                TlsVersion::Tls10,
+                Interruption::Unanswered,
+            ))
+            .leaving_unfinished(UnfinishedVersion::new(
+                TlsVersion::Tls11,
+                Interruption::Stopped,
+            ))
+            .leaving_unfinished(UnfinishedVersion::new(
+                TlsVersion::Tls12,
+                Interruption::Stopped,
+            ));
+        let text = block(&enumerated(support));
+
+        let line = |needle: &str| {
+            text.lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("no line carrying {needle}: {text}"))
+        };
+        let at = |needle: &str| line(needle).find(needle).unwrap_or_else(|| unreachable!());
+
+        assert_eq!(
+            line("TLSv1.0").trim(),
+            "suites  TLSv1.0  unfinished, unanswered",
+            "{text}"
+        );
+        assert_eq!(
+            line("TLSv1.1").trim(),
+            "suites  TLSv1.1 TLSv1.2  unfinished, stopped",
+            "{text}"
+        );
+        assert_eq!(
+            at("TLSv1.3"),
+            at("TLSv1.0"),
+            "the versions are not in the column the negotiated one is: {text}"
+        );
+    }
+
+    /// A walk that finished hangs nothing. Its findings are the whole answer,
+    /// and a line on every enumerated port saying so is one a reader learns to
+    /// skip on the port where it would have said otherwise.
+    #[test]
+    fn a_finished_tls_walk_hangs_nothing_off_its_port() {
+        let text = block(&enumerated(accepting_tls12()));
+
+        assert!(!text.contains("suites"), "{text}");
+        assert!(!text.contains("unfinished"), "{text}");
     }
 
     /// The working behind an operating-system finding, on the same rule.
