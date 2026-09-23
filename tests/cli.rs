@@ -16,10 +16,14 @@
 //! `~/.config/zond` and then read it back, so a developer with their own
 //! `presentation = "fancy"` would watch the suite fail over a setting.
 //!
-//! Only loopback and the documentation ranges are used. A test that reached for
-//! whatever network it happens to run on passes on a laptop and fails in a
-//! container.
+//! Nothing is sent off the machine. Every scan here is of loopback, and a
+//! documentation range is named only in a document being read or where the run
+//! is refused before it sends anything. Those ranges are unrouted on the
+//! internet, not unreachable: a probe to one still leaves through the default
+//! route, onto whatever network the suite happens to run on, and whatever
+//! answers there decides the outcome.
 
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -126,6 +130,19 @@ fn holds_a_raw_socket() -> bool {
     zond_engine::system::privilege::can_send_raw()
 }
 
+/// An address nothing answers for that a probe cannot leave the machine to
+/// reach, or `None` where this machine has no such address.
+///
+/// `127.0.0.2` is routed to loopback everywhere. Linux holds the whole of
+/// `127.0.0.0/8`, so there it answers as `127.0.0.1` does; macOS and the BSDs
+/// hold `127.0.0.1` alone, so there a probe to it is delivered to loopback and
+/// dropped. Whether this machine holds it is asked by binding to it, which
+/// sends nothing.
+fn silent_loopback() -> Option<IpAddr> {
+    let address = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+    UdpSocket::bind((address, 0)).is_err().then_some(address)
+}
+
 /// Does not assert loopback was *found*, since that depends on something
 /// listening, which is true of a developer's machine and not of a build
 /// container. What is checked is that the scan runs to completion.
@@ -141,11 +158,17 @@ fn an_ipv6_target_runs_the_same_way() {
     assert_eq!(status(&run), 0, "{}", stderr(&run));
 }
 
-/// Finding nothing is an answer. TEST-NET-1 belongs to no one.
+/// Finding nothing is an answer.
 #[test]
 fn an_empty_result_is_still_a_success() {
-    let run = zond("empty", &["-q", "d", "192.0.2.1-4"]);
+    let Some(silent) = silent_loopback() else {
+        eprintln!("SKIP: every loopback address answers here, so none is silent");
+        return;
+    };
+
+    let run = zond("empty", &["-q", "--pipe", "d", &silent.to_string()]);
     assert_eq!(status(&run), 0, "{}", stderr(&run));
+    assert_eq!(stdout(&run), "", "the silent address was found");
 }
 
 /// The shell is told the request was wrong, not that the scan failed.
@@ -176,28 +199,30 @@ fn an_unwalkable_ipv6_range_is_refused_by_the_engine_and_reported_partial() {
 
 /// Resolving a target name is DNS traffic before the scan has started, so a run
 /// forbidden from sending any has to refuse the name rather than drop it.
+///
+/// `localhost` is answered on this machine, so a refusal that stopped working
+/// fails the test without putting a query on the network.
 #[test]
 fn a_hostname_is_refused_when_dns_is_forbidden() {
-    let run = zond("no-dns", &["-q", "d", "-n", "one.one.one.one"]);
+    let run = zond("no-dns", &["-q", "d", "-n", "localhost"]);
     assert_eq!(status(&run), 2, "{}", stderr(&run));
     assert!(stderr(&run).contains("--no-dns"), "{}", stderr(&run));
 }
 
 /// The flag reaches the scan, and the run says what it will not touch.
 ///
-/// TEST-NET-1 answers nothing either way, so what is asserted is the accounting
-/// rather than a finding: four addresses named, two of them withheld, and the
-/// header reporting the two that are left. That is the whole path, from clap to
-/// the target grammar to the engine's policy to the line a person reads, and no
-/// unit test covers all of it.
+/// What is asserted is the accounting rather than a finding: four addresses
+/// named, two of them withheld, and the header reporting the two that are left.
+/// That is the whole path, from clap to the target grammar to the engine's
+/// policy to the line a person reads, and no unit test covers all of it.
 #[test]
 fn an_excluded_range_is_named_and_left_out_of_the_count() {
-    let run = zond("exclude", &["d", "192.0.2.1-4", "--exclude", "192.0.2.3-4"]);
+    let run = zond("exclude", &["d", "127.0.0.1-4", "--exclude", "127.0.0.3-4"]);
     assert_eq!(status(&run), 0, "{}", stderr(&run));
 
     let said = stderr(&run);
     assert!(said.contains("discovering 2 addresses"), "{said}");
-    assert!(said.contains("excluding 192.0.2.3-192.0.2.4"), "{said}");
+    assert!(said.contains("excluding 127.0.0.3-127.0.0.4"), "{said}");
     assert!(said.contains("2 addresses withheld"), "{said}");
 }
 
@@ -228,22 +253,21 @@ fn a_files_exclusions_survive_a_flag_that_adds_its_own() {
     std::fs::create_dir_all(directory.join("zond")).expect("a writable directory");
     std::fs::write(
         directory.join("zond/engine.toml"),
-        "[defaults]\nexclude = [\"192.0.2.1\"]\n",
+        "[defaults]\nexclude = [\"127.0.0.1\"]\n",
     )
     .expect("a writable file");
 
-    let run = zond_in(&directory, &["d", "192.0.2.1-4", "--exclude", "192.0.2.4"]);
+    let run = zond_in(&directory, &["d", "127.0.0.1-4", "--exclude", "127.0.0.4"]);
     assert_eq!(status(&run), 0, "{}", stderr(&run));
 
+    // Read off the exclusion line alone. The header names the targets as they
+    // were written, so the file's address appears on it whether or not the file
+    // was honoured.
     let said = stderr(&run);
     assert!(said.contains("discovering 2 addresses"), "{said}");
     assert!(
-        said.contains("192.0.2.1"),
-        "the file's range is in force: {said}"
-    );
-    assert!(
-        said.contains("192.0.2.4"),
-        "the flag's range is too: {said}"
+        said.contains("excluding 127.0.0.1, 127.0.0.4 (2 addresses withheld)"),
+        "the file's address and the flag's are both in force: {said}"
     );
 }
 
@@ -291,7 +315,7 @@ fn every_named_presentation_runs_and_anything_else_is_a_usage_error() {
     for mode in ["pipe", "minimal", "fancy"] {
         let run = zond(
             &format!("presentation-{mode}"),
-            &["-q", "--presentation", mode, "d", "192.0.2.1"],
+            &["-q", "--presentation", mode, "d", "127.0.0.1"],
         );
         assert_eq!(status(&run), 0, "{mode}: {}", stderr(&run));
     }
@@ -362,14 +386,14 @@ fn the_engines_default_ports_decide_a_scan_with_no_flag() {
     )
     .expect("a writable file");
 
-    let from_file = zond_in(&directory, &["s", "192.0.2.1"]);
+    let from_file = zond_in(&directory, &["s", "127.0.0.1"]);
     assert!(
         stderr(&from_file).contains("scanning 2 probes across 1 host"),
         "{}",
         stderr(&from_file)
     );
 
-    let from_flag = zond_in(&directory, &["s", "192.0.2.1", "-p", "1-5"]);
+    let from_flag = zond_in(&directory, &["s", "127.0.0.1", "-p", "1-5"]);
     assert!(
         stderr(&from_flag).contains("scanning 5 probes across 1 host"),
         "the flag must win outright, not merge: {}",
@@ -413,8 +437,8 @@ fn the_engines_settings_file_is_honoured() {
     .expect("a writable file");
 
     // No `-n` on this command line. If the file is being read, the hostname is
-    // refused anyway; if it is not, the name resolves and the scan runs.
-    let run = zond_in(&directory, &["-q", "d", "one.one.one.one"]);
+    // refused anyway; if it is not, the name resolves and loopback is swept.
+    let run = zond_in(&directory, &["-q", "d", "localhost"]);
 
     assert_eq!(status(&run), 2, "{}", stderr(&run));
     assert!(stderr(&run).contains("engine.toml"), "{}", stderr(&run));
@@ -518,14 +542,14 @@ fn a_port_scan_runs_to_completion() {
 /// Both halves of the arithmetic are pinned: ports per host, and hosts.
 #[test]
 fn the_ports_flag_decides_how_many_probes_are_spent() {
-    let one = zond("scan-probes-one", &["s", "192.0.2.1", "-p", "22,80,443"]);
+    let one = zond("scan-probes-one", &["s", "127.0.0.1", "-p", "22,80,443"]);
     assert!(
         stderr(&one).contains("scanning 3 probes across 1 host"),
         "{}",
         stderr(&one)
     );
 
-    let many = zond("scan-probes-many", &["s", "192.0.2.1-4", "-p", "1-10"]);
+    let many = zond("scan-probes-many", &["s", "127.0.0.1-4", "-p", "1-10"]);
     assert!(
         stderr(&many).contains("scanning 40 probes across 4 hosts"),
         "{}",
@@ -538,7 +562,7 @@ fn the_ports_flag_decides_how_many_probes_are_spent() {
 /// ports than the list holds yields the whole of it.
 #[test]
 fn the_top_ports_flags_decide_which_ranked_lists_are_probed() {
-    let udp = zond("scan-top-udp", &["s", "192.0.2.1", "--top-ports-udp", "20"]);
+    let udp = zond("scan-top-udp", &["s", "127.0.0.1", "--top-ports-udp", "20"]);
     assert!(
         stderr(&udp).contains("scanning 20 probes across 1 host"),
         "{}",
@@ -549,7 +573,7 @@ fn the_top_ports_flags_decide_which_ranked_lists_are_probed() {
         "scan-top-both",
         &[
             "s",
-            "192.0.2.1",
+            "127.0.0.1",
             "--top-ports",
             "10",
             "--top-ports-udp",
@@ -564,7 +588,7 @@ fn the_top_ports_flags_decide_which_ranked_lists_are_probed() {
 
     let clamped = zond(
         "scan-top-udp-all",
-        &["s", "192.0.2.1", "--top-ports-udp", "400"],
+        &["s", "127.0.0.1", "--top-ports-udp", "400"],
     );
     assert!(
         stderr(&clamped).contains("scanning 250 probes across 1 host"),
@@ -690,10 +714,20 @@ fn the_pipe_format_carries_every_documented_field() {
 /// The case this exists for: a dead address must not cost a probe per port.
 ///
 /// Asserted as behaviour rather than timing: no port record, and a note saying
-/// which flag scans it anyway.
+/// which flag scans it anyway. Where no address is silent, the engine's own
+/// suite still holds the decision, and what goes unchecked is only this
+/// program's account of it.
 #[test]
 fn an_address_nothing_answers_for_is_not_port_scanned() {
-    let run = zond("scan-dead", &["--pipe", "s", "192.0.2.1", "-p", "1-64"]);
+    let Some(silent) = silent_loopback() else {
+        eprintln!("SKIP: every loopback address answers here, so none is silent");
+        return;
+    };
+
+    let run = zond(
+        "scan-dead",
+        &["--pipe", "s", &silent.to_string(), "-p", "1-64"],
+    );
 
     assert_eq!(status(&run), 0, "{}", stderr(&run));
     assert_eq!(stdout(&run), "", "a dead address produced port records");
@@ -705,21 +739,29 @@ fn an_address_nothing_answers_for_is_not_port_scanned() {
 }
 
 /// `--assume-up` is what reaches a host that is up and answering no knock.
+///
+/// It does so by not knocking, which loopback shows as plainly as a silent host
+/// would and on every platform: the ports are probed, and no liveness round
+/// trip is measured. The same scan without the flag measures one, as
+/// `a_live_host_is_scanned_and_timed` pins.
 #[test]
-fn assume_up_scans_an_address_that_answered_nothing() {
+fn assume_up_scans_a_host_without_asking_whether_it_is_there() {
     let run = zond(
         "scan-assume-up",
-        &["-q", "--pipe", "s", "192.0.2.1", "-p", "1,2", "--assume-up"],
+        &["-q", "--pipe", "s", "127.0.0.1", "-p", "1,2", "--assume-up"],
     );
 
     assert_eq!(status(&run), 0, "{}", stderr(&run));
 
     let fields = record(&run);
-    assert_eq!(fields[0], "192.0.2.1");
-    assert!(
-        fields[11].contains("1/tcp") && fields[11].contains("2/tcp"),
-        "both ports should have been probed on trust: {:?}",
-        fields[11]
+    assert_eq!(fields[0], "127.0.0.1");
+    assert_eq!(
+        fields[2], "-",
+        "no liveness phase ran to measure a round trip"
+    );
+    assert_eq!(
+        fields[12], "2",
+        "both ports were probed on trust and came back closed"
     );
 }
 

@@ -94,8 +94,8 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-The test suite scans loopback and the documentation ranges only, so it needs no
-network and no privileges.
+The test suite scans loopback and nothing else, so it needs no network and no
+privileges, and puts nothing on whatever network you run it on.
 
 A few expectations specific to this codebase:
 
