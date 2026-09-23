@@ -385,6 +385,14 @@ impl Narrator {
             && field::privilege(report) == Some(Privilege::Connect)
         {
             match kind {
+                // A watch sends nothing, so it has no connect fallback to
+                // describe and nothing sudo would change about how it probed.
+                // It records `Connect` when no link could be captured on, and
+                // the engine's failure line already says why, naming a missing
+                // privilege only where that is what refused it. A second line
+                // guessing at the cause would tell a root user, whose link
+                // refused for some other reason, that the watch needed root.
+                ScanKind::Listen => {}
                 ScanKind::PortScan if !field::probed_tcp(report) => {}
                 // And a sweep's is a claim about connect attempts, made only
                 // where there were some. One whose whole range was refused made
@@ -844,10 +852,56 @@ mod tests {
         assert!(!said.contains("sudo"), "{said}");
     }
 
+    /// A watch that could not capture is not told it ran connect attempts, or
+    /// that sudo would have helped.
+    ///
+    /// A watch records `Connect` whenever no link could be captured on, root
+    /// or not, and it probes nothing, so neither half of the note is true of
+    /// it. The engine's own failure line names what refused the capture, and
+    /// names privilege only where privilege was missing: a root watch on a
+    /// tunnel read `ran without raw sockets` beneath a failure that had
+    /// nothing to do with privilege.
+    #[test]
+    fn a_watch_that_could_not_capture_is_not_advised_about_raw_sockets() {
+        let said = summarised(&listened_by(Privilege::Connect));
+
+        assert!(!said.contains("raw sockets"), "{said}");
+        assert!(!said.contains("connect attempts"), "{said}");
+        assert!(!said.contains("sudo"), "{said}");
+    }
+
     /// A scan of this engine's whose phase said nothing, on the same rule: the
     /// note follows a recorded privilege and never an absence.
     fn unprivileged() -> ScanReport {
         rebuilt(Some(Privilege::Connect))
+    }
+
+    /// A report of one listening phase, run with `privilege`.
+    fn listened_by(privilege: Privilege) -> ScanReport {
+        use zond_engine::report::{PhaseParts, ScanPhase};
+
+        let report = scoped(vec![host(1)], "192.0.2.0/24");
+        let phase = &report.phases()[0];
+
+        let listened = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::Listen,
+            started_at: phase.started_at(),
+            elapsed: phase.elapsed(),
+            privilege: Some(privilege),
+            targets: phase.targets().clone(),
+            settings: phase.settings().clone(),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            probes: Vec::new(),
+            origin: None,
+        });
+
+        let hosts: Vec<_> = report.hosts().cloned().collect();
+        ScanReport::recorded("test", vec![listened], hosts)
     }
 
     fn foreign() -> ScanReport {
