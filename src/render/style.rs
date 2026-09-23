@@ -397,6 +397,11 @@ impl Mark {
     /// One column each, so the text after them starts in one column whatever
     /// kind of line it is.
     ///
+    /// `━` U+2501 for a warning: a heavy dash, one column wide in any monospace
+    /// face, that reads as the minus between a success's `+` and an error's
+    /// `×`. A heavy-minus emoji would draw two columns in many terminals and
+    /// push the text after it out of line.
+    ///
     /// `•` U+2022 for the ordinary line rather than `·` U+00B7, which is the
     /// same shape two sizes down and reads as a speck on the glass rather than
     /// as a mark somebody put there. It carries the most lines by far, so it has
@@ -407,7 +412,7 @@ impl Mark {
         match self {
             Mark::Info => "\u{2022}",
             Mark::Success => "+",
-            Mark::Warning => "\u{25b2}",
+            Mark::Warning => "\u{2501}",
             Mark::Error => "\u{d7}",
             Mark::Outgoing => "\u{bb}",
             Mark::Incoming => "\u{ab}",
@@ -736,7 +741,7 @@ impl Style {
     /// beside it drawn faint.
     ///
     /// **The colour rides on the glyph alone, and every line's text is one faint
-    /// grey.** A success, a warning and an error are a green `+`, a yellow `▲`
+    /// grey.** A success, a warning and an error are a green `+`, a yellow `━`
     /// and a red `×` in front of grey text, the same grey a remark's `•` sits in
     /// front of. Colour marks the *kind* of line in one column, which is the
     /// whole of what it is for; the commentary itself is furniture behind the
@@ -921,7 +926,7 @@ mod tests {
 
     /// The colour of a line rides on its glyph; its text is one faint grey.
     ///
-    /// A warning is a coloured `▲` in front of grey text, not a sentence washed
+    /// A warning is a coloured `━` in front of grey text, not a sentence washed
     /// yellow: colour marks the kind of line in one column, and the commentary
     /// itself recedes into the same dim shade whatever its glyph. The glyph
     /// carries the hue; the text is faint throughout.
@@ -982,7 +987,7 @@ mod tests {
         // an implementation detail. The set is what a reader learns once.
         assert_eq!(
             marks.map(Mark::glyph),
-            ["\u{2022}", "+", "\u{25b2}", "\u{d7}", "\u{bb}", "\u{ab}"]
+            ["\u{2022}", "+", "\u{2501}", "\u{d7}", "\u{bb}", "\u{ab}"]
         );
 
         let glyphs: Vec<&str> = marks.iter().map(|mark| mark.glyph()).collect();

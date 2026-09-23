@@ -22,7 +22,7 @@
 //!   [`Mark`].
 //!
 //! Every line opens with one column saying what kind of line it is: `·` for
-//! ordinary commentary, `»` and `«` for a probe and its answer, `!` and `×` for
+//! ordinary commentary, `»` and `«` for a probe and its answer, `━` and `×` for
 //! the two that want reading. This crate's own narration answers to the same
 //! six, so one stream does not carry two vocabularies.
 //!

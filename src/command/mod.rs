@@ -260,13 +260,13 @@ fn enforce(root: &std::path::Path, limit: settings::EntryLimit) {
     match store::prune(root, &retention) {
         Ok(pruned) => {
             if !pruned.removed.is_empty() {
-                // Under `-v` only. Once a machine is at its limit every scan
-                // prunes one record, so at the headline level this is a line per
-                // run about housekeeping the user configured and does not act on.
-                // It is worth keeping for somebody watching what the journal
-                // does, which is what `-v` is for.
+                // Under `-vv`. Once a machine is at its limit every scan prunes
+                // one record, so this is a line per run about housekeeping the
+                // user configured and does not act on, and `-v` is for the
+                // decisions behind a result. Worth keeping for somebody watching
+                // what the journal does.
                 tracing::info!(
-                    verbosity = 1,
+                    verbosity = 2,
                     "keeping the newest {cap} records: {} older {} removed",
                     pruned.removed.len(),
                     if pruned.removed.len() == 1 {
