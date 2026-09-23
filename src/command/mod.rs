@@ -145,26 +145,6 @@ pub(crate) fn redaction(config: &ZondConfig) -> Redaction {
     }
 }
 
-/// Warns once when a VPN tunnel holds the default route and no source was
-/// pinned. A routed target is then sent from whatever the tunnel chose, which a
-/// full tunnel the link layer cannot cross turns into a silent black hole:
-/// probes leave, nothing returns, and the host reads as down. `--send-interface`
-/// is the way out, so the warning names it rather than the silence it prevents.
-pub(crate) fn warn_if_vpn_holds_default_route(config: &ZondConfig) {
-    if !config.send_source.is_empty() {
-        return;
-    }
-    let tunnel = zond_engine::system::interface::interfaces()
-        .into_iter()
-        .find(|link| link.is_up() && link.carries_default_route() && link.is_point_to_point());
-    if let Some(tunnel) = tunnel {
-        tracing::warn!(
-            "default route is via VPN {}; routed targets may need --send-interface",
-            tunnel.name()
-        );
-    }
-}
-
 /// Whether this run leaves a record, and how many are kept once it has.
 ///
 /// The two travel together because they are answered in the same place from the

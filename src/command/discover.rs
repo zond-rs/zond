@@ -46,7 +46,6 @@ pub(crate) async fn run(
     // flag.
     let mut config = command::engine_settings(args.engine.profile.as_deref())?.config;
     args.engine.apply_to(&mut config);
-    command::warn_if_vpn_holds_default_route(&config);
 
     // A resume needs no targets: the plan comes from the record, which is what
     // ran rather than what somebody types the second time.

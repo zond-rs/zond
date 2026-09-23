@@ -68,7 +68,6 @@ pub(crate) async fn run(
     let settings = command::engine_settings(args.engine.profile.as_deref())?;
     let mut config = settings.config;
     args.apply_to(&mut config);
-    command::warn_if_vpn_holds_default_route(&config);
 
     // A SYN scan reaches `filtered` from silence and from a refusal alike, so it
     // does not ask its capture for ICMP unless something wants to tell the two
