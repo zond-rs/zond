@@ -638,8 +638,11 @@ fn a_scan_beyond_the_probe_limit_is_a_usage_error() {
 ///
 /// Both paths a process without a raw socket takes refuse it: the connect path
 /// has no way to send a FIN, and the frames path cannot reach loopback. What is
-/// asserted is the refusal each of them announces under `-v`, since the lines
-/// they print about their own capabilities differ and neither is the refusal.
+/// asserted is the refusal each of them names in its summary, at the default
+/// verbosity, since the lines they print about their own capabilities differ
+/// and neither is the refusal. Nor may either say its ports were tested by
+/// completing connections, which on the connect path it did say, beneath a
+/// count of no ports probed.
 ///
 /// The host is still reported: the liveness phase established it is there before
 /// the port phase refused to probe it. What must be absent is any *port* record,
@@ -654,7 +657,6 @@ fn a_technique_needing_a_raw_socket_is_refused_rather_than_downgraded() {
     let run = zond(
         "scan-technique",
         &[
-            "-v",
             "--pipe",
             "s",
             "127.0.0.1",
@@ -672,6 +674,10 @@ fn a_technique_needing_a_raw_socket_is_refused_rather_than_downgraded() {
         said.lines()
             .any(|line| line.contains("not covered") && line.contains("fin technique")),
         "the refusal names the technique it refused: {said}"
+    );
+    assert!(
+        !said.contains("completing a connection"),
+        "no port was tested, by a connection or otherwise: {said}"
     );
 
     let fields = record(&run);

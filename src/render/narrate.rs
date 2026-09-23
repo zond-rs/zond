@@ -338,6 +338,15 @@ impl Narrator {
     /// Its own method because a summary is one line and a page of
     /// caveats, and the line is the part every run prints.
     fn qualifications(&mut self, report: &ScanReport) -> io::Result<()> {
+        // Ground the engine declined before sending anything, in its own words.
+        // First, because it is what explains a count of nothing above it, and
+        // at every verbosity, because it is the whole reason such a run exits
+        // `3`: a refused technique or an unwalkable range would otherwise end
+        // on a short count and a status with nothing on the console to say why.
+        for reason in field::refusals(report) {
+            self.note(&format!("not covered: {reason}"))?;
+        }
+
         // After the count rather than before the scan: both notes say the count
         // is an undercount, which matters when somebody is looking at it. The
         // engine already announced the privilege level; this adds the remedy.
@@ -352,22 +361,27 @@ impl Narrator {
         // advised to use sudo, on the same page as the ARP replies that answered
         // it. `Some(Connect)` and nothing else, so silence is never read as a
         // finding.
+        //
+        // A port scan's note is a claim about how its TCP ports were probed,
+        // so it is made only where one was. A scan whose technique was refused
+        // probed none, and one that named only UDP completed no connection.
         if let Some(kind) = field::kind(report)
             && field::privilege(report) == Some(Privilege::Connect)
         {
-            self.note(match kind {
-                ScanKind::PortScan => {
-                    "ran without raw sockets, so every port was tested by \
+            match kind {
+                ScanKind::PortScan if !field::probed_tcp(report) => {}
+                ScanKind::PortScan => self.note(
+                    "ran without raw sockets, so every TCP port was tested by \
                      completing a connection. Run with sudo for SYN scanning, \
                      which is faster, less visible, and the only way to ask a \
-                     port anything other than \"will you accept\"."
-                }
-                _ => {
+                     port anything other than \"will you accept\".",
+                )?,
+                _ => self.note(
                     "ran without raw sockets, so this was TCP connect \
                      attempts against a few common ports. Run with sudo for ARP \
-                     and ICMPv6 discovery, which finds hosts this cannot."
-                }
-            })?;
+                     and ICMPv6 discovery, which finds hosts this cannot.",
+                )?,
+            }
         }
 
         // The result most likely to be read as a broken tool rather than an
@@ -813,12 +827,21 @@ mod tests {
     /// the one that says a *port scan* ran, which is what the note under test
     /// keys on.
     fn port_scanned(hosts: Vec<zond_engine::Host>, covered: &str) -> ScanReport {
+        port_scanned_by(Privilege::Raw, hosts, covered, Vec::new())
+    }
+
+    /// The same, run with `privilege` and declining what `refusals` name.
+    fn port_scanned_by(
+        privilege: Privilege,
+        hosts: Vec<zond_engine::Host>,
+        covered: &str,
+        refusals: Vec<zond_engine::report::Refusal>,
+    ) -> ScanReport {
         use std::time::Duration;
         use zond_engine::ZondConfig;
         use zond_engine::model::exclusion::Exclusions;
         use zond_engine::model::parse::ip::to_set;
         use zond_engine::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, TargetScope};
-        use zond_engine::system::privilege::Privilege;
 
         let mut targets = to_set(&[covered], None, None).expect("a range");
         let phase = ScanPhase::from_parts(PhaseParts {
@@ -826,11 +849,11 @@ mod tests {
             kind: ScanKind::PortScan,
             started_at: recorded_at(),
             elapsed: Duration::from_secs(1),
-            privilege: Some(Privilege::Raw),
+            privilege: Some(privilege),
             targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
-            refusals: Vec::new(),
+            refusals,
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
@@ -885,6 +908,103 @@ mod tests {
             !said.contains("no ports probed"),
             "a port that was probed and came back closed is still a probed port: {said}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // What a scan without raw sockets says it did
+    // -----------------------------------------------------------------------
+
+    /// A host whose one probed port is `port`, of `protocol`, and closed.
+    fn host_with(port: u16, protocol: zond_engine::Protocol) -> zond_engine::Host {
+        let mut host = host(1);
+        host.add_port(zond_engine::Port::new(
+            port,
+            protocol,
+            zond_engine::PortState::Closed,
+        ));
+        host
+    }
+
+    /// A connect scan that probed TCP ports says how it probed them, and what
+    /// running as root would add.
+    #[test]
+    fn a_connect_scan_of_tcp_ports_says_it_completed_connections() {
+        let report = port_scanned_by(
+            Privilege::Connect,
+            vec![host_with(22, zond_engine::Protocol::Tcp)],
+            "192.0.2.1",
+            Vec::new(),
+        );
+        let said = summarised(&report);
+
+        assert!(said.contains("completing a connection"), "{said}");
+        assert!(said.contains("sudo"), "{said}");
+    }
+
+    /// A technique the connect path cannot express is refused, and the summary
+    /// says so rather than that every port was tested by a connection.
+    ///
+    /// The refusal is the one line that explains the `no ports probed` above
+    /// it and the exit status after it, so it is said at the default
+    /// verbosity. The claim about connections is left out because no
+    /// connection was made: the one sentence would contradict the other.
+    #[test]
+    fn a_refused_technique_is_named_and_no_port_is_said_to_be_tested() {
+        let refused = zond_engine::report::Refusal::new(
+            zond_engine::report::ScannerKind::TcpPort,
+            "the fin technique needs raw sockets",
+        );
+        let report = port_scanned_by(
+            Privilege::Connect,
+            vec![host(1)],
+            "192.0.2.1",
+            vec![refused],
+        );
+        let said = summarised(&report);
+
+        assert!(
+            said.contains("not covered: the fin technique needs raw sockets"),
+            "the refusal was not said: {said}"
+        );
+        assert!(
+            !said.contains("completing a connection"),
+            "a scan that probed no port claimed to have tested them: {said}"
+        );
+    }
+
+    /// Only TCP completes a connection, so a scan that probed nothing else
+    /// makes no claim that it did.
+    #[test]
+    fn a_connect_scan_of_udp_ports_alone_claims_no_connections() {
+        let report = port_scanned_by(
+            Privilege::Connect,
+            vec![host_with(53, zond_engine::Protocol::Udp)],
+            "192.0.2.1",
+            Vec::new(),
+        );
+        let said = summarised(&report);
+
+        assert!(!said.contains("completing a connection"), "{said}");
+    }
+
+    /// A refusal met by two phases is one reason, and is said once.
+    #[test]
+    fn a_refusal_two_phases_filed_is_said_once() {
+        let refused = || {
+            zond_engine::report::Refusal::new(
+                zond_engine::report::ScannerKind::Local,
+                "too large to walk",
+            )
+        };
+        let report = port_scanned_by(
+            Privilege::Raw,
+            vec![host(1)],
+            "192.0.2.1",
+            vec![refused(), refused()],
+        );
+        let said = summarised(&report);
+
+        assert_eq!(said.matches("too large to walk").count(), 1, "{said}");
     }
 
     // -----------------------------------------------------------------------

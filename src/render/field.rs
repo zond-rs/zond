@@ -2450,6 +2450,36 @@ pub(crate) fn timed_out(report: &ScanReport) -> u128 {
     seen.len() as u128
 }
 
+/// Why each part of the ground the engine declined went uncovered, once per
+/// reason and in the order the phases filed them.
+///
+/// The engine files a refusal once per phase, and a reader acts on the reason
+/// rather than on how many phases met it, so one repeated across phases is said
+/// once.
+pub(crate) fn refusals(report: &ScanReport) -> Vec<&str> {
+    let mut reasons: Vec<&str> = Vec::new();
+    for refusal in report.refusals() {
+        if !reasons.contains(&refusal.reason()) {
+            reasons.push(refusal.reason());
+        }
+    }
+    reasons
+}
+
+/// Whether any host in the report carries a TCP port, which is to say a TCP
+/// port was probed.
+///
+/// Every probed port is recorded, closed and unanswered ones included, so a
+/// port scan with none has no TCP verdict to account for: its technique was
+/// refused, no host answered the liveness pass, or it named other protocols
+/// only.
+pub(crate) fn probed_tcp(report: &ScanReport) -> bool {
+    report
+        .hosts()
+        .flat_map(Host::ports)
+        .any(|port| port.protocol() == Protocol::Tcp)
+}
+
 /// What the run was for.
 ///
 /// The *last* phase. A port scan records two, the liveness pass that established

@@ -1472,9 +1472,10 @@ that answer nothing. --assume-up scans them anyway.
         OUTPUT_FORMS,
         STOPPING,
         "
-Port scanning uses raw SYN probes when it can. Without root every port is tested
-by completing a connection, which is slower and more visible; the summary says
-which one ran.",
+Port scanning uses raw SYN probes when it can. Without root a TCP port is tested
+by completing a connection, which is slower and more visible, and a technique
+only raw probes can send is refused rather than downgraded; the summary says
+which happened.",
     ]
     .concat()
 }
