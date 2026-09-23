@@ -386,6 +386,10 @@ impl Narrator {
         {
             match kind {
                 ScanKind::PortScan if !field::probed_tcp(report) => {}
+                // And a sweep's is a claim about connect attempts, made only
+                // where there were some. One whose whole range was refused made
+                // none, and its refusal above has already said what would work.
+                ScanKind::Discovery if !field::attempted_probes(report) => {}
                 ScanKind::PortScan => self.note(
                     "ran without raw sockets, so every TCP port was tested by \
                      completing a connection. Run with sudo for SYN scanning, \
@@ -850,8 +854,18 @@ mod tests {
         rebuilt(None)
     }
 
-    /// The test fixture's report with its phase's privilege set to `privilege`.
+    /// The test fixture's report with its phase's privilege set to `privilege`,
+    /// carrying the connect attempts a sweep of it would have made.
     fn rebuilt(privilege: Option<Privilege>) -> ScanReport {
+        rebuilt_with(privilege, Vec::new(), connect_attempts(256))
+    }
+
+    /// The same, declining what `refusals` name and having made `attempts`.
+    fn rebuilt_with(
+        privilege: Option<Privilege>,
+        refusals: Vec<zond_engine::report::Refusal>,
+        attempts: zond_engine::report::ProbeStats,
+    ) -> ScanReport {
         use zond_engine::report::{PhaseParts, ScanPhase};
 
         let report = scoped(vec![host(1)], "192.0.2.0/24");
@@ -866,16 +880,72 @@ mod tests {
             targets: phase.targets().clone(),
             settings: phase.settings().clone(),
             failures: phase.failures().to_vec(),
-            refusals: phase.refusals().to_vec(),
+            refusals,
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
-            probes: phase.probe_stats().to_vec(),
+            probes: vec![attempts],
             origin: phase.origin().cloned(),
         });
 
         let hosts: Vec<_> = report.hosts().cloned().collect();
         ScanReport::recorded("test", vec![rebuilt], hosts)
+    }
+
+    /// What a connect sweep records of itself having made `attempts` connect
+    /// attempts at as many targets.
+    fn connect_attempts(attempts: u64) -> zond_engine::report::ProbeStats {
+        use std::time::Duration;
+        use zond_engine::report::{
+            ATTEMPTS_COUNTED, BUCKET_BOUNDS_MS, ProbeStats, ProbeStatsParts, ScannerKind,
+            StopReason,
+        };
+
+        ProbeStats::from_parts(ProbeStatsParts {
+            scanner: ScannerKind::Connect,
+            targets: u128::from(attempts),
+            stop_reason: StopReason::AttemptsSpent,
+            elapsed: Duration::from_secs(1),
+            sends_attempted: attempts,
+            sends_failed: 0,
+            sends_witnessed: 0,
+            segments_seen: 0,
+            window: None,
+            segments_off_target: 0,
+            replies_without_rtt: 0,
+            hosts_found: 0,
+            answered_on: [0; ATTEMPTS_COUNTED],
+            answered_unattributed: 0,
+            first_reply: None,
+            last_reply: None,
+            found_at: [0; BUCKET_BOUNDS_MS.len() + 1],
+            capture: None,
+        })
+    }
+
+    /// A connect sweep whose whole range was refused made no connect attempt,
+    /// and is not told it was connect attempts against a few common ports.
+    ///
+    /// Measured on the connect path: `zond d 2001:db8::/64` refused the prefix
+    /// as too large to walk, then closed by describing the connect attempts it
+    /// had made against it, and advised sudo a second time beneath a refusal
+    /// that had already said to run as root. The refusal is the whole of what
+    /// happened, and it is said once.
+    #[test]
+    fn a_connect_sweep_that_attempted_nothing_describes_no_attempts() {
+        let refused = zond_engine::report::Refusal::new(
+            zond_engine::report::ScannerKind::Connect,
+            "2001:db8::/64 is too large to probe one address at a time. Run with root",
+        );
+        let said = summarised(&rebuilt_with(
+            Some(Privilege::Connect),
+            vec![refused],
+            connect_attempts(0),
+        ));
+
+        assert!(said.contains("not covered: 2001:db8::/64"), "{said}");
+        assert!(!said.contains("connect attempts"), "{said}");
+        assert!(!said.contains("sudo"), "{said}");
     }
 
     // -----------------------------------------------------------------------

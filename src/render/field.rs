@@ -2493,6 +2493,19 @@ pub(crate) fn probed_tcp(report: &ScanReport) -> bool {
         .any(|port| port.protocol() == Protocol::Tcp && port.state() != PortState::Unasked)
 }
 
+/// Whether any strategy in the report tried to put a probe on the wire.
+///
+/// What a note describing how a run probed rests on. A run whose every target
+/// was refused before anything was sent made no attempt, and describing the
+/// attempts it would have made reads as the run having made them.
+pub(crate) fn attempted_probes(report: &ScanReport) -> bool {
+    report
+        .phases()
+        .iter()
+        .flat_map(ScanPhase::probe_stats)
+        .any(|stats| stats.sends_attempted() > 0)
+}
+
 /// What the run was for.
 ///
 /// The *last* phase. A port scan records two, the liveness pass that established
