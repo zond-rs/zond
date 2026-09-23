@@ -2605,7 +2605,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zond-cli"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "clap",
  "rustix",
@@ -2621,9 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "zond-engine"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fd7b361457240e48a03a534e21dddeb35d24126915e017ac7418b28fd25c961"
+version = "0.17.0"
 dependencies = [
  "aho-corasick",
  "async-trait",
