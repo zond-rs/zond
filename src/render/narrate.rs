@@ -20,7 +20,7 @@
 use std::io::{self, Write};
 
 use zond_engine::export::Redaction;
-use zond_engine::report::ScanKind;
+use zond_engine::report::{ScanKind, ScannerKind};
 use zond_engine::system::privilege::Privilege;
 use zond_engine::{Exclusions, ScanReport};
 
@@ -429,21 +429,60 @@ impl Narrator {
         }
 
         if report.is_partial() {
-            // Written out rather than passed through `plural`, which knows the
-            // four words a scan counts and not this one.
-            let failures = report.failures().count();
-            let strategies = if failures == 1 {
-                "strategy"
-            } else {
-                "strategies"
-            };
-            self.warn(&format!(
-                "{failures} {strategies} did not run; this run covered less \
-                 than it was asked to",
-            ))?;
+            self.shortfall(report)?;
         }
 
         Ok(())
+    }
+
+    /// The line closing a run that covered less than it was asked to.
+    ///
+    /// The engine files two different things as work that did not complete,
+    /// and they are counted apart because only one of them is a fault. A
+    /// strategy that did not run is something broken on this machine or this
+    /// network. A detection that did not finish is almost always one its own
+    /// declared budget stopped against a target that cost more than it
+    /// allowed: it ran, and was cut short. The engine has already said which
+    /// detection, which budget and how far it got, a line each as it happened,
+    /// so this counts them rather than repeating them. Counted as strategies
+    /// that did not run, they would send a reader looking for a fault where
+    /// the detections ran and the target cost more than their budgets allowed.
+    ///
+    /// Said as a note when detections are all there is, since nothing failed,
+    /// and as a warning when a strategy did not run.
+    fn shortfall(&mut self, report: &ScanReport) -> io::Result<()> {
+        let (detections, strategies): (Vec<_>, Vec<_>) = report
+            .failures()
+            .partition(|failure| failure.scanner() == ScannerKind::Detection);
+        let strategies = strategies.len();
+        let detections = detections.len();
+
+        // Written out rather than passed through `plural`, which knows the four
+        // words a scan counts and not this one.
+        let not_run = format!(
+            "{strategies} {} did not run",
+            if strategies == 1 {
+                "strategy"
+            } else {
+                "strategies"
+            }
+        );
+        let unfinished = format!(
+            "{detections} {} did not finish",
+            plural(detections as u128, "detection")
+        );
+        let what = match (strategies, detections) {
+            (_, 0) => not_run,
+            (0, _) => unfinished,
+            _ => format!("{not_run} and {unfinished}"),
+        };
+        let line = format!("{what}; this run covered less than it was asked to");
+
+        if strategies == 0 {
+            self.note(&line)
+        } else {
+            self.warn(&line)
+        }
     }
 }
 
@@ -1005,6 +1044,80 @@ mod tests {
         let said = summarised(&report);
 
         assert_eq!(said.matches("too large to walk").count(), 1, "{said}");
+    }
+
+    // -----------------------------------------------------------------------
+    // What a run that covered less than it was asked to says about it
+    // -----------------------------------------------------------------------
+
+    /// The test fixture's report with `failures` filed on its phase.
+    fn failing(failures: Vec<zond_engine::report::ScannerFailure>) -> ScanReport {
+        use zond_engine::report::{PhaseParts, ScanPhase};
+
+        let report = scoped(vec![host(1)], "192.0.2.0/24");
+        let phase = &report.phases()[0];
+        let rebuilt = ScanPhase::from_parts(PhaseParts {
+            attachments: phase.attachments().to_vec(),
+            kind: phase.kind(),
+            started_at: phase.started_at(),
+            elapsed: phase.elapsed(),
+            privilege: phase.privilege(),
+            targets: phase.targets().clone(),
+            settings: phase.settings().clone(),
+            failures,
+            refusals: phase.refusals().to_vec(),
+            unroutable: phase.unroutable().to_vec(),
+            timed_out: phase.timed_out().to_vec(),
+            reached_by_connect: phase.reached_by_connect().to_vec(),
+            probes: phase.probe_stats().to_vec(),
+            origin: phase.origin().cloned(),
+        });
+        let hosts: Vec<_> = report.hosts().cloned().collect();
+        ScanReport::recorded("test", vec![rebuilt], hosts)
+    }
+
+    /// A detection its budget cut short, as the engine files one.
+    fn cut_short(port: u16) -> zond_engine::report::ScannerFailure {
+        zond_engine::report::ScannerFailure::new(
+            ScannerKind::Detection,
+            format!(
+                "detection 'backup-files' on 192.0.2.1:{port} went unanswered: \
+                 its 3000 ms time budget ran out with 3 of 6 requests answered"
+            ),
+        )
+    }
+
+    /// Detections that ran and were cut short are counted as what they are.
+    /// Nothing about them failed to run, and a line saying strategies did not
+    /// run sends a reader looking for a fault on their machine.
+    #[test]
+    fn detections_cut_short_are_not_counted_as_strategies_that_did_not_run() {
+        let said = summarised(&failing(vec![cut_short(80), cut_short(443)]));
+
+        assert!(
+            said.contains(
+                "2 detections did not finish; this run covered less than it was asked to"
+            ),
+            "{said}"
+        );
+        assert!(!said.contains("did not run"), "{said}");
+    }
+
+    /// A strategy that did not run is still said to have not run, beside the
+    /// detections that did not finish.
+    #[test]
+    fn a_strategy_that_did_not_run_is_counted_apart_from_detections_that_did_not_finish() {
+        let broken =
+            zond_engine::report::ScannerFailure::new(ScannerKind::Local, "raw socket unavailable");
+        let said = summarised(&failing(vec![broken, cut_short(443)]));
+
+        assert!(
+            said.contains(
+                "1 strategy did not run and 1 detection did not finish; \
+                 this run covered less than it was asked to"
+            ),
+            "{said}"
+        );
     }
 
     // -----------------------------------------------------------------------
