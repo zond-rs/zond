@@ -4,11 +4,9 @@
 # is for everybody else. On Kali, which is where this program has its audience,
 # a tool arrives as a .deb or it does not arrive.
 #
-# Windows is absent for the same reason it is absent from `ci.yml`, plus one of
-# its own: `pcap` needs the Npcap SDK to build against and Npcap installed to
-# run, and Npcap cannot be redistributed inside an installer without a licence
-# from the Nmap Project. An installer that can only send somebody to npcap.com
-# is not worth maintaining yet.
+# The Windows installer is built by `windows/build.sh` and attached to the same
+# release. It does not bundle Npcap, which may not be redistributed without a
+# licence from the Nmap Project; it checks for it and points to npcap.com.
 name: Release
 
 on:

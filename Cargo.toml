@@ -18,7 +18,7 @@ repository = "https://github.com/zond-rs/zond"
 homepage = "https://zond.rs"
 # Neither is code, and both would otherwise ride along in every published
 # tarball. The engine excludes the same two.
-exclude = ["audit/", ".github/", "public/"]
+exclude = ["audit/", ".github/", "public/", "windows/"]
 description = "The official command-line interface to Zond. Discovers hosts, scans ports, fingerprints services, and reports what changed between two scans."
 keywords = ["network", "scanner", "portscan", "discovery", "security"]
 categories = ["command-line-utilities", "network-programming"]

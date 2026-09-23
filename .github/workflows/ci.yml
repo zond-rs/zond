@@ -1,8 +1,4 @@
-# Test, lint and format, on the platforms this binary claims to support.
-#
-# Windows is not in the matrix, for the same reason it is not in the engine's:
-# the crate says it is unsupported and it is, and a permanently red job teaches
-# everyone to ignore a failing one.
+# Test, lint and format, on Linux and macOS runners.
 #
 # Releases live in `release.yml` beside this file, which builds the Debian
 # packages a tag ships. They belong in this repository rather than in the

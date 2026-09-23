@@ -10,7 +10,7 @@
   Zond maps a network and says what is wrong with what it finds: which hosts are
   alive, which of their ports are open, what is listening behind each one, and which
   advisories name the versions it read off the wire.<br>
-  It runs on Linux and macOS, and the scanning lives in
+  It runs on Linux, macOS and Windows, and the scanning lives in
   <a href="https://github.com/zond-rs/zond-engine">Zond Engine</a>, a library anybody can build on.
 </p>
 
@@ -40,6 +40,10 @@ cargo install zond-cli
 ```
 
 The crate is `zond-cli` and the command it installs is `zond`.
+
+On Windows, `zond-<version>-setup.exe` from the latest release. It needs
+[Npcap](https://npcap.com), and installs for the current user without
+administrator rights.
 
 ## The commands
 
