@@ -113,6 +113,19 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Whether this process can open a raw socket, asked of the engine rather than
+/// restated.
+///
+/// The capability that decides whether loopback can be sent anything but a
+/// connect. Not whether the process is root, which a binary given
+/// `CAP_NET_RAW` is not, and not whether it scans with packets of its own: a
+/// Mac whose user is in the BPF group builds its own frames unprivileged, but
+/// no frame reaches loopback, so toward loopback it holds what an unprivileged
+/// run holds.
+fn holds_a_raw_socket() -> bool {
+    zond_engine::system::privilege::can_send_raw()
+}
+
 /// Does not assert loopback was *found*, since that depends on something
 /// listening, which is true of a developer's machine and not of a build
 /// container. What is checked is that the scan runs to completion.
@@ -152,8 +165,9 @@ fn an_ipv4_range_too_large_to_sweep_is_a_usage_error() {
 }
 
 /// The other side of that division. A `/64` is not refused here. Where it
-/// genuinely cannot be walked, as it cannot when unprivileged and off-link, the
-/// engine turns it away and records why, so the run exits `3` rather than `2`.
+/// genuinely cannot be walked, as an off-link one cannot by any strategy the
+/// engine has, the engine turns it away and records why, so the run exits `3`
+/// rather than `2`.
 #[test]
 fn an_unwalkable_ipv6_range_is_refused_by_the_engine_and_reported_partial() {
     let run = zond("unwalkable-v6", &["-q", "d", "2001:db8::/64"]);
@@ -594,17 +608,29 @@ fn a_scan_beyond_the_probe_limit_is_a_usage_error() {
     assert!(stderr(&run).contains("4194304"), "{}", stderr(&run));
 }
 
-/// A technique needing raw sockets is refused, never quietly served as a connect
-/// scan, which answers a different question and would say it answered this one.
+/// A technique needing a raw socket is refused, never quietly served as a
+/// connect scan, which answers a different question and would say it answered
+/// this one.
+///
+/// Both paths a process without a raw socket takes refuse it: the connect path
+/// has no way to send a FIN, and the frames path cannot reach loopback. What is
+/// asserted is the refusal each of them announces under `-v`, since the lines
+/// they print about their own capabilities differ and neither is the refusal.
 ///
 /// The host is still reported: the liveness phase established it is there before
 /// the port phase refused to probe it. What must be absent is any *port* record,
 /// because none was tried.
 #[test]
-fn a_technique_that_needs_root_is_refused_rather_than_downgraded() {
+fn a_technique_needing_a_raw_socket_is_refused_rather_than_downgraded() {
+    if holds_a_raw_socket() {
+        eprintln!("SKIP: this process can send the technique, so nothing is refused");
+        return;
+    }
+
     let run = zond(
         "scan-technique",
         &[
+            "-v",
             "--pipe",
             "s",
             "127.0.0.1",
@@ -616,7 +642,13 @@ fn a_technique_that_needs_root_is_refused_rather_than_downgraded() {
     );
 
     assert_eq!(status(&run), 3, "{}", stderr(&run));
-    assert!(stderr(&run).contains("raw sockets"), "{}", stderr(&run));
+
+    let said = stderr(&run);
+    assert!(
+        said.lines()
+            .any(|line| line.contains("not covered") && line.contains("fin technique")),
+        "the refusal names the technique it refused: {said}"
+    );
 
     let fields = record(&run);
     assert_eq!(fields[1], "Up", "the liveness phase still ran");
