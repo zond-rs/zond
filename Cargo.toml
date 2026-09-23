@@ -16,8 +16,8 @@ rust-version = "1.93"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/zond-rs/zond"
 homepage = "https://zond.rs"
-# Neither is code, and both would otherwise ride along in every published
-# tarball. The engine excludes the same two.
+# None of these is code, and each would otherwise ride along in every
+# published tarball.
 exclude = ["audit/", ".github/", "public/", "windows/"]
 description = "The official command-line interface to Zond. Discovers hosts, scans ports, fingerprints services, and reports what changed between two scans."
 keywords = ["network", "scanner", "portscan", "discovery", "security"]
@@ -75,7 +75,7 @@ maintainer-scripts = "debian/"
 # out of is not much of a scanner. `export-csv`, `export-html` and `export-nmap`
 # add no dependencies at all; the JSON pair shares the `serde_json` the journal
 # already pulls in.
-zond-engine = { version = "0.16.0", path = "../zond-engine", features = [
+zond-engine = { version = "0.16.0", features = [
     "import-settings",
     "export-all",
     "import-json",
