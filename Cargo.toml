@@ -103,9 +103,10 @@ serde = { version = "1.0", features = ["derive"] }
 # which is a `tcsetattr` call. `rustix` wraps it safely, so reading a key needs
 # no `unsafe` here, where raw `libc` would. Unix only, because the termios call
 # is: on anything else the key watcher is compiled out and Ctrl-C remains the
-# way to stop a scan.
+# way to stop a scan. `process` is the same reasoning for `setrlimit`, which
+# raises the binary's own file limit before a scan sizes itself from it.
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1", features = ["termios", "stdio"] }
+rustix = { version = "1.1", features = ["termios", "stdio", "process"] }
 
 # The classic Windows console prints escape sequences as text until a program
 # asks it to interpret them, and asking is `GetConsoleMode` and

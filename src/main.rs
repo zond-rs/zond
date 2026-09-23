@@ -36,6 +36,7 @@
 
 mod cli;
 mod command;
+mod descriptors;
 mod diagnostics;
 mod error;
 mod exit;
@@ -62,6 +63,9 @@ async fn main() -> ExitCode {
     // Before anything is written: a console that is going to be drawn on has to
     // be told to interpret what is drawn.
     render::terminal::prepare();
+
+    // Before any scan, which sizes itself from the limit it finds.
+    descriptors::raise();
 
     // Nmap's output spellings first: `-oX f` cannot be expressed as an argument,
     // so it is turned into one before the parser sees it. See `nmap`.
