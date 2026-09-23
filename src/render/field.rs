@@ -2478,18 +2478,19 @@ pub(crate) fn refusals(report: &ScanReport) -> Vec<&str> {
     reasons
 }
 
-/// Whether any host in the report carries a TCP port, which is to say a TCP
-/// port was probed.
+/// Whether any host in the report carries a TCP port that was asked, which is
+/// to say a TCP port was probed.
 ///
 /// Every probed port is recorded, closed and unanswered ones included, so a
 /// port scan with none has no TCP verdict to account for: its technique was
 /// refused, no host answered the liveness pass, or it named other protocols
-/// only.
+/// only. An unasked port is recorded too and is not one: nothing was sent to
+/// it, so nothing was tested by a connection or anything else.
 pub(crate) fn probed_tcp(report: &ScanReport) -> bool {
     report
         .hosts()
         .flat_map(Host::ports)
-        .any(|port| port.protocol() == Protocol::Tcp)
+        .any(|port| port.protocol() == Protocol::Tcp && port.state() != PortState::Unasked)
 }
 
 /// What the run was for.

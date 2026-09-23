@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use zond_engine::export::Redaction;
 use zond_engine::report::{ScanKind, ScannerKind};
 use zond_engine::system::privilege::Privilege;
-use zond_engine::{Exclusions, ScanReport};
+use zond_engine::{Exclusions, PortState, ScanReport};
 
 use crate::diagnostics::Verbosity;
 use crate::render::field::plural;
@@ -286,15 +286,31 @@ impl Narrator {
         // reads as noise here. A sweep is about ground: how much answered out of
         // how much was swept.
         let line = if field::kind(report) == Some(ScanKind::PortScan) {
-            let ports = if summary.ports_total > 0 {
+            // Probed means asked. A port the scan named and never asked about is
+            // on the record so a truncated list cannot pass for a complete one,
+            // and counting it among the probed would undo exactly that: ten dead
+            // neighbours scanned on trust read `0 open ports of 200 probed` with
+            // not one probe answered or even sent. So it is counted apart, on
+            // this line, where the shortfall is visible beside the number it
+            // qualifies.
+            let unasked = summary
+                .ports_by_state
+                .get(&PortState::Unasked)
+                .copied()
+                .unwrap_or(0);
+            let probed = summary.ports_total.saturating_sub(unasked);
+            let ports = if probed > 0 {
                 format!(
-                    "{} open {} of {} probed",
+                    "{} open {} of {probed} probed",
                     summary.ports_open,
                     plural(summary.ports_open as u128, "port"),
-                    summary.ports_total,
                 )
             } else {
                 String::from("no ports probed")
+            };
+            let ports = match unasked {
+                0 => ports,
+                unasked => format!("{ports}, {unasked} unasked"),
             };
             format!("{hosts}, {ports}{}", timing(report))
         } else {
@@ -390,13 +406,19 @@ impl Narrator {
         // Two reasons an address goes unscanned, and they are said separately
         // because the advice differs. A host that was asked and stayed silent
         // may well be up behind a firewall, and `--assume-up` reaches it. A host
-        // there is no route to was never asked, and nothing about scanning on
-        // trust creates a route. Offering it there is advice that cannot work,
+        // this one could not reach was never asked, and nothing about scanning
+        // on trust changes that. Offering it there is advice that cannot work,
         // sent to somebody already wondering why their target is missing.
+        //
+        // "Could not be reached" rather than "had no route", because the engine
+        // files two things here: an address with no route to it, and one on the
+        // local segment that never answered its address resolution. The second
+        // has a route, and a reader told otherwise goes looking at a routing
+        // table for a host that is simply not there.
         let unroutable = field::unroutable(report);
         if unroutable > 0 {
             self.note(&format!(
-                "{unroutable} {} had no route from this host and {} never probed.",
+                "{unroutable} {} could not be reached from this host and {} never probed.",
                 plural(unroutable, "address"),
                 if unroutable == 1 { "was" } else { "were" },
             ))?;
@@ -876,6 +898,17 @@ mod tests {
         covered: &str,
         refusals: Vec<zond_engine::report::Refusal>,
     ) -> ScanReport {
+        port_scanned_past(privilege, hosts, covered, refusals, Vec::new())
+    }
+
+    /// The same, unable to reach the addresses `unroutable` names.
+    fn port_scanned_past(
+        privilege: Privilege,
+        hosts: Vec<zond_engine::Host>,
+        covered: &str,
+        refusals: Vec<zond_engine::report::Refusal>,
+        unroutable: Vec<std::net::IpAddr>,
+    ) -> ScanReport {
         use std::time::Duration;
         use zond_engine::ZondConfig;
         use zond_engine::model::exclusion::Exclusions;
@@ -893,7 +926,7 @@ mod tests {
             settings: ScanSettings::from(&ZondConfig::default()),
             failures: Vec::new(),
             refusals,
-            unroutable: Vec::new(),
+            unroutable,
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             probes: Vec::new(),
@@ -949,9 +982,111 @@ mod tests {
         );
     }
 
+    /// A host holding `ports`, each of `protocol` and in `state`.
+    fn host_holding(
+        ports: std::ops::RangeInclusive<u16>,
+        protocol: zond_engine::Protocol,
+        state: zond_engine::PortState,
+    ) -> zond_engine::Host {
+        let mut host = host(1);
+        for port in ports {
+            host.add_port(zond_engine::Port::new(port, protocol, state));
+        }
+        host
+    }
+
+    /// A port nobody asked about is not a probed port, and the summary does not
+    /// count it as one.
+    ///
+    /// Measured: ten dead neighbours scanned on trust came back with every one
+    /// of their two hundred ports unasked, under a summary that said
+    /// `0 open ports of 200 probed`. Those ports are on the record so a
+    /// truncated list cannot pass for a complete one, and they are counted
+    /// apart for the same reason.
+    #[test]
+    fn a_port_scan_counts_an_unasked_port_apart_from_the_probed_ones() {
+        let mut host = host_holding(
+            1..=20,
+            zond_engine::Protocol::Tcp,
+            zond_engine::PortState::Unasked,
+        );
+        host.add_port(zond_engine::Port::new(
+            80,
+            zond_engine::Protocol::Tcp,
+            zond_engine::PortState::Open,
+        ));
+        let said = summarised(&port_scanned(vec![host], "192.0.2.1"));
+
+        assert!(
+            said.contains("1 open port of 1 probed, 20 unasked"),
+            "{said}"
+        );
+    }
+
+    /// A scan whose every port went unasked probed none, and says so in the
+    /// words a scan that reached no ports uses.
+    #[test]
+    fn a_port_scan_whose_every_port_went_unasked_says_none_were_probed() {
+        let host = host_holding(
+            1..=20,
+            zond_engine::Protocol::Tcp,
+            zond_engine::PortState::Unasked,
+        );
+        let said = summarised(&port_scanned(vec![host], "192.0.2.1"));
+
+        assert!(said.contains("no ports probed, 20 unasked"), "{said}");
+        assert!(!said.contains("of 20 probed"), "{said}");
+    }
+
+    /// An address the engine could not reach is said not to have been reached,
+    /// in words true of both ways that happens: no route to it, and a
+    /// neighbour that never answered for it. A dead host on the local segment
+    /// has a route; what it lacks is anything answering at the end of it.
+    #[test]
+    fn an_unreachable_address_is_said_not_to_have_been_reached() {
+        let dead: std::net::IpAddr = "192.0.2.1".parse().expect("a literal address");
+        let report = port_scanned_past(
+            Privilege::Raw,
+            vec![host_holding(
+                1..=2,
+                zond_engine::Protocol::Tcp,
+                zond_engine::PortState::Unasked,
+            )],
+            "192.0.2.1",
+            Vec::new(),
+            vec![dead],
+        );
+        let said = summarised(&report);
+
+        assert!(
+            said.contains("1 address could not be reached from this host and was never probed"),
+            "{said}"
+        );
+        assert!(!said.contains("no route"), "{said}");
+    }
+
     // -----------------------------------------------------------------------
     // What a scan without raw sockets says it did
     // -----------------------------------------------------------------------
+
+    /// A connect scan whose TCP ports all went unasked tested none of them by a
+    /// connection, and does not say it did.
+    #[test]
+    fn a_connect_scan_whose_tcp_ports_went_unasked_claims_no_connections() {
+        let report = port_scanned_by(
+            Privilege::Connect,
+            vec![host_holding(
+                1..=2,
+                zond_engine::Protocol::Tcp,
+                zond_engine::PortState::Unasked,
+            )],
+            "192.0.2.1",
+            Vec::new(),
+        );
+        let said = summarised(&report);
+
+        assert!(!said.contains("completing a connection"), "{said}");
+    }
 
     /// A host whose one probed port is `port`, of `protocol`, and closed.
     fn host_with(port: u16, protocol: zond_engine::Protocol) -> zond_engine::Host {
