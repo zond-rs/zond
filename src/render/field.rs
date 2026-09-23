@@ -26,6 +26,7 @@ use zond_engine::Host;
 use zond_engine::export::Redaction;
 use zond_engine::model::confidence::Confidence;
 use zond_engine::model::finding::{Reference, Severity};
+use zond_engine::model::host::EvidenceSource;
 use zond_engine::model::host::Filtering;
 use zond_engine::model::host::NetworkRole;
 use zond_engine::model::host::protocol::{IpProtocolState, ip_protocol_name};
@@ -654,7 +655,7 @@ pub(crate) fn answered_in_detail(reader: Reader, host: &Host) -> Vec<String> {
     if !host
         .reasons()
         .iter()
-        .any(|reason| reason.details.is_some() || reason.source.is_some())
+        .any(|reason| reason.details.is_some() || reason.source != EvidenceSource::Host)
     {
         return answered(host).into_iter().collect();
     }
@@ -683,10 +684,16 @@ fn detailed_reason(reader: Reader, reason: &StatusReason) -> String {
 
     // `via`, not `from`: the address did not send the finding, it sent an error
     // *about* the finding, and the two readings are the whole reason this field
-    // is kept apart from the host's own address.
-    if let Some(source) = reason.source {
-        line.push_str("  via ");
-        line.push_str(&reader.masked(source));
+    // is kept apart from the host's own address. A sender the scan's exclusions
+    // forbid naming is still second-hand evidence, and says so as a traced
+    // path's withheld router does.
+    match reason.source {
+        EvidenceSource::Host => {}
+        EvidenceSource::Intermediary(source) => {
+            line.push_str("  via ");
+            line.push_str(&reader.masked(source));
+        }
+        EvidenceSource::Withheld => line.push_str("  via excluded"),
     }
 
     line
@@ -2726,6 +2733,23 @@ mod tests {
             "{attributed}"
         );
         assert!(attributed.contains("via 192.0.2.254"), "{attributed}");
+    }
+
+    /// A sender the scan's exclusions forbid naming still marks the evidence as
+    /// second-hand, and says so without the address. Drawn as the host's own
+    /// answer it would claim the machine replied; drawn with the address it
+    /// would print what the operator excluded.
+    #[test]
+    fn evidence_from_an_excluded_sender_is_second_hand_and_unnamed() {
+        use zond_engine::model::host::status::{StatusProtocol, StatusReason};
+
+        let mut reason = StatusReason::basic(StatusProtocol::IcmpUnreachable);
+        reason.source = EvidenceSource::Withheld;
+        let mut host = host(1);
+        host.record_evidence(zond_engine::HostStatus::Up, reason);
+
+        let lines = answered_in_detail(Reader::default(), &host);
+        assert_eq!(lines, vec!["ICMP_unreachable  via excluded".to_string()]);
     }
 
     /// `--reason` on a local sweep used to cost four lines and buy nothing.
