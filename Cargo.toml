@@ -100,16 +100,27 @@ toml = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 
 # Reading a single keypress means taking the terminal out of line-buffered mode,
-# which is a `tcsetattr` call. `rustix` wraps it safely, so this crate keeps
-# `unsafe_code = "forbid"`; the alternative was raw `libc` and an exception to
-# that rule. Unix only, because the termios call is: on anything else the key
-# watcher is compiled out and Ctrl-C remains the way to stop a scan.
+# which is a `tcsetattr` call. `rustix` wraps it safely, so reading a key needs
+# no `unsafe` here, where raw `libc` would. Unix only, because the termios call
+# is: on anything else the key watcher is compiled out and Ctrl-C remains the
+# way to stop a scan.
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["termios", "stdio"] }
 
+# The classic Windows console prints escape sequences as text until a program
+# asks it to interpret them, and asking is `GetConsoleMode` and
+# `SetConsoleMode`, which std does not wrap. The engine's version, so the build
+# holds one copy, and the console feature alone.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
+
 [lints.rust]
 unreachable_pub = "warn"
-unsafe_code = "forbid"
+# Denied rather than forbidden, because `render::terminal` has to call the
+# Windows console, which has no safe wrapper, and `forbid` cannot be lifted even
+# for one module. That module lifts it for itself; anywhere else `unsafe` still
+# fails the build.
+unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

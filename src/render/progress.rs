@@ -63,9 +63,11 @@
 //!
 //! ## Drawn only where there is something to draw on
 //!
-//! Nothing here runs unless standard error is a terminal. Redirected, the line
-//! would be a file full of carriage returns and erase sequences, and the whole
-//! device depends on being able to take back what it wrote.
+//! Nothing here runs unless standard error is a terminal that draws escape
+//! sequences rather than printing them; see [`terminal`]. Redirected, the line
+//! would be a file full of carriage returns and erase sequences, and on a
+//! console that prints them every redraw would land on a line of its own. The
+//! whole device depends on being able to take back what it wrote.
 //!
 //! `fancy` alone starts one. `minimal` promises abbreviated tags and `pipe`
 //! promises a stable interface; a line that rewrites itself is neither.
@@ -77,7 +79,7 @@
 //! tick put this one back. That is why the state lives in a static: a `tracing`
 //! layer has no path to be handed anything.
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -85,6 +87,7 @@ use std::time::{Duration, Instant};
 use zond_engine::Progress;
 
 use crate::render::style::Style;
+use crate::render::terminal::{self, Stream};
 
 /// How often the line is redrawn.
 ///
@@ -247,7 +250,7 @@ fn held() -> Option<MutexGuard<'static, Option<Live>>> {
 /// Silently does nothing otherwise, which is what lets the caller start one
 /// unconditionally.
 pub(crate) fn start(counting: Counting, style: Style) {
-    if !std::io::stderr().is_terminal() || RUNNING.load(Ordering::Acquire) {
+    if !terminal::interprets(Stream::Stderr) || RUNNING.load(Ordering::Acquire) {
         return;
     }
 

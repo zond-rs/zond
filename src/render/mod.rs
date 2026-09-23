@@ -62,11 +62,13 @@ pub(crate) mod block;
 // error and rewritten in place. `fancy` alone starts one.
 pub(crate) mod progress;
 
-// Plumbing they share: the field values, the commentary on stderr, and whether
-// this terminal takes colour at all.
+// Plumbing they share: the field values, the commentary on stderr, whether
+// this terminal takes colour at all, and whether it draws escape sequences
+// rather than printing them.
 pub(crate) mod field;
 pub(crate) mod narrate;
 pub(crate) mod style;
+pub(crate) mod terminal;
 
 #[cfg(test)]
 pub(crate) mod test_support;

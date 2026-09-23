@@ -59,6 +59,10 @@ use crate::settings::EntryLimit;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Before anything is written: a console that is going to be drawn on has to
+    // be told to interpret what is drawn.
+    render::terminal::prepare();
+
     // Nmap's output spellings first: `-oX f` cannot be expressed as an argument,
     // so it is turned into one before the parser sees it. See `nmap`.
     let arguments = match nmap::rewrite(std::env::args_os()) {

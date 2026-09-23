@@ -89,9 +89,8 @@
 //! label column or the port table, pads the plain text and paints the padded
 //! result.
 
-use std::io::IsTerminal;
-
 use crate::render::field::{self, Urgency};
+use crate::render::terminal::{self, Stream};
 use crate::settings::Presentation;
 
 /// What a wrapped commentary line is indented by: the glyph, and the space
@@ -563,15 +562,18 @@ impl Style {
         }
     }
 
-    /// What `palette` amounts to for a stream that is or is not a terminal.
+    /// What `palette` amounts to for a stream that does or does not draw
+    /// escape sequences.
     ///
     /// The two gates read different things. Colour asks, in order: `--colour`
     /// when it was given, then `CLICOLOR_FORCE`, then `NO_COLOR`, then
-    /// `TERM=dumb`, and only then whether the stream is a terminal. That is the
-    /// precedence every other tool reading those variables uses. Depth asks
-    /// `COLORTERM`, which is the only thing a terminal says about it.
+    /// `TERM=dumb`, and only then whether the stream is a terminal that draws
+    /// escape sequences rather than printing them, which is
+    /// [`terminal::interprets`]. That is the precedence every other tool
+    /// reading those variables uses. Depth asks `COLORTERM`, which is the only
+    /// thing a terminal says about it.
     #[must_use]
-    pub(crate) fn detect(palette: Palette, is_terminal: bool) -> Self {
+    pub(crate) fn detect(palette: Palette, draws: bool) -> Self {
         let dumb = env_says("TERM").is_some_and(|term| term == "dumb");
 
         let colour = match palette.when {
@@ -579,7 +581,7 @@ impl Style {
             ColourChoice::Never => false,
             ColourChoice::Auto => {
                 env_says("CLICOLOR_FORCE").is_some()
-                    || (env_says("NO_COLOR").is_none() && !dumb && is_terminal)
+                    || (env_says("NO_COLOR").is_none() && !dumb && draws)
             }
         };
 
@@ -593,7 +595,7 @@ impl Style {
     /// What this process's standard output should be drawn in.
     #[must_use]
     pub(crate) fn for_stdout(palette: Palette) -> Self {
-        Self::detect(palette, std::io::stdout().is_terminal())
+        Self::detect(palette, terminal::interprets(Stream::Stdout))
     }
 
     /// What `presentation` draws this process's standard output in.
@@ -629,7 +631,7 @@ impl Style {
     /// wants.
     #[must_use]
     pub(crate) fn for_stderr(palette: Palette) -> Self {
-        Self::detect(palette, std::io::stderr().is_terminal())
+        Self::detect(palette, terminal::interprets(Stream::Stderr))
     }
 
     /// Whether anything painted here will actually carry colour.
