@@ -643,6 +643,43 @@ mod tests {
         );
     }
 
+    /// A finding the current scan never settled reads as unsettled, never as
+    /// resolved: the walk it rests on was cut short, so its absence is not a
+    /// fix, and a reader skimming for "resolved" must not count it as one.
+    #[test]
+    fn a_finding_the_current_scan_never_settled_reads_as_unsettled() {
+        use zond_engine::diff::port::PortChange;
+        use zond_engine::model::confidence::Confidence;
+        use zond_engine::model::finding::{
+            DetectionClass, DetectionId, Finding, Severity, Version,
+        };
+
+        let detection =
+            DetectionId::new("zond:tls/tls10", Version::new(1, 0, 0), "").expect("a valid id");
+        let finding = Finding::new(
+            detection,
+            "TLSv1.0 is still accepted",
+            Severity::Medium,
+            Confidence::Probable,
+            DetectionClass::Passive,
+        )
+        .expect("a valid finding");
+
+        let lowered = ChangeDto::of_port(
+            &PortChange::Findings {
+                appeared: Vec::new(),
+                resolved: Vec::new(),
+                unsettled: vec![finding],
+                reassessed: Vec::new(),
+            },
+            &ExportOptions::default(),
+        );
+        assert_eq!(
+            sentence(&lowered[0], field::Reader::default()),
+            "unsettled medium: TLSv1.0 is still accepted"
+        );
+    }
+
     /// A finding that appeared or resolved reads as one-sided, and reaches a
     /// word for it rather than the raw `finding_appeared` the wire spells.
     #[test]

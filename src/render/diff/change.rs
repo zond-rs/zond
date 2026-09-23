@@ -304,13 +304,14 @@ pub(super) fn sentence(change: &ChangeDto, reader: Reader) -> String {
 
     // A change to one member of a set already says which way it went. "lost
     // 2a02:…" needs no ", now none" after it, and reads as a mistake with one.
-    // A finding that appeared or resolved is one-sided the same way: it is a
-    // whole claim arriving or going, not a field moving from one value to
-    // another, so ", now none" after a resolved one would read as a slip.
+    // A finding that appeared, resolved or went unsettled is one-sided the same
+    // way: it is a whole claim arriving or going, not a field moving from one
+    // value to another, so ", now none" after one would read as a slip.
     let directional = change.kind.ends_with("_gained")
         || change.kind.ends_with("_lost")
         || change.kind == "finding_appeared"
-        || change.kind == "finding_resolved";
+        || change.kind == "finding_resolved"
+        || change.kind == "finding_unsettled";
 
     match (before, after) {
         (Some(before), Some(after)) => format!("{lead}{before} -> {after}"),
@@ -396,6 +397,9 @@ pub(super) fn label(kind: &'static str) -> &'static str {
         // the empty arm with `hostname` and `os` above.
         "finding_appeared" => "found",
         "finding_resolved" => "resolved",
+        // Claimed before and not seen now, where the current scan never
+        // finished the walk the claim rests on: not a fix, and not said as one.
+        "finding_unsettled" => "unsettled",
         "filtering_gained" => "filtering gained",
         "filtering_lost" => "filtering lost",
         // One IP protocol its stack takes delivery of, or no longer does. The
