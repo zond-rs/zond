@@ -808,6 +808,11 @@ const MAX_LISTED_UNASKED: usize = 6;
 /// measured. That is the one way this output could mislead somebody drawing a
 /// topology from it.
 ///
+/// A router that did identify itself, from an address the scan's exclusions
+/// forbid it to report, is shown as `excluded` at its distance, for the same
+/// reason and one more: a `*` there would say nothing answered, and something
+/// did.
+///
 /// A hop taken from another host's trace says so. It is a claim about a router
 /// this host's own probes never met.
 pub(crate) fn path(reader: Reader, host: &Host) -> Vec<String> {
@@ -837,7 +842,8 @@ pub(crate) struct TracedHop {
     /// period belongs to [`path`], whose entries are a sentence rather than a
     /// column, and which adds it back.
     pub step: String,
-    /// The router, or `*` where it would not identify itself.
+    /// The router, `excluded` where the scan may not name it, or `*` where it
+    /// would not identify itself.
     pub address: String,
     /// The round trip, and whether the hop was taken from another host's trace.
     pub detail: Option<String>,
@@ -848,7 +854,8 @@ pub(crate) struct TracedHop {
 /// Empty when no trace ran, which is every scan that did not ask for one.
 ///
 /// A router that would not identify itself is shown as `*` at its own distance
-/// rather than left out, for the reason [`path`] gives.
+/// rather than left out, and one the scan may not name as `excluded`, for the
+/// reasons [`path`] gives.
 pub(crate) fn hops(reader: Reader, host: &Host) -> Vec<TracedHop> {
     let hops = host.path().hops();
 
@@ -874,6 +881,7 @@ pub(crate) fn hops(reader: Reader, host: &Host) -> Vec<TracedHop> {
                 // nothing about where the router's address is valid.
                 Some(IpAddr::V6(v6)) if reader.redaction.is_active() => mask(&v6),
                 Some(address) => address.to_string(),
+                None if hop.is_withheld() => "excluded".to_string(),
                 None => "*".to_string(),
             };
 
@@ -3329,6 +3337,22 @@ mod tests {
         assert!(
             columns.windows(2).all(|pair| pair[0] == pair[1]),
             "addresses start in different columns: {lines:?}"
+        );
+    }
+
+    /// A router the exclusions forbid naming reads as excluded at its own
+    /// distance, and a router that stayed silent still reads as `*`. The two are
+    /// different findings: one router answered and may not be named, the other
+    /// never said anything.
+    #[test]
+    fn a_withheld_router_reads_as_excluded_and_a_silent_one_as_a_star() {
+        let mut host = traced(&[1]);
+        host.record_hop(Hop::withheld(2));
+        host.record_hop(Hop::silent(3));
+
+        assert_eq!(
+            path(Reader::default(), &host),
+            vec!["1. 10.0.0.1", "2. excluded", "3. *"]
         );
     }
 
