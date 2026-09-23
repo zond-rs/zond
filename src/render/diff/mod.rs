@@ -23,7 +23,7 @@
 //!
 //! The three sit beside each other here for the same reason `pipe`, `minimal`
 //! and `fancy` sit beside each other one directory up, and share [`change`] for
-//! the same reason they share [`field`](super::field): what a comparison is
+//! the same reason they share [`field`]: what a comparison is
 //! entitled to claim is one judgement, not three.
 //!
 //! What stays in this file is what belongs to no single presentation: the switch

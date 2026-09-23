@@ -1,4 +1,4 @@
-# Test, lint and format, on Linux and macOS runners.
+# Test, lint, format and build the documentation, on Linux and macOS runners.
 #
 # Releases live in `release.yml` beside this file, which builds the Debian
 # packages a tag ships. They belong in this repository rather than in the
@@ -97,6 +97,52 @@ jobs:
       - name: Clippy
         working-directory: zond-cli
         run: cargo clippy --all-targets -- -D warnings
+
+  # A binary publishes no documentation, so this is not the engine's reason for
+  # the same job. The doc comments here are how the next person learns why a
+  # line reads as it does, and they lean on intra-doc links to say it. A link
+  # left behind by a rename reads as fine in an editor and points at nothing,
+  # and no other job builds the documentation to notice. Private items too,
+  # since a binary's items are all private and a public-only build checks none.
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+          ref: ${{ (github.head_ref || github.ref_name) == 'feat/main' && 'feat/main' || 'main' }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zond-cli
+
+      # `target/doc` comes back from the cache, and cargo takes it for current
+      # and skips rustdoc, exiting 0 having checked nothing. The gate is worth
+      # exactly as much as this line makes it worth.
+      - name: Discard any cached documentation
+        working-directory: zond-cli
+        run: rm -rf target/doc
+
+      - name: Build documentation
+        working-directory: zond-cli
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items
 
   msrv:
     name: Minimum supported Rust version

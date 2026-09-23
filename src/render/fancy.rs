@@ -37,7 +37,7 @@
 //!
 //! ## What this module decides, and what it does not
 //!
-//! The shape is [`block`](super::block)'s: the six line types, the columns
+//! The shape is [`block`]'s: the six line types, the columns
 //! measured across the whole listing, and what a handle and an identity look
 //! like. What is decided here is which facts a host has, in what order, and what
 //! colour each one takes. Those are the judgements that need to know what a port

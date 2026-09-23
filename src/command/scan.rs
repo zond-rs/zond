@@ -12,7 +12,7 @@
 //!
 //! It probes what it was given. It does not sweep first to check the targets are
 //! there, and it does not decide which of them are worth the probes. The engine
-//! keeps [`discover`](zond_engine::discover) and [`scan`](zond_engine::scan)
+//! keeps [`discover`](zond_engine::discover) and [`scan`]
 //! apart so that the caller chooses, and a front end that quietly ran both would
 //! be taking that choice back.
 //!

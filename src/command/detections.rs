@@ -111,7 +111,7 @@ pub(crate) fn corpus(args: &DetectionArgs) -> Result<Detections, Error> {
 ///
 /// Not a [`Renderer`](crate::render::Renderer): a renderer draws a scan as it
 /// happens, and nothing happens here. What it draws in is
-/// [`render::detections`](crate::render::detections), so this module keeps the
+/// [`render::detections`], so this module keeps the
 /// half that is about files and the drawing stays where every other drawing is.
 ///
 /// The count goes to standard error with the rest of the commentary. Records to

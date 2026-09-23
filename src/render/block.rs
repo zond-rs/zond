@@ -537,7 +537,7 @@ impl Columns {
 /// A line under construction, which knows how wide it is without its paint.
 ///
 /// Every column in this module is placed through [`pad_to`](Self::pad_to) or
-/// [`ending_at`](Self::ending_at) rather than by counting spaces at the call
+/// [`indent_to`](Self::indent_to) rather than by counting spaces at the call
 /// site, so there is one piece of arithmetic to get right instead of one per
 /// line type.
 struct Line {

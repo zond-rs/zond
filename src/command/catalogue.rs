@@ -13,7 +13,7 @@
 //! The corpus this build ships is ninety-odd and grows with every release, so
 //! the listing stopped being something anybody reads end to end. The flags are
 //! [`CatalogueArgs`]; this is what they mean against a
-//! [`DetectionSummary`](zond_engine::detect::corpus::DetectionSummary).
+//! [`DetectionSummary`].
 //!
 //! Nothing here changes what a scan runs. Compiling is
 //! [`corpus`](super::detections::corpus) and running is the engine's, and a

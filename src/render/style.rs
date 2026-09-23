@@ -70,7 +70,7 @@
 //! Everything else here is a fixed decision about legibility, but the accent
 //! carries no meaning beyond "look here", so it is [`Accent`], read from
 //! `accent_colour` in `cli.toml`. Named or written as a hexadecimal triplet; see
-//! [`Accent::from_str`].
+//! [`Accent`]'s [`FromStr`](std::str::FromStr) implementation.
 //!
 //! **Colour never carries a fact on its own.** Every verdict a colour marks is
 //! also spelled out in words, and every identifier says what it is by being one,
@@ -311,7 +311,7 @@ impl std::fmt::Display for Accent {
     }
 }
 
-/// The error [`Accent::from_str`] returns.
+/// The error [`Accent`]'s [`FromStr`](std::str::FromStr) implementation returns.
 #[derive(Debug, thiserror::Error)]
 #[error("unusable accent '{written}': expected a colour like '#63d2c3', or one of {}", expected.join(", "))]
 pub(crate) struct UnknownAccent {
@@ -472,7 +472,8 @@ impl std::fmt::Display for ColourChoice {
     }
 }
 
-/// The error [`ColourChoice::from_str`] returns.
+/// The error [`ColourChoice`]'s [`FromStr`](std::str::FromStr) implementation
+/// returns.
 #[derive(Debug, thiserror::Error)]
 #[error("unknown colour setting '{written}': expected one of {}", expected.join(", "))]
 pub(crate) struct UnknownColourChoice {

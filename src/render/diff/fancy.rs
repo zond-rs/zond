@@ -9,7 +9,7 @@
 //! # A comparison as blocks, for reading
 //!
 //! The same six line types a scan draws in, because a comparison is a listing of
-//! records and that is what [`block`](crate::render::block) is for. What is
+//! records and that is what [`block`] is for. What is
 //! decided here is which facts a change has and what colour each takes; the
 //! shape is not this module's to choose.
 
