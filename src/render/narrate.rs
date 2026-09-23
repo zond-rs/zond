@@ -794,6 +794,7 @@ mod tests {
             refusals: phase.refusals().to_vec(),
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
+            reached_by_connect: phase.reached_by_connect().to_vec(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });
@@ -832,6 +833,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });

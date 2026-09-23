@@ -3306,6 +3306,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
             probes: vec![probes],
             origin: None,
         });
