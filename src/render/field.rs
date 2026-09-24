@@ -1030,6 +1030,7 @@ fn spoken_response(response: &ScanResponse) -> String {
     match response {
         ScanResponse::TcpSynAck => "SYN/ACK".to_owned(),
         ScanResponse::TcpRst => "RST".to_owned(),
+        ScanResponse::ConnectionRefused => "refused".to_owned(),
         ScanResponse::UdpResponse => "UDP reply".to_owned(),
         ScanResponse::NoResponse => "no reply".to_owned(),
         ScanResponse::IcmpUnreachable => "ICMP unreachable".to_owned(),
