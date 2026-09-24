@@ -1622,6 +1622,10 @@ pub(crate) struct EngineArgs {
     /// target on a segment or in a tunnel's own prefix is always reached by
     /// that link. Name lookups are not pinned: they ask the system's resolvers
     /// by the routing table, so add `-n` to keep them off the tunnel.
+    ///
+    /// On Linux a run without root needs kernel 5.7 or later to pin its
+    /// connections; an older kernel refuses them, and their targets are
+    /// reported unreachable rather than scanned through the tunnel.
     #[arg(long, value_name = "NAME")]
     pub send_interface: Option<String>,
 
