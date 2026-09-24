@@ -1185,8 +1185,7 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
     // standing where a port number would be bold is already how a block marks
     // the renderer's own asides.
     if closed > 0 {
-        let probed = host.port_count();
-        notes.push(format!("{probed} probed, {closed} closed"));
+        notes.push(format!("{} probed, {closed} closed", probed(host)));
     }
 
     if filtered_over_limit > 0 {
@@ -1453,12 +1452,20 @@ pub(crate) fn host_risks(host: &Host) -> Option<(usize, Severity)> {
     worst.map(|worst| (count, worst))
 }
 
+/// How many of a host's ports were probed: every one it records but those
+/// the scan never asked, which are listed as unasked rather than counted.
+fn probed(host: &Host) -> usize {
+    host.ports()
+        .filter(|port| port.state() != PortState::Unasked)
+        .count()
+}
+
 /// How many of a host's ports are open, and how many were probed.
 ///
 /// `None` when nothing was probed, so a discovery sweep says nothing about ports
 /// rather than reporting that none of them are open.
 pub(crate) fn open_ports(host: &Host) -> Option<(usize, usize)> {
-    let probed = host.port_count();
+    let probed = probed(host);
     if probed == 0 {
         return None;
     }
@@ -4025,6 +4032,28 @@ mod tests {
             ports(&host, true, Showing::default()),
             vec!["1 probed, 1 closed"]
         );
+    }
+
+    /// A port the scan never asked is not one it probed. Counted among them,
+    /// a host with two ports cut short reads as having had five probed when
+    /// three were, and the unasked ones are listed on their own lines anyway.
+    #[test]
+    fn the_probed_count_leaves_out_the_ports_never_asked() {
+        let mut host = host(1);
+        for number in [80, 443, 8080] {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Closed));
+        }
+        for number in [22, 23] {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Unasked));
+        }
+
+        let lines = ports(&host, true, Showing::default());
+        let counted: Vec<_> = lines
+            .iter()
+            .filter(|line| line.contains("probed"))
+            .collect();
+        assert_eq!(counted, ["3 probed, 3 closed"], "{lines:?}");
+        assert_eq!(open_ports(&host), Some((0, 3)));
     }
 
     #[test]
