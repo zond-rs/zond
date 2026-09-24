@@ -380,6 +380,34 @@ impl Narrator {
         self.out.flush()
     }
 
+    /// The addresses a scan heard nothing from and did not list as hosts, by
+    /// how it came to leave them off.
+    ///
+    /// Two notes rather than one, because what the scan did with them differs:
+    /// after a liveness pass they were turned away unprobed, and where the port
+    /// probes stood in for that pass they were asked on every port. Both are
+    /// what `--assume-up` lists.
+    fn silence(&mut self, report: &ScanReport) -> io::Result<()> {
+        let skipped = field::skipped_as_down(report);
+        if skipped > 0 {
+            self.note(&format!(
+                "{skipped} {} silent, not port-scanned (--assume-up)",
+                plural(skipped, "address"),
+            ))?;
+        }
+
+        // Said, so a count of hosts smaller than the range does not read as
+        // ground the scan skipped.
+        let silent = field::silent(report);
+        if silent > 0 {
+            self.note(&format!(
+                "{silent} {} silent on every port (--assume-up lists them)",
+                plural(silent, "address"),
+            ))?;
+        }
+        Ok(())
+    }
+
     /// What qualifies the count below it: the ground the run did not
     /// cover, the tier it was not asked to run, and the strategies that
     /// did not finish.
@@ -501,25 +529,7 @@ impl Narrator {
             ))?;
         }
 
-        let skipped = field::skipped_as_down(report);
-        if skipped > 0 {
-            self.note(&format!(
-                "{skipped} {} silent, not port-scanned (--assume-up)",
-                plural(skipped, "address"),
-            ))?;
-        }
-
-        // The same finding where the port probes stood in for the liveness
-        // pass: asked on every port rather than turned away, and left off the
-        // host list as the pass would have left it. Said, so a count of hosts
-        // smaller than the range does not read as ground the scan skipped.
-        let silent = field::silent(report);
-        if silent > 0 {
-            self.note(&format!(
-                "{silent} {} silent on every port (--assume-up lists them)",
-                plural(silent, "address"),
-            ))?;
-        }
+        self.silence(report)?;
 
         // A host a time budget left where it stood. Its results are whatever the
         // scan had reached, which is narrower than what was asked, so a reader
