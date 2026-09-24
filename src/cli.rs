@@ -1720,18 +1720,22 @@ pub(crate) struct EngineArgs {
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Evasion")]
 pub(crate) struct EvasionArgs {
-    /// Set the outgoing hop limit, rather than this host's default.
+    /// Set the probes' hop limit, rather than this host's default.
     ///
     /// A probe crafted to expire in the path, or one built to look like traffic
     /// from a particular distance. Refused at zero, which is a packet that never
-    /// leaves the first hop.
+    /// leaves the first hop. The service, TLS and detection connections that
+    /// follow a probe keep this host's default.
     #[arg(long, value_name = "HOPS")]
     pub ttl: Option<u8>,
 
     /// Send every probe from this source port.
     ///
     /// A filter that trusts a port such as 53 or 88 lets a probe wearing it back
-    /// in. One port for the whole scan, since the answers must come back to it.
+    /// in. One port for every probe, since the answers must come back to it. The
+    /// service, TLS and detection connections that follow leave from ports the
+    /// system picks: one port cannot hold several connections to one target
+    /// port at once.
     #[arg(long = "source-port", visible_alias = "g", value_name = "PORT")]
     pub source_port: Option<u16>,
 
