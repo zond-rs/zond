@@ -773,19 +773,22 @@ fn assume_up_scans_a_host_without_asking_whether_it_is_there() {
 
 /// A live target is still scanned, and the liveness phase is what fills in the
 /// round-trip time a port scan used not to have.
+///
+/// Nine ports, one more than the liveness pass asks, so the pass runs: a scan
+/// of fewer probes its ports directly and has no liveness phase to time.
 #[test]
 fn a_live_host_is_scanned_and_timed() {
     let run = zond(
         "scan-live-timed",
-        &["-q", "--pipe", "s", "127.0.0.1", "-p", "1,2"],
+        &["-q", "--pipe", "s", "127.0.0.1", "-p", "1-9"],
     );
 
     let fields = record(&run);
     assert_eq!(fields[1], "Up");
     assert_ne!(fields[2], "-", "the liveness phase measured a round trip");
     assert_eq!(
-        fields[12], "2",
-        "both ports were probed and came back closed"
+        fields[12], "9",
+        "every port was probed and came back closed"
     );
 }
 
