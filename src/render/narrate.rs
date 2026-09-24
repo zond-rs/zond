@@ -433,6 +433,24 @@ impl Narrator {
             ))?;
         }
 
+        // Beside the silent ones and apart from them, because the remedy
+        // differs: an address nobody reached a verdict on is not down, and
+        // what it needs is asking rather than scanning on trust. A stop, a
+        // budget, a strategy that would not start and a refused range all leave
+        // one, and the note says what they have in common.
+        let undecided = field::undecided(report);
+        if undecided > 0 {
+            self.note(&format!(
+                "{undecided} {} never asked to a verdict; resuming the run asks {}.",
+                if undecided == 1 {
+                    "address was"
+                } else {
+                    "addresses were"
+                },
+                if undecided == 1 { "it" } else { "them" },
+            ))?;
+        }
+
         let skipped = field::skipped_as_down(report);
         if skipped > 0 {
             self.note(&format!(
@@ -923,6 +941,7 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -965,6 +984,7 @@ mod tests {
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
+            undecided: phase.undecided().to_vec(),
             probes: vec![attempts],
             origin: phase.origin().cloned(),
         });
@@ -1080,6 +1100,7 @@ mod tests {
             unroutable,
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -1214,6 +1235,27 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("no route"), "{said}");
+    }
+
+    /// A scan that stopped during discovery says how many addresses it never
+    /// reached a verdict on and that a resume asks them, and does not count
+    /// them among those that answered no liveness probe.
+    #[test]
+    fn addresses_never_asked_are_said_to_be_left_for_a_resume() {
+        let said = summarised(&crate::render::test_support::screened(
+            "192.0.2.0/29",
+            "192.0.2.4-192.0.2.7",
+            "192.0.2.1",
+        ));
+
+        assert!(
+            said.contains("4 addresses were never asked to a verdict; resuming the run asks them."),
+            "{said}"
+        );
+        assert!(
+            said.contains("3 addresses answered no liveness probe"),
+            "{said}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1421,6 +1463,7 @@ mod tests {
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
+            undecided: phase.undecided().to_vec(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });

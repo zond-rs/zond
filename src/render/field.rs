@@ -2408,7 +2408,10 @@ pub(crate) fn addresses_scanned(report: &ScanReport) -> Option<u128> {
 /// **Counts only the addresses that were probed and stayed silent.** An address
 /// this host has no route to was never asked anything, so it is subtracted out
 /// here and reported by [`unroutable`] instead: the two are different findings
-/// and only one of them can be answered by scanning on trust.
+/// and only one of them can be answered by scanning on trust. An address the
+/// liveness phase reached no verdict on is subtracted too and reported by
+/// [`undecided`]: it was not found down, and scanning on trust is not what it
+/// needs, asking it is.
 pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
     // Exactly a sweep and the port scan that followed it, which is the one shape
     // this subtraction means anything in. Two port-scan sittings of a resumed
@@ -2422,11 +2425,62 @@ pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
         return 0;
     }
 
-    liveness
-        .targets()
-        .addresses()
-        .saturating_sub(ports.targets().addresses())
-        .saturating_sub(unroutable(report))
+    // As sets rather than as counts, so an address both undecided and
+    // unroutable in a document that says so is subtracted once.
+    let mut turned_away = ranges(liveness.targets().ranges());
+    turned_away.subtract(&ranges(ports.targets().ranges()));
+    turned_away.subtract(&ranges(liveness.undecided()));
+    let mut unreachable = IpSet::new();
+    for phase in report.phases() {
+        for address in phase.unroutable() {
+            unreachable.insert(*address);
+        }
+    }
+    turned_away.subtract(&unreachable);
+    turned_away.len()
+}
+
+/// How many addresses the run set out to ask whether anything is there and
+/// reached no verdict on.
+///
+/// The addresses a discovery phase names as
+/// [`undecided`](ScanPhase::undecided), less any another phase of the report
+/// walked and did decide: the second sitting of a resumed sweep answers what
+/// the first left open, and counting it again would report a gap the job
+/// closed.
+pub(crate) fn undecided(report: &ScanReport) -> u128 {
+    let mut open = IpSet::new();
+    let mut decided = IpSet::new();
+    for phase in report.phases() {
+        let mut walked = ranges(phase.targets().ranges());
+        let left = ranges(phase.undecided());
+        walked.subtract(&left);
+        for range in left.v4() {
+            open.push_v4_range(*range);
+        }
+        for range in left.v6() {
+            open.push_v6_range(*range);
+        }
+        for range in walked.v4() {
+            decided.push_v4_range(*range);
+        }
+        for range in walked.v6() {
+            decided.push_v6_range(*range);
+        }
+    }
+    open.subtract(&decided);
+    open.canonicalize();
+    open.len()
+}
+
+/// `ranges` as one merged set.
+fn ranges(ranges: &[zond_engine::model::ip::range::IpRange]) -> IpSet {
+    let mut set = IpSet::new();
+    for range in ranges {
+        set.insert_range(*range);
+    }
+    set.canonicalize();
+    set
 }
 
 /// How many addresses this host had no route to.
@@ -3519,6 +3573,7 @@ mod tests {
             unroutable: Vec::new(),
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: vec![probes],
             origin: None,
         });
@@ -4130,5 +4185,26 @@ mod tests {
         let report = zond_engine::ScanReport::recorded("nmap 7.94", Vec::new(), vec![host(1)]);
 
         assert_eq!(addresses_scanned(&report), None);
+    }
+
+    /// **An address the liveness pass never decided did not answer "no".**
+    /// A scan stopped during discovery leaves most of its range unasked, and
+    /// counted as silent those addresses were reported as having answered no
+    /// liveness probe, with advice to scan them on trust. They are counted
+    /// apart, and only the addresses asked and found silent remain.
+    #[test]
+    fn addresses_the_liveness_pass_never_decided_are_not_counted_as_silent() {
+        let report = crate::render::test_support::screened(
+            "192.0.2.0/29",
+            "192.0.2.4-192.0.2.7",
+            "192.0.2.1",
+        );
+
+        assert_eq!(undecided(&report), 4);
+        assert_eq!(
+            skipped_as_down(&report),
+            3,
+            "eight asked, one scanned, four never decided: three found silent"
+        );
     }
 }

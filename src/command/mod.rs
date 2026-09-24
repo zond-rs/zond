@@ -723,6 +723,7 @@ mod tests {
             unroutable,
             timed_out,
             reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });

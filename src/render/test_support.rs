@@ -154,9 +154,61 @@ pub(crate) fn scoped_at(
         unroutable: Vec::new(),
         timed_out: Vec::new(),
         reached_by_connect: Vec::new(),
+        undecided: Vec::new(),
         probes: Vec::new(),
         origin: None,
     });
 
     ScanReport::recorded("test", vec![phase], hosts)
+}
+
+/// A port scan's two phases: a liveness pass over `asked` that reached no
+/// verdict on `undecided`, and the port phase over `probed`, the addresses it
+/// found live.
+///
+/// The shape a front end reads "answered no liveness probe" from, with the
+/// one field that says which of those addresses were never asked at all.
+pub(crate) fn screened(asked: &str, undecided: &str, probed: &str) -> zond_engine::ScanReport {
+    use std::time::Duration;
+
+    use zond_engine::ZondConfig;
+    use zond_engine::model::exclusion::Exclusions;
+    use zond_engine::model::ip::range::IpRange;
+    use zond_engine::model::parse::ip::to_set;
+    use zond_engine::report::{
+        PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope,
+    };
+    use zond_engine::system::privilege::Privilege;
+
+    let phase = |kind: ScanKind, covered: &str, undecided: Vec<IpRange>| {
+        let mut targets = to_set(&[covered], None, None).expect("a parseable range");
+        ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind,
+            started_at: recorded_at(),
+            elapsed: Duration::from_secs(1),
+            privilege: Some(Privilege::Raw),
+            targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
+            settings: ScanSettings::from(&ZondConfig::default()),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided,
+            probes: Vec::new(),
+            origin: None,
+        })
+    };
+
+    let open = to_set(&[undecided], None, None).expect("a parseable range");
+    let open: Vec<IpRange> = open.v4().iter().copied().map(IpRange::V4).collect();
+    ScanReport::recorded(
+        "test",
+        vec![
+            phase(ScanKind::Discovery, asked, open),
+            phase(ScanKind::PortScan, probed, Vec::new()),
+        ],
+        vec![host(1)],
+    )
 }
