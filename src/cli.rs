@@ -22,7 +22,8 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use std::num::{NonZeroU8, NonZeroU32};
 
 use zond_engine::config::{
-    DetectionEnvelope, IdleScan, OsDetection, ScanEffort, ServiceDetection, TimeoutScale,
+    DetectionEnvelope, IdleScan, OsDetection, RAW_PRINT_PORTS, ScanEffort, ServiceDetection,
+    TimeoutScale,
 };
 use zond_engine::evasion::EvasionProfile;
 use zond_engine::model::mac::MacAddr;
@@ -1185,6 +1186,16 @@ pub(crate) struct ScanArgs {
     #[arg(long)]
     pub tls_enum: bool,
 
+    /// Probe printers' raw-print ports, TCP 9100 to 9107, like any other port.
+    ///
+    /// A network printer prints whatever arrives on these ports, so by default
+    /// they are found open, listened to, and sent nothing: no service probe, no
+    /// detection and no TLS handshake, each of which would come out of the
+    /// printer as a page of gibberish. With this they are probed like every
+    /// other port, and a printer behind one will print what it is sent.
+    #[arg(long)]
+    pub probe_print_ports: bool,
+
     /// Characterise the filter in front of each host that answered.
     ///
     /// A last pass against the hosts that answered, sending a bad-checksum probe
@@ -1286,6 +1297,11 @@ impl ScanArgs {
         }
         if self.tls_enum {
             config.tls_enumeration = true;
+        }
+        if self.probe_print_ports {
+            config
+                .listen_only_ports
+                .retain(|port| !RAW_PRINT_PORTS.contains(port));
         }
         if self.characterise {
             config.characterise = true;
@@ -2622,5 +2638,30 @@ mod tests {
             config.scan_timeout,
             Some(std::time::Duration::from_secs(600))
         );
+    }
+
+    /// A printer's raw-print ports are sent nothing unless the flag says
+    /// otherwise, and the flag frees those ports and no others.
+    ///
+    /// The default is what keeps a scan of a network with a printer on it from
+    /// printing, so a parse that cleared it without being asked would print.
+    #[test]
+    fn the_printers_ports_are_probed_only_when_asked() {
+        let parse = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).expect("should parse");
+            let Command::Scan(args) = cli.command else {
+                panic!("s is the scan alias");
+            };
+            let mut config = ZondConfig::default();
+            config.listen_only_ports.insert(502);
+            args.apply_to(&mut config);
+            config.listen_only_ports
+        };
+
+        let held = parse(&["zond", "s", "192.0.2.1"]);
+        assert!(RAW_PRINT_PORTS.iter().all(|port| held.contains(port)));
+
+        let held = parse(&["zond", "s", "192.0.2.1", "--probe-print-ports"]);
+        assert_eq!(held, [502].into_iter().collect());
     }
 }

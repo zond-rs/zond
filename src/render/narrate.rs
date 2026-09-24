@@ -19,6 +19,7 @@
 
 use std::io::{self, Write};
 
+use zond_engine::config::RAW_PRINT_PORTS;
 use zond_engine::export::Redaction;
 use zond_engine::report::{ScanKind, ScannerKind};
 use zond_engine::system::privilege::Privilege;
@@ -459,6 +460,35 @@ impl Narrator {
                 if timed_out == 1 { "was" } else { "were" },
                 if timed_out == 1 { "it" } else { "they" },
                 if timed_out == 1 { "it" } else { "them" },
+            ))?;
+        }
+
+        // Open ports sent nothing on purpose. Said because an open port with
+        // no service beyond its number reads as one that would not answer, and
+        // a reader wanting it named needs to know it was never asked, and why.
+        let (held, hosts) = field::listened_only(report);
+        if !held.is_empty() {
+            let printers = held.iter().all(|port| RAW_PRINT_PORTS.contains(port));
+            let numbers: Vec<String> = held.iter().map(u16::to_string).collect();
+            let it = if held.len() == 1 && hosts == 1 {
+                "it"
+            } else {
+                "them"
+            };
+            self.note(&format!(
+                "Only listened to tcp {} on {hosts} {} and sent {it} nothing, {}.{}",
+                numbers.join(", "),
+                plural(hosts, "host"),
+                if printers {
+                    "since a printer prints whatever arrives there"
+                } else {
+                    "as the scan was set to"
+                },
+                if printers {
+                    format!(" Pass --probe-print-ports to probe {it} anyway.")
+                } else {
+                    String::new()
+                },
             ))?;
         }
 
@@ -1221,6 +1251,48 @@ mod tests {
             zond_engine::PortState::Closed,
         ));
         host
+    }
+
+    /// An open printer port the scan only listened on is said to have been
+    /// sent nothing, with why and with the flag that probes it, and an open
+    /// port that was probed is not.
+    ///
+    /// Without the line, a printer's 9100 left with nothing but its number
+    /// reads as a port that would not answer, when it was never asked.
+    #[test]
+    fn a_printer_port_only_listened_to_is_said_to_have_been_sent_nothing() {
+        let mut printer = host(1);
+        for port in [22, 9100] {
+            printer.add_port(zond_engine::Port::new(
+                port,
+                zond_engine::Protocol::Tcp,
+                zond_engine::PortState::Open,
+            ));
+        }
+        let said = summarised(&port_scanned_by(
+            Privilege::Raw,
+            vec![printer],
+            "192.0.2.1",
+            Vec::new(),
+        ));
+        assert!(
+            said.contains(
+                "Only listened to tcp 9100 on 1 host and sent it nothing, since a printer \
+                 prints whatever arrives there. Pass --probe-print-ports to probe it anyway."
+            ),
+            "{said}"
+        );
+
+        let said = summarised(&port_scanned_by(
+            Privilege::Raw,
+            vec![host_with(9100, zond_engine::Protocol::Tcp)],
+            "192.0.2.1",
+            Vec::new(),
+        ));
+        assert!(
+            !said.contains("Only listened"),
+            "a closed port was said to be held back: {said}"
+        );
     }
 
     /// A connect scan that probed TCP ports says how it probed them, and what

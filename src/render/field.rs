@@ -2444,6 +2444,39 @@ pub(crate) fn unroutable(report: &ScanReport) -> u128 {
     seen.len() as u128
 }
 
+/// The open TCP ports a phase only listened on and sent nothing, as their
+/// numbers ascending, and how many hosts had one.
+///
+/// Read against the settings of every phase, since a merged or resumed report
+/// carries several and a port any of them held back was held back. Numbers
+/// rather than endpoints, so the line that says so names no address a
+/// redacted report would hide; the port table beside it says which hosts.
+pub(crate) fn listened_only(report: &ScanReport) -> (Vec<u16>, u128) {
+    let held = |number: u16| {
+        report
+            .phases()
+            .iter()
+            .any(|phase| phase.settings().listened_only_to(number, Protocol::Tcp))
+    };
+    let mut numbers = Vec::new();
+    let mut hosts = 0u128;
+    for host in report.hosts() {
+        let before = numbers.len();
+        numbers.extend(
+            host.ports()
+                .filter(|port| port.protocol() == Protocol::Tcp && port.state() == PortState::Open)
+                .map(Port::number)
+                .filter(|&number| held(number)),
+        );
+        if numbers.len() > before {
+            hosts += 1;
+        }
+    }
+    numbers.sort_unstable();
+    numbers.dedup();
+    (numbers, hosts)
+}
+
 /// How many hosts a time budget left before they were finished.
 ///
 /// From `--host-timeout` and `--scan-timeout`: a host still outstanding when its
