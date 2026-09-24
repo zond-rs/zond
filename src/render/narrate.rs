@@ -985,6 +985,7 @@ mod tests {
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         });
@@ -1028,6 +1029,7 @@ mod tests {
             timed_out: phase.timed_out().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
             undecided: phase.undecided().to_vec(),
+            liveness_skipped: phase.liveness_skipped(),
             probes: vec![attempts],
             origin: phase.origin().cloned(),
         });
@@ -1144,6 +1146,7 @@ mod tests {
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         });
@@ -1602,6 +1605,7 @@ mod tests {
             timed_out: phase.timed_out().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
             undecided: phase.undecided().to_vec(),
+            liveness_skipped: phase.liveness_skipped(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });

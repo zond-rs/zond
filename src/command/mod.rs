@@ -757,6 +757,7 @@ mod tests {
             timed_out,
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
             probes: Vec::new(),
             origin: None,
         });
