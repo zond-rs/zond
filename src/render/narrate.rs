@@ -342,13 +342,16 @@ impl Narrator {
             None => line,
         };
 
-        self.remark(&line)?;
+        // The notes first and the count last, so a run always ends on the one
+        // line every run prints, where a reader's eye lands, and each note sits
+        // directly above the number it qualifies.
         self.qualifications(report)?;
+        self.remark(&line)?;
 
         self.out.flush()
     }
 
-    /// What qualifies the count above it: the ground the run did not
+    /// What qualifies the count below it: the ground the run did not
     /// cover, the tier it was not asked to run, and the strategies that
     /// did not finish.
     ///
@@ -364,9 +367,10 @@ impl Narrator {
             self.note(&format!("not covered: {reason}"))?;
         }
 
-        // After the count rather than before the scan: both notes say the count
-        // is an undercount, which matters when somebody is looking at it. The
-        // engine already announced the privilege level; this adds the remedy.
+        // Beside the count rather than before the scan: both notes say the
+        // count is an undercount, which matters when somebody is looking at it.
+        // The engine already announced the privilege level; this adds the
+        // remedy.
         //
         // A report with no phase at all measured nothing and has no privilege
         // level to advise about. That is a record read back from a scan which
@@ -399,17 +403,10 @@ impl Narrator {
                 // where there were some. One whose whole range was refused made
                 // none, and its refusal above has already said what would work.
                 ScanKind::Discovery if !field::attempted_probes(report) => {}
-                ScanKind::PortScan => self.note(
-                    "ran without raw sockets, so every TCP port was tested by \
-                     completing a connection. Run with sudo for SYN scanning, \
-                     which is faster, less visible, and the only way to ask a \
-                     port anything other than \"will you accept\".",
-                )?,
-                _ => self.note(
-                    "ran without raw sockets, so this was TCP connect \
-                     attempts against a few common ports. Run with sudo for ARP \
-                     and ICMPv6 discovery, which finds hosts this cannot.",
-                )?,
+                ScanKind::PortScan => {
+                    self.note("no raw sockets: TCP ports tested by connect (sudo for SYN)")?;
+                }
+                _ => self.note("no raw sockets: connects to common ports (sudo for ARP)")?,
             }
         }
 
@@ -431,9 +428,8 @@ impl Narrator {
         let unroutable = field::unroutable(report);
         if unroutable > 0 {
             self.note(&format!(
-                "{unroutable} {} could not be reached from this host and {} never probed.",
+                "{unroutable} {} unreachable, never probed",
                 plural(unroutable, "address"),
-                if unroutable == 1 { "was" } else { "were" },
             ))?;
         }
 
@@ -860,7 +856,7 @@ mod tests {
     fn an_unprivileged_run_of_this_engine_is_advised_to_use_sudo() {
         let said = summarised(&unprivileged());
 
-        assert!(said.contains("without raw sockets"), "{said}");
+        assert!(said.contains("no raw sockets"), "{said}");
         assert!(said.contains("sudo"), "{said}");
     }
 
@@ -1214,7 +1210,7 @@ mod tests {
         let said = summarised(&report);
 
         assert!(
-            said.contains("1 address could not be reached from this host and was never probed"),
+            said.contains("1 address unreachable, never probed"),
             "{said}"
         );
         assert!(!said.contains("no route"), "{said}");
@@ -1240,7 +1236,7 @@ mod tests {
         );
         let said = summarised(&report);
 
-        assert!(!said.contains("completing a connection"), "{said}");
+        assert!(!said.contains("tested by connect"), "{said}");
     }
 
     /// A host whose one probed port is `port`, of `protocol`, and closed.
@@ -1293,6 +1289,33 @@ mod tests {
         );
     }
 
+    /// The count is the last line a run prints, with every note above it.
+    ///
+    /// A run ends where a reader's eye lands, so the one line every run prints
+    /// closes it, and each note stands directly over the number it qualifies
+    /// rather than trailing after it.
+    #[test]
+    fn the_count_is_the_last_line_and_its_notes_come_before_it() {
+        let report = port_scanned_by(
+            Privilege::Connect,
+            vec![host_with(22, zond_engine::Protocol::Tcp)],
+            "192.0.2.1",
+            Vec::new(),
+        );
+        let said = summarised(&report);
+        let lines: Vec<&str> = said
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+
+        let last = lines.last().expect("a summary");
+        assert!(last.contains("1 host up"), "the count is not last: {said}");
+        assert!(
+            lines.iter().any(|line| line.contains("no raw sockets")),
+            "the note this relies on was not printed: {said}"
+        );
+    }
+
     /// A connect scan that probed TCP ports says how it probed them, and what
     /// running as root would add.
     #[test]
@@ -1305,7 +1328,7 @@ mod tests {
         );
         let said = summarised(&report);
 
-        assert!(said.contains("completing a connection"), "{said}");
+        assert!(said.contains("tested by connect"), "{said}");
         assert!(said.contains("sudo"), "{said}");
     }
 
@@ -1335,7 +1358,7 @@ mod tests {
             "the refusal was not said: {said}"
         );
         assert!(
-            !said.contains("completing a connection"),
+            !said.contains("tested by connect"),
             "a scan that probed no port claimed to have tested them: {said}"
         );
     }
@@ -1352,7 +1375,7 @@ mod tests {
         );
         let said = summarised(&report);
 
-        assert!(!said.contains("completing a connection"), "{said}");
+        assert!(!said.contains("tested by connect"), "{said}");
     }
 
     /// A refusal met by two phases is one reason, and is said once.

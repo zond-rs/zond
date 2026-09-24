@@ -676,7 +676,7 @@ fn a_technique_needing_a_raw_socket_is_refused_rather_than_downgraded() {
         "the refusal names the technique it refused: {said}"
     );
     assert!(
-        !said.contains("completing a connection"),
+        !said.contains("tested by connect"),
         "no port was tested, by a connection or otherwise: {said}"
     );
 
