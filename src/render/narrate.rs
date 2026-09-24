@@ -542,6 +542,8 @@ impl Narrator {
             ))?;
         }
 
+        self.rationed(report)?;
+
         // Open ports sent nothing on purpose. Said because an open port with
         // no service beyond its number reads as one that would not answer, and
         // a reader wanting it named needs to know it was never asked, and why.
@@ -579,6 +581,21 @@ impl Narrator {
             self.shortfall(report)?;
         }
 
+        Ok(())
+    }
+
+    /// The line naming hosts that rationed their ICMP errors.
+    ///
+    /// Such a host left most of its closed UDP ports reading open|filtered,
+    /// which a reader would otherwise take for ports that might be listening.
+    fn rationed(&mut self, report: &ScanReport) -> io::Result<()> {
+        let rationed = field::icmp_rate_limited(report);
+        if rationed > 0 {
+            self.note(&format!(
+                "{rationed} {} rate-limited ICMP (closed UDP may read open|filtered)",
+                plural(rationed, "host"),
+            ))?;
+        }
         Ok(())
     }
 
@@ -1008,6 +1025,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
@@ -1053,6 +1071,7 @@ mod tests {
             refusals,
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
+            icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
             undecided: phase.undecided().to_vec(),
             liveness_skipped: phase.liveness_skipped(),
@@ -1171,6 +1190,7 @@ mod tests {
             refusals,
             unroutable,
             timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
@@ -1358,6 +1378,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
@@ -1653,6 +1674,7 @@ mod tests {
             refusals: phase.refusals().to_vec(),
             unroutable: phase.unroutable().to_vec(),
             timed_out: phase.timed_out().to_vec(),
+            icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
             undecided: phase.undecided().to_vec(),
             liveness_skipped: phase.liveness_skipped(),
@@ -1662,6 +1684,43 @@ mod tests {
         });
         let hosts: Vec<_> = report.hosts().cloned().collect();
         ScanReport::recorded("test", vec![rebuilt], hosts)
+    }
+
+    /// A host that rationed its ICMP errors is said in one short line, so its
+    /// open|filtered UDP ports are not read as ports that might be listening.
+    #[test]
+    fn a_host_rationing_its_icmp_errors_is_said_in_one_line() {
+        use zond_engine::report::{PhaseParts, ScanPhase};
+
+        let report = scoped(vec![host(1)], "192.0.2.0/24");
+        let phase = &report.phases()[0];
+        let rebuilt = ScanPhase::from_parts(PhaseParts {
+            attachments: phase.attachments().to_vec(),
+            kind: phase.kind(),
+            started_at: phase.started_at(),
+            elapsed: phase.elapsed(),
+            privilege: phase.privilege(),
+            targets: phase.targets().clone(),
+            settings: phase.settings().clone(),
+            failures: phase.failures().to_vec(),
+            refusals: phase.refusals().to_vec(),
+            unroutable: phase.unroutable().to_vec(),
+            timed_out: phase.timed_out().to_vec(),
+            icmp_rate_limited: vec!["192.0.2.1".parse().expect("an address")],
+            reached_by_connect: phase.reached_by_connect().to_vec(),
+            undecided: phase.undecided().to_vec(),
+            liveness_skipped: phase.liveness_skipped(),
+            silent: phase.silent().to_vec(),
+            probes: phase.probe_stats().to_vec(),
+            origin: phase.origin().cloned(),
+        });
+        let hosts: Vec<_> = report.hosts().cloned().collect();
+        let said = summarised(&ScanReport::recorded("test", vec![rebuilt], hosts));
+
+        assert!(
+            said.contains("1 host rate-limited ICMP (closed UDP may read open|filtered)\n"),
+            "{said}"
+        );
     }
 
     /// A detection its budget cut short, as the engine files one.

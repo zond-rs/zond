@@ -2572,6 +2572,17 @@ pub(crate) fn listened_only(report: &ScanReport) -> (Vec<u16>, u128) {
     (numbers, hosts)
 }
 
+/// How many hosts rationed the ICMP errors a closed UDP port is known by,
+/// counted once however many phases found it.
+pub(crate) fn icmp_rate_limited(report: &ScanReport) -> u128 {
+    report
+        .phases()
+        .iter()
+        .flat_map(|phase| phase.icmp_rate_limited().iter().copied())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as u128
+}
+
 /// How many hosts a time budget left before they were finished.
 ///
 /// From `--host-timeout` and `--scan-timeout`: a host still outstanding when its
@@ -3606,6 +3617,7 @@ mod tests {
             refusals: Vec::new(),
             unroutable: Vec::new(),
             timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,

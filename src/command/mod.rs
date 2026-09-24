@@ -755,6 +755,7 @@ mod tests {
             refusals,
             unroutable,
             timed_out,
+            icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
