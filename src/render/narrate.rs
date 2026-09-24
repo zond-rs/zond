@@ -471,7 +471,7 @@ impl Narrator {
         let unroutable = field::unroutable(report);
         if unroutable > 0 {
             self.note(&format!(
-                "{unroutable} {} unreachable, never probed",
+                "{unroutable} {} unreachable, not scanned",
                 plural(unroutable, "address"),
             ))?;
         }
@@ -1274,7 +1274,7 @@ mod tests {
         let said = summarised(&report);
 
         assert!(
-            said.contains("1 address unreachable, never probed"),
+            said.contains("1 address unreachable, not scanned"),
             "{said}"
         );
         assert!(!said.contains("no route"), "{said}");
