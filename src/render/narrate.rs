@@ -470,24 +470,25 @@ impl Narrator {
         if !held.is_empty() {
             let printers = held.iter().all(|port| RAW_PRINT_PORTS.contains(port));
             let numbers: Vec<String> = held.iter().map(u16::to_string).collect();
-            let it = if held.len() == 1 && hosts == 1 {
-                "it"
+            let hosts = if hosts > 1 {
+                format!(" on {hosts} hosts")
             } else {
-                "them"
+                String::new()
             };
             self.note(&format!(
-                "Only listened to tcp {} on {hosts} {} and sent {it} nothing, {}.{}",
+                "tcp {} not probed{hosts}: {}",
                 numbers.join(", "),
-                plural(hosts, "host"),
                 if printers {
-                    "since a printer prints whatever arrives there"
+                    format!(
+                        "{} (--probe-print-ports)",
+                        if held.len() == 1 {
+                            "printer port"
+                        } else {
+                            "printer ports"
+                        }
+                    )
                 } else {
-                    "as the scan was set to"
-                },
-                if printers {
-                    format!(" Pass --probe-print-ports to probe {it} anyway.")
-                } else {
-                    String::new()
+                    "listen-only".to_owned()
                 },
             ))?;
         }
@@ -1276,10 +1277,7 @@ mod tests {
             Vec::new(),
         ));
         assert!(
-            said.contains(
-                "Only listened to tcp 9100 on 1 host and sent it nothing, since a printer \
-                 prints whatever arrives there. Pass --probe-print-ports to probe it anyway."
-            ),
+            said.contains("tcp 9100 not probed: printer port (--probe-print-ports)"),
             "{said}"
         );
 
@@ -1290,7 +1288,7 @@ mod tests {
             Vec::new(),
         ));
         assert!(
-            !said.contains("Only listened"),
+            !said.contains("not probed"),
             "a closed port was said to be held back: {said}"
         );
     }
