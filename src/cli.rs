@@ -1620,7 +1620,8 @@ pub(crate) struct EngineArgs {
     /// it holds one of: on an interface with no IPv6 address, IPv6 targets
     /// still go by the routing table, VPN included, and the run says so. A
     /// target on a segment or in a tunnel's own prefix is always reached by
-    /// that link.
+    /// that link. Name lookups are not pinned: they ask the system's resolvers
+    /// by the routing table, so add `-n` to keep them off the tunnel.
     #[arg(long, value_name = "NAME")]
     pub send_interface: Option<String>,
 
