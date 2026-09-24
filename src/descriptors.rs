@@ -9,12 +9,14 @@
 //! # How many files this process may hold open
 //!
 //! Every connect probe holds a socket, and the engine gives its probes half
-//! the process's soft descriptor limit and no more. A macOS Terminal starts at
-//! 256, which holds a sweep to 128 connects in flight where it would keep
-//! 2,048, and a Linux shell at 1,024. The engine reads that limit and never
-//! raises it, because the process is not a library's to change. This binary
-//! is the process, so it raises its own soft limit at start, before a scan
-//! reads it.
+//! the process's soft descriptor limit and no more, keeping at least sixteen
+//! for everything else the process holds, this binary's journal among them.
+//! A macOS Terminal starts at 256, which holds a sweep to 128 connects in
+//! flight where it would keep 2,048, and a Linux shell at 1,024; under a
+//! limit too small to keep both, the engine refuses the scan before it
+//! starts. The engine reads that limit and never raises it, because the
+//! process is not a library's to change. This binary is the process, so it
+//! raises its own soft limit at start, before a scan reads it.
 //!
 //! Only the soft limit moves, and never past the hard one, which is where an
 //! administrator set the ceiling; a shell that lowered both, as `ulimit -n`
