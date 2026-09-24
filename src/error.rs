@@ -43,9 +43,13 @@ pub(crate) enum Error {
     #[error("{0}")]
     Link(#[from] zond_engine::resolve::LinkError),
 
-    /// The scan did not run to completion, meaning the task behind it panicked
-    /// or was killed rather than a strategy inside it failing.
-    #[error("the scan did not run to completion: {0}")]
+    /// The engine refused the scan before it sent anything, or the task behind
+    /// it panicked or was killed, rather than a strategy inside it failing.
+    ///
+    /// Printed in the engine's own words, which already say which of those it
+    /// was: a prefix claiming the scan did not complete would be false of a
+    /// refusal, since that scan never started.
+    #[error("{0}")]
     Scan(#[from] ScanError),
 
     /// Writing the results failed.

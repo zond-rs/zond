@@ -1668,10 +1668,7 @@ mod tests {
     fn cut_short(port: u16) -> zond_engine::report::ScannerFailure {
         zond_engine::report::ScannerFailure::new(
             ScannerKind::Detection,
-            format!(
-                "detection 'backup-files' on 192.0.2.1:{port} went unanswered: \
-                 its 3000 ms time budget ran out with 3 of 6 requests answered"
-            ),
+            format!("backup-files on 192.0.2.1:{port} cut short: 3000 ms budget (3/6 answered)"),
         )
     }
 

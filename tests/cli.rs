@@ -672,7 +672,7 @@ fn a_technique_needing_a_raw_socket_is_refused_rather_than_downgraded() {
     let said = stderr(&run);
     assert!(
         said.lines()
-            .any(|line| line.contains("not covered") && line.contains("fin technique")),
+            .any(|line| line.contains("not covered") && line.contains("fin scan")),
         "the refusal names the technique it refused: {said}"
     );
     assert!(
