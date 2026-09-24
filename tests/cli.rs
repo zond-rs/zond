@@ -1229,6 +1229,49 @@ fn a_report_asked_for_on_the_terminal_is_printed() {
     );
 }
 
+/// A scan that writes a file names it before its count, which is the last
+/// line of every run: a reader glancing at the end of the output finds the
+/// result there, not a file name after it.
+#[test]
+fn a_written_file_is_named_before_the_count() {
+    let home = config_home("named-before-count");
+
+    let out = home.join("scan.json");
+    let path = out.to_str().expect("a printable path");
+    let scan = zond_in(
+        &home,
+        &[
+            "s",
+            "127.0.0.1",
+            "-n",
+            "-p",
+            "1",
+            "--no-journal",
+            "-o",
+            path,
+        ],
+    );
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+
+    let said = stderr(&scan);
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let wrote = lines
+        .iter()
+        .position(|line| line.contains(" wrote "))
+        .unwrap_or_else(|| panic!("the file should be named: {said}"));
+    assert!(
+        wrote + 1 < lines.len(),
+        "the file is named after the count: {said}"
+    );
+    assert!(
+        lines.last().is_some_and(|line| line.contains("probed in")),
+        "the count is the last line: {said}"
+    );
+}
+
 /// A report written to a file is read back out of it, whichever command wrote
 /// it. This is the loop that was open: everything could write one and nothing
 /// could open one.

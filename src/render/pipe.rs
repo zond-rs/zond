@@ -138,6 +138,10 @@ impl Renderer for PipeRenderer {
         self.narrator.started(phase, redaction)
     }
 
+    fn budget_spent(&mut self) {
+        self.narrator.budget_spent();
+    }
+
     fn interrupted(&mut self) -> io::Result<()> {
         self.narrator.interrupted()
     }

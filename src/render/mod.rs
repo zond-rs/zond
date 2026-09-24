@@ -227,6 +227,10 @@ pub(crate) trait Renderer {
     /// report what it found.
     fn interrupted(&mut self) -> io::Result<()>;
 
+    /// The scan stopped because its own time budget ran out. Nothing is
+    /// printed yet: the summary says so among its notes.
+    fn budget_spent(&mut self);
+
     /// The scan is over. This is where the results are written.
     fn finished(&mut self, report: &ScanReport) -> io::Result<()>;
 }

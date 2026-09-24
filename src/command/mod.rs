@@ -38,6 +38,7 @@ use crate::export::Destination;
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
 use zond_engine::journal::store::{self, Journal, Retention};
+use zond_engine::scanner::handle::StopCause;
 use zond_engine::system::privilege::Privilege;
 use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ScopedIp, ZondConfig};
 
@@ -311,7 +312,7 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
     let total = journal.manifest().total_targets;
     let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
     tracing::info!(
-        "continuing {id}: {}",
+        "continuing {id} ({})",
         continuation(&plan, &journal, settled, total, counted)
     );
 
@@ -329,10 +330,9 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
 /// arithmetic the other two are continued by — a cursor, a watermark, a total —
 /// is arithmetic over an enumeration, and a listener enumerates nothing: it was
 /// pointed at a link, and the link carries what it carries. Every one of those
-/// numbers is therefore zero for it, and the line reading
-/// `0 of 0 links already settled` said the opposite of what the phase is, on
-/// every resume, in the one place a person is checking they named the right
-/// record.
+/// numbers is therefore zero for it, and a line reading `0/0 links settled`
+/// would say the opposite of what the phase is, on every resume, in the one
+/// place a person is checking they named the right record.
 ///
 /// What a watch has instead is what its earlier sittings heard, which is the
 /// whole of what reopening one buys: the findings are restored first, so the
@@ -347,13 +347,13 @@ fn continuation(
     if plan.links().is_some() {
         let machines = journal.restored().len();
         return match machines {
-            0 => String::from("adding a sitting to a watch that has heard nobody yet"),
-            1 => String::from("adding a sitting to a watch, with 1 machine already on record"),
-            many => format!("adding a sitting to a watch, with {many} machines already on record"),
+            0 => String::from("watch, nobody heard yet"),
+            1 => String::from("watch, 1 machine on record"),
+            many => format!("watch, {many} machines on record"),
         };
     }
 
-    format!("{settled} of {total} {counted} already settled")
+    format!("{settled}/{total} {counted} settled")
 }
 
 /// What it means for the user to stop this particular run.
@@ -462,16 +462,24 @@ async fn drive(
         zond_engine::cve::correlate_report(&mut report, catalogue);
     }
 
-    // The terminal first. A file that could not be written must not take the
-    // findings with it, and by here they are already in hand.
-    renderer.finished(&report)?;
-    let written = crate::export::write_all(destinations, &report, redaction);
-
+    // The files first, then the terminal. A file that could not be written
+    // takes nothing with it, since each write is reported and the rest go on,
+    // and a terminal that went away cannot take the files with it. And the
+    // count the terminal ends on stays the run's last line, with the files
+    // named above it.
     // From the handle, not from whether the branch above ran. `select!` picks at
     // random between ready branches, and an abort closes the event stream, so
     // the loop can break before the request that caused it is ever read. The run
     // would then call itself complete having been cut short.
-    let outcome = outcome(&report, handle.should_stop(), stopping);
+    let stopped = handle.stopped();
+    if stopped == Some(StopCause::TimedOut) {
+        renderer.budget_spent();
+    }
+
+    let written = crate::export::write_all(destinations, &report, redaction);
+    renderer.finished(&report)?;
+
+    let outcome = outcome(&report, stopped, stopping);
     Ok(if written { outcome } else { Outcome::Partial })
 }
 
@@ -514,8 +522,15 @@ pub(crate) fn deliver(
 /// one is not interrupted at all, so a failure it did have is the only thing
 /// left to report, and a watch that hit its host ceiling or could not open a
 /// capture still exits `3` rather than `0`.
-fn outcome(report: &ScanReport, stopped: bool, stopping: Stopping) -> Outcome {
-    if stopped && stopping == Stopping::CutsShort {
+///
+/// Nor is a run its own time budget stopped. Nobody interrupted it: it ended
+/// where it was told to, so what it amounts to is what its report says, `3`
+/// where the budget left ground outstanding and `0` where it ran out with
+/// nothing left to do. `130` is `128 + SIGINT`, which a script reads as the
+/// user pressing `Ctrl-C`, and a scheduled scan with a budget is exactly the
+/// run no user is there to press it.
+fn outcome(report: &ScanReport, stopped: Option<StopCause>, stopping: Stopping) -> Outcome {
+    if stopped == Some(StopCause::Aborted) && stopping == Stopping::CutsShort {
         return Outcome::Interrupted;
     }
 
@@ -609,6 +624,38 @@ mod tests {
 
     fn ip(last: u8) -> ScopedIp {
         ScopedIp::unscoped(IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)))
+    }
+
+    /// A run its own budget stopped exits on what its report says, never as
+    /// interrupted: nobody pressed `Ctrl-C`, and `130` is what a script reads
+    /// as somebody having done so. Ground the budget left outstanding is a
+    /// `3`, as the exit-status documentation promises.
+    #[test]
+    fn a_run_its_budget_stopped_is_not_interrupted() {
+        let finished = crate::render::test_support::scoped(
+            vec![crate::render::test_support::host(1)],
+            "192.0.2.1",
+        );
+        let short = crate::render::test_support::screened(
+            "192.0.2.0/29",
+            &["192.0.2.4-192.0.2.7"],
+            "192.0.2.1",
+        );
+        let timed_out = Some(StopCause::TimedOut);
+
+        assert_eq!(
+            outcome(&finished, timed_out, Stopping::CutsShort),
+            Outcome::Complete
+        );
+        assert_eq!(
+            outcome(&short, timed_out, Stopping::CutsShort),
+            Outcome::Partial
+        );
+        assert_eq!(
+            outcome(&finished, Some(StopCause::Aborted), Stopping::CutsShort),
+            Outcome::Interrupted,
+            "a stop the user asked for is still an interruption"
+        );
     }
 
     /// A port scan announces the same address once per port that settles, so the

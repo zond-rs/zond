@@ -48,6 +48,9 @@ pub(crate) struct Narrator {
     /// continue it. Offering one to a run that kept no record is advice that
     /// cannot be taken.
     resumable: bool,
+    /// Whether the run stopped because its own time budget ran out, which
+    /// explains a short count and is nothing the user did.
+    budget_spent: bool,
 }
 
 impl Narrator {
@@ -59,7 +62,14 @@ impl Narrator {
             reader: field::Reader::default(),
             style,
             resumable: false,
+            budget_spent: false,
         }
+    }
+
+    /// The run stopped because its time budget ran out. Said among the notes
+    /// above the count, since it is why the count is short.
+    pub(crate) fn budget_spent(&mut self) {
+        self.budget_spent = true;
     }
 
     /// Adopts the masking policy for the run about to start.
@@ -374,6 +384,23 @@ impl Narrator {
     /// Its own method because a summary is one line and a page of
     /// caveats, and the line is the part every run prints.
     fn qualifications(&mut self, report: &ScanReport) -> io::Result<()> {
+        // First, because it explains every shortfall below it, and apart from
+        // an interruption, because nobody stopped this run: it ended where it
+        // was told to.
+        if self.budget_spent {
+            let budget = report
+                .phases()
+                .iter()
+                .find_map(|phase| phase.settings().scan_timeout);
+            self.note(&match budget {
+                Some(budget) => format!(
+                    "stopped: scan budget spent (--scan-timeout {})",
+                    crate::command::listen::spoken_span(Some(budget)).trim_start_matches("for ")
+                ),
+                None => String::from("stopped: scan budget spent (--scan-timeout)"),
+            })?;
+        }
+
         // Ground the engine declined before sending anything, in its own words.
         // First, because it is what explains a count of nothing above it, and
         // at every verbosity, because it is the whole reason such a run exits
@@ -453,7 +480,8 @@ impl Narrator {
         // differs: an address nobody reached a verdict on is not down, and
         // what it needs is asking rather than scanning on trust. A stop, a
         // budget, a strategy that would not start and a refused range all leave
-        // one, and the note says what they have in common.
+        // one, and the note says what they have in common: no verdict, since
+        // some had a probe out when the run stopped and were not unasked.
         let undecided = field::undecided(report);
         if undecided > 0 {
             let resume = if self.resumable {
@@ -465,7 +493,7 @@ impl Narrator {
                 String::new()
             };
             self.note(&format!(
-                "{undecided} {} never asked{resume}",
+                "{undecided} {} without a verdict{resume}",
                 plural(undecided, "address"),
             ))?;
         }
@@ -1256,7 +1284,7 @@ mod tests {
     /// reached a verdict on and that a resume asks them, and does not count
     /// them among those that answered no liveness probe.
     #[test]
-    fn addresses_never_asked_are_said_to_be_left_for_a_resume() {
+    fn addresses_without_a_verdict_are_said_to_be_left_for_a_resume() {
         let stopped = crate::render::test_support::screened(
             "192.0.2.0/29",
             &["192.0.2.4-192.0.2.7"],
@@ -1265,12 +1293,70 @@ mod tests {
         let said = summarised_recorded(&stopped, true);
 
         assert!(
-            said.contains("4 addresses never asked (resume asks them)"),
+            said.contains("4 addresses without a verdict (resume asks them)"),
             "{said}"
         );
         assert!(
             said.contains("3 addresses silent, not port-scanned (--assume-up)"),
             "{said}"
+        );
+    }
+
+    /// A run its own budget stopped says so above the count, with the budget
+    /// and the flag that set it, since it is why the count is short and not
+    /// something the user did.
+    #[test]
+    fn a_run_its_budget_stopped_says_so_above_the_count() {
+        use zond_engine::ZondConfig;
+        use zond_engine::model::exclusion::Exclusions;
+        use zond_engine::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, TargetScope};
+
+        let mut cfg = ZondConfig::default();
+        cfg.scan_timeout = Some(std::time::Duration::from_secs(90));
+        let mut targets = zond_engine::model::parse::ip::to_set(&["192.0.2.1"], None, None)
+            .expect("a parseable address");
+        let phase = ScanPhase::from_parts(PhaseParts {
+            attachments: Vec::new(),
+            kind: ScanKind::PortScan,
+            started_at: crate::render::test_support::recorded_at(),
+            elapsed: std::time::Duration::from_secs(90),
+            privilege: Some(zond_engine::system::privilege::Privilege::Raw),
+            targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
+            settings: ScanSettings::from(&cfg),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            probes: Vec::new(),
+            origin: None,
+        });
+        let report = ScanReport::recorded(
+            "test",
+            vec![phase],
+            vec![crate::render::test_support::host(1)],
+        );
+
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::default(),
+            Style::bare(),
+        );
+        narrator.budget_spent();
+        narrator.summary(&report).expect("a capture never fails");
+        let said = capture.text();
+
+        let lines: Vec<&str> = said.lines().filter(|line| !line.is_empty()).collect();
+        let note = lines
+            .iter()
+            .position(|line| line.contains("stopped: scan budget spent (--scan-timeout 1m30s)"))
+            .unwrap_or_else(|| panic!("the budget is not named: {said}"));
+        assert!(note + 1 < lines.len(), "the count stays last: {said}");
+        assert!(
+            !summarised(&report).contains("budget"),
+            "only when it ran out"
         );
     }
 
@@ -1285,7 +1371,7 @@ mod tests {
         );
         let said = summarised_recorded(&stopped, false);
 
-        assert!(said.contains("4 addresses never asked\n"), "{said}");
+        assert!(said.contains("4 addresses without a verdict\n"), "{said}");
         assert!(!said.contains("resuming"), "{said}");
     }
 
@@ -1307,7 +1393,7 @@ mod tests {
         ));
         let said = summarised_recorded(&resumed, true);
 
-        assert!(!said.contains("never asked"), "{said}");
+        assert!(!said.contains("without a verdict"), "{said}");
     }
 
     // -----------------------------------------------------------------------

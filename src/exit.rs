@@ -44,6 +44,11 @@
 //! though it were not. A script that does not care writes
 //! `zond discover lan || true`.
 //!
+//! **A scan its own budget stopped was not interrupted.** `--scan-timeout`
+//! ends a run where it was told to, so it exits `3` where the budget left
+//! ground outstanding and `0` where it did not, never `130`, which a script
+//! reads as somebody pressing `Ctrl-C`.
+//!
 //! The engine records those three apart — a strategy that failed, ground it
 //! refused before sending, a host a budget cut short — because their remedies
 //! differ, and [`command::concluded`](crate::command::concluded) is where that

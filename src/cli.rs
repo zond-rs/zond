@@ -1598,8 +1598,9 @@ pub(crate) struct EngineArgs {
     /// Give up on the whole scan after this long.
     ///
     /// The same budget for the run as a whole. Every host still outstanding when
-    /// it expires is left where it stands and named in the report. Accepts a
-    /// plain number of seconds or a suffix: `30s`, `10m`, `4h`.
+    /// it expires is left where it stands and named in the report, and the run
+    /// exits 3 rather than as interrupted. Accepts a plain number of seconds or
+    /// a suffix: `30s`, `10m`, `4h`.
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub scan_timeout: Option<std::time::Duration>,
 

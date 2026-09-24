@@ -622,6 +622,10 @@ impl Renderer for FancyRenderer {
         Ok(())
     }
 
+    fn budget_spent(&mut self) {
+        self.narrator.budget_spent();
+    }
+
     fn interrupted(&mut self) -> io::Result<()> {
         progress::stop();
         self.narrator.interrupted()

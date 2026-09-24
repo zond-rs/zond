@@ -202,12 +202,32 @@ impl Asked {
     }
 }
 
+/// How much of a header line the target expressions may take, in characters.
+///
+/// The first is always shown, since it is what the user checks they typed;
+/// the rest are counted once they would run past this, so the line stays one
+/// short line however many targets were named.
+const EXPRESSIONS_SHOWN: usize = 24;
+
 impl fmt::Display for Asked {
     /// The expressions as they were written, which is what the user recognises.
     /// The set they expanded to can be millions of addresses and is never what a
-    /// header line should print.
+    /// header line should print. Capped at [`EXPRESSIONS_SHOWN`], the rest
+    /// counted.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.expressions.join(", "))
+        let mut written = 0;
+        for (index, expression) in self.expressions.iter().enumerate() {
+            if index > 0 {
+                if written + 2 + expression.len() > EXPRESSIONS_SHOWN {
+                    return write!(f, ", +{} more", self.expressions.len() - index);
+                }
+                f.write_str(", ")?;
+                written += 2;
+            }
+            f.write_str(expression)?;
+            written += expression.len();
+        }
+        Ok(())
     }
 }
 
@@ -576,6 +596,25 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header names what was typed and stays one short line however many
+    /// targets that was: the first expression always, the rest while they
+    /// fit, and a count of what did not.
+    #[test]
+    fn a_long_target_list_is_cut_to_a_count() {
+        let asked =
+            |expressions: &[&str]| Asked::new(expressions, false, Exclusions::none()).to_string();
+
+        assert_eq!(asked(&["192.0.2.1", "192.0.2.9"]), "192.0.2.1, 192.0.2.9");
+        assert_eq!(
+            asked(&["192.0.2.10-192.0.2.19", "192.0.2.2"]),
+            "192.0.2.10-192.0.2.19, +1 more"
+        );
+        assert_eq!(
+            asked(&["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"]),
+            "192.0.2.1, 192.0.2.2, +2 more"
+        );
+    }
     use std::net::{IpAddr, Ipv4Addr};
 
     /// Literal addresses need no lookups, so every test here runs without a
