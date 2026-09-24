@@ -86,6 +86,9 @@ pub(crate) async fn run(
         None => started(args, recording, ports, &mut config).await?,
     };
 
+    args.engine
+        .warn_unpinned(&config, targets.map().iter().map(|target| target.ip));
+
     let redaction = command::redaction(&config);
     renderer.started(
         Phase::PortScan {

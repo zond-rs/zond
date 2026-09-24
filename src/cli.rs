@@ -1609,12 +1609,18 @@ pub(crate) struct EngineArgs {
     #[arg(long, value_name = "MODE")]
     pub send_mode: Option<SendMode>,
 
-    /// Send every probe from this interface, whatever the routing table says.
+    /// Send probes to routed targets from this interface, whatever the
+    /// routing table says.
     ///
     /// The escape from a full-tunnel VPN: pinned to a LAN interface, a scan of
     /// a routed target leaves from that interface's address rather than the
-    /// tunnel the default route points down. Named by interface, not address;
-    /// the interface's own addresses become the source, one per family.
+    /// tunnel the default route points down, and so do the connections that
+    /// follow its probes. Named by interface, not address; the interface's own
+    /// addresses become the source, one per family, and only for the families
+    /// it holds one of: on an interface with no IPv6 address, IPv6 targets
+    /// still go by the routing table, VPN included, and the run says so. A
+    /// target on a segment or in a tunnel's own prefix is always reached by
+    /// that link.
     #[arg(long, value_name = "NAME")]
     pub send_interface: Option<String>,
 
@@ -1982,6 +1988,60 @@ impl EngineArgs {
     }
 }
 
+impl EngineArgs {
+    /// Warns, once the targets are known, about a family among `targets` that
+    /// `--send-interface` pins nothing for; see [`unpinned_family`].
+    pub(crate) fn warn_unpinned(
+        &self,
+        config: &ZondConfig,
+        targets: impl IntoIterator<Item = std::net::IpAddr>,
+    ) {
+        let Some(name) = &self.send_interface else {
+            return;
+        };
+        if let Some(family) = unpinned_family(&config.send_source, targets) {
+            tracing::warn!(
+                "{family} targets not pinned: {name} has no {family} (--send-interface)"
+            );
+        }
+    }
+}
+
+/// The family of the first of `targets` that a forced source would carry but
+/// `forced` holds none for, named for the console.
+///
+/// A source speaks for its own family only, so a target of a family the
+/// interface holds no address of leaves by the routing table, through the VPN
+/// the flag was given to avoid. Asked only of the run's own targets, since an
+/// interface without IPv6 is the common case and an IPv4 scan loses nothing
+/// by it. Loopback and link-local targets, and an IPv4 address written inside
+/// IPv6, are no interface's to pin and are passed over. Nothing forced is
+/// nothing to fall short of.
+fn unpinned_family(
+    forced: &[std::net::IpAddr],
+    targets: impl IntoIterator<Item = std::net::IpAddr>,
+) -> Option<&'static str> {
+    use std::net::IpAddr;
+
+    if forced.is_empty() {
+        return None;
+    }
+    let pinned = |v4: bool| forced.iter().any(|source| source.is_ipv4() == v4);
+    let (pin_v4, pin_v6) = (pinned(true), pinned(false));
+    targets
+        .into_iter()
+        .find(|ip| match ip {
+            IpAddr::V4(v4) => !pin_v4 && !v4.is_loopback() && !v4.is_link_local(),
+            IpAddr::V6(v6) => {
+                !pin_v6
+                    && !v6.is_loopback()
+                    && !v6.is_unicast_link_local()
+                    && v6.to_ipv4_mapped().is_none()
+            }
+        })
+        .map(|ip| if ip.is_ipv4() { "IPv4" } else { "IPv6" })
+}
+
 /// The addresses `--send-interface` forces a scan's probes to leave from: the
 /// named interface's own, one per family, skipping the loopback and link-local
 /// ones no routed target can be reached from. Empty when the name matches no
@@ -2190,6 +2250,41 @@ mod tests {
     #[test]
     fn the_command_definition_is_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    /// An interface holding only IPv4 pins nothing for IPv6, so a run with a
+    /// routed IPv6 target is told that target goes by the routing table rather
+    /// than left to believe every probe leaves by the interface. A run with no
+    /// such target is told nothing: loopback and link-local targets are no
+    /// interface's, and an IPv4 scan loses nothing to the missing family.
+    #[test]
+    fn a_family_the_interface_cannot_pin_is_named_only_when_a_target_needs_it() {
+        let ip = |text: &str| text.parse::<std::net::IpAddr>().expect("a literal");
+        let lan_v4 = [ip("192.0.2.10")];
+
+        assert_eq!(
+            unpinned_family(&lan_v4, [ip("198.51.100.1"), ip("2001:db8::1")]),
+            Some("IPv6")
+        );
+        assert_eq!(unpinned_family(&lan_v4, [ip("198.51.100.1")]), None);
+        assert_eq!(
+            unpinned_family(&lan_v4, [ip("::1"), ip("fe80::1"), ip("::ffff:192.0.2.1")]),
+            None,
+            "no interface's to pin"
+        );
+        assert_eq!(
+            unpinned_family(&[ip("2001:db8::10")], [ip("198.51.100.1")]),
+            Some("IPv4")
+        );
+        assert_eq!(
+            unpinned_family(&[ip("192.0.2.10"), ip("2001:db8::10")], [ip("2001:db8::1")]),
+            None
+        );
+        assert_eq!(
+            unpinned_family(&[], [ip("2001:db8::1")]),
+            None,
+            "nothing forced"
+        );
     }
 
     #[test]

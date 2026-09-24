@@ -54,6 +54,19 @@ pub(crate) async fn run(
         None => started(args, recording, &mut config).await?,
     };
 
+    let ips = targets.ips();
+    args.engine.warn_unpinned(
+        &config,
+        ips.v4()
+            .iter()
+            .map(|range| std::net::IpAddr::V4(range.start_addr()))
+            .chain(
+                ips.v6()
+                    .iter()
+                    .map(|range| std::net::IpAddr::V6(range.start_addr())),
+            ),
+    );
+
     let redaction = command::redaction(&config);
     renderer.started(
         Phase::Discovery {
