@@ -458,30 +458,23 @@ impl Narrator {
         if undecided > 0 {
             let resume = if self.resumable {
                 format!(
-                    "; resuming the run asks {}",
+                    " (resume asks {})",
                     if undecided == 1 { "it" } else { "them" }
                 )
             } else {
                 String::new()
             };
             self.note(&format!(
-                "{undecided} {} never asked to a verdict{resume}.",
-                if undecided == 1 {
-                    "address was"
-                } else {
-                    "addresses were"
-                },
+                "{undecided} {} never asked{resume}",
+                plural(undecided, "address"),
             ))?;
         }
 
         let skipped = field::skipped_as_down(report);
         if skipped > 0 {
             self.note(&format!(
-                "{skipped} {} answered no liveness probe and {} not port-scanned. \
-                 Pass --assume-up to probe {} anyway.",
+                "{skipped} {} silent, not port-scanned (--assume-up)",
                 plural(skipped, "address"),
-                if skipped == 1 { "was" } else { "were" },
-                if skipped == 1 { "it" } else { "them" },
             ))?;
         }
 
@@ -491,12 +484,8 @@ impl Narrator {
         let timed_out = field::timed_out(report);
         if timed_out > 0 {
             self.note(&format!(
-                "{timed_out} {} still outstanding when a time budget expired and {} left \
-                 where {} stood. Raise --host-timeout or --scan-timeout to finish {}.",
+                "{timed_out} {} cut short by a time budget (--host-timeout)",
                 plural(timed_out, "host"),
-                if timed_out == 1 { "was" } else { "were" },
-                if timed_out == 1 { "it" } else { "they" },
-                if timed_out == 1 { "it" } else { "them" },
             ))?;
         }
 
@@ -579,9 +568,9 @@ impl Narrator {
         let what = match (strategies, detections) {
             (_, 0) => not_run,
             (0, _) => unfinished,
-            _ => format!("{not_run} and {unfinished}"),
+            _ => format!("{not_run}, {unfinished}"),
         };
-        let line = format!("{what}; this run covered less than it was asked to");
+        let line = format!("{what}; coverage incomplete");
 
         if strategies == 0 {
             self.note(&line)
@@ -1276,11 +1265,11 @@ mod tests {
         let said = summarised_recorded(&stopped, true);
 
         assert!(
-            said.contains("4 addresses were never asked to a verdict; resuming the run asks them."),
+            said.contains("4 addresses never asked (resume asks them)"),
             "{said}"
         );
         assert!(
-            said.contains("3 addresses answered no liveness probe"),
+            said.contains("3 addresses silent, not port-scanned (--assume-up)"),
             "{said}"
         );
     }
@@ -1296,10 +1285,7 @@ mod tests {
         );
         let said = summarised_recorded(&stopped, false);
 
-        assert!(
-            said.contains("4 addresses were never asked to a verdict."),
-            "{said}"
-        );
+        assert!(said.contains("4 addresses never asked\n"), "{said}");
         assert!(!said.contains("resuming"), "{said}");
     }
 
@@ -1556,9 +1542,7 @@ mod tests {
         let said = summarised(&failing(vec![cut_short(80), cut_short(443)]));
 
         assert!(
-            said.contains(
-                "2 detections did not finish; this run covered less than it was asked to"
-            ),
+            said.contains("2 detections did not finish; coverage incomplete"),
             "{said}"
         );
         assert!(!said.contains("did not run"), "{said}");
@@ -1574,8 +1558,7 @@ mod tests {
 
         assert!(
             said.contains(
-                "1 strategy did not run and 1 detection did not finish; \
-                 this run covered less than it was asked to"
+                "1 strategy did not run, 1 detection did not finish; coverage incomplete"
             ),
             "{said}"
         );
