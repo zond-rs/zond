@@ -87,7 +87,13 @@ pub(crate) async fn run(
     };
 
     let redaction = command::redaction(&config);
-    renderer.started(Phase::PortScan { targets: &targets }, redaction)?;
+    renderer.started(
+        Phase::PortScan {
+            targets: &targets,
+            resumable: journal.is_some(),
+        },
+        redaction,
+    )?;
 
     let plan = targets.into_map();
 

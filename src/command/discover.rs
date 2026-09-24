@@ -55,7 +55,13 @@ pub(crate) async fn run(
     };
 
     let redaction = command::redaction(&config);
-    renderer.started(Phase::Discovery { targets: &targets }, redaction)?;
+    renderer.started(
+        Phase::Discovery {
+            targets: &targets,
+            resumable: journal.is_some(),
+        },
+        redaction,
+    )?;
 
     let ips = targets.into_ips();
     let (session, task) = match journal {

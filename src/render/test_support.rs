@@ -168,7 +168,7 @@ pub(crate) fn scoped_at(
 ///
 /// The shape a front end reads "answered no liveness probe" from, with the
 /// one field that says which of those addresses were never asked at all.
-pub(crate) fn screened(asked: &str, undecided: &str, probed: &str) -> zond_engine::ScanReport {
+pub(crate) fn screened(asked: &str, undecided: &[&str], probed: &str) -> zond_engine::ScanReport {
     use std::time::Duration;
 
     use zond_engine::ZondConfig;
@@ -201,8 +201,12 @@ pub(crate) fn screened(asked: &str, undecided: &str, probed: &str) -> zond_engin
         })
     };
 
-    let open = to_set(&[undecided], None, None).expect("a parseable range");
-    let open: Vec<IpRange> = open.v4().iter().copied().map(IpRange::V4).collect();
+    let open: Vec<IpRange> = if undecided.is_empty() {
+        Vec::new()
+    } else {
+        let open = to_set(undecided, None, None).expect("a parseable range");
+        open.v4().iter().copied().map(IpRange::V4).collect()
+    };
     ScanReport::recorded(
         "test",
         vec![

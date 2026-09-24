@@ -716,6 +716,25 @@ mod tests {
         ScanReport::recorded("test", vec![phase], Vec::<zond_engine::Host>::new())
     }
 
+    /// A resume that decided everything its first sitting left open exits `0`.
+    /// Its report still carries the stopped sitting's phase and that phase's
+    /// own list of what it never decided, and a script told `3` would resume
+    /// a job that is finished.
+    #[test]
+    fn a_resume_that_decided_what_the_first_sitting_left_is_complete() {
+        use crate::render::test_support::screened;
+
+        let mut resumed = screened("192.0.2.0/29", &["192.0.2.4-192.0.2.7"], "192.0.2.1");
+        assert_eq!(
+            concluded(&resumed),
+            Outcome::Partial,
+            "the first sitting alone"
+        );
+        resumed.merge(screened("192.0.2.4-192.0.2.7", &[], "192.0.2.1"));
+
+        assert_eq!(concluded(&resumed), Outcome::Complete);
+    }
+
     /// The three-way distinction the engine draws, mapped to the one bit a shell
     /// reads. A refusal and a timed-out host each narrow the coverage and so are
     /// partial; an unroutable address is ground that was never coverable and is

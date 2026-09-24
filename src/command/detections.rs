@@ -240,7 +240,14 @@ pub(crate) async fn test(
     targets.apply_to(&mut config);
 
     let redaction = crate::command::redaction(&config);
-    renderer.started(Phase::PortScan { targets: &targets }, redaction)?;
+    // Recorded nowhere, so nothing it leaves undecided can be resumed.
+    renderer.started(
+        Phase::PortScan {
+            targets: &targets,
+            resumable: false,
+        },
+        redaction,
+    )?;
 
     let corpus = test_corpus(&args.detections)?;
     let plan = targets.into_map();

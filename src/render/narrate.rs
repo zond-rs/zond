@@ -44,6 +44,10 @@ pub(crate) struct Narrator {
     /// Every mode carries one. `pipe` and `minimal` pass a style that paints
     /// nothing, so the sentences below are written once rather than twice.
     style: Style,
+    /// Whether the run being narrated is recorded, so that a resume can
+    /// continue it. Offering one to a run that kept no record is advice that
+    /// cannot be taken.
+    resumable: bool,
 }
 
 impl Narrator {
@@ -54,6 +58,7 @@ impl Narrator {
             verbosity,
             reader: field::Reader::default(),
             style,
+            resumable: false,
         }
     }
 
@@ -134,8 +139,19 @@ impl Narrator {
             _ => {}
         }
 
+        self.resumable = matches!(
+            phase,
+            Phase::Discovery {
+                resumable: true,
+                ..
+            } | Phase::PortScan {
+                resumable: true,
+                ..
+            }
+        );
+
         let (line, excluded) = match phase {
-            Phase::Discovery { targets } => {
+            Phase::Discovery { targets, .. } => {
                 let count = targets.len();
                 (
                     format!(
@@ -160,7 +176,7 @@ impl Narrator {
                     None,
                 )
             }
-            Phase::PortScan { targets } => {
+            Phase::PortScan { targets, .. } => {
                 let hosts = targets.hosts();
                 let probes = targets.probes();
                 (
@@ -440,14 +456,21 @@ impl Narrator {
         // one, and the note says what they have in common.
         let undecided = field::undecided(report);
         if undecided > 0 {
+            let resume = if self.resumable {
+                format!(
+                    "; resuming the run asks {}",
+                    if undecided == 1 { "it" } else { "them" }
+                )
+            } else {
+                String::new()
+            };
             self.note(&format!(
-                "{undecided} {} never asked to a verdict; resuming the run asks {}.",
+                "{undecided} {} never asked to a verdict{resume}.",
                 if undecided == 1 {
                     "address was"
                 } else {
                     "addresses were"
                 },
-                if undecided == 1 { "it" } else { "them" },
             ))?;
         }
 
@@ -1245,11 +1268,12 @@ mod tests {
     /// them among those that answered no liveness probe.
     #[test]
     fn addresses_never_asked_are_said_to_be_left_for_a_resume() {
-        let said = summarised(&crate::render::test_support::screened(
+        let stopped = crate::render::test_support::screened(
             "192.0.2.0/29",
-            "192.0.2.4-192.0.2.7",
+            &["192.0.2.4-192.0.2.7"],
             "192.0.2.1",
-        ));
+        );
+        let said = summarised_recorded(&stopped, true);
 
         assert!(
             said.contains("4 addresses were never asked to a verdict; resuming the run asks them."),
@@ -1259,6 +1283,45 @@ mod tests {
             said.contains("3 addresses answered no liveness probe"),
             "{said}"
         );
+    }
+
+    /// A run that kept no record cannot be resumed, so it is not told to be:
+    /// the count stands and the advice goes.
+    #[test]
+    fn a_run_that_kept_no_record_is_not_told_to_resume() {
+        let stopped = crate::render::test_support::screened(
+            "192.0.2.0/29",
+            &["192.0.2.4-192.0.2.7"],
+            "192.0.2.1",
+        );
+        let said = summarised_recorded(&stopped, false);
+
+        assert!(
+            said.contains("4 addresses were never asked to a verdict."),
+            "{said}"
+        );
+        assert!(!said.contains("resuming"), "{said}");
+    }
+
+    /// **A resume that finished the job says nothing is left to ask.** Its
+    /// report carries the stopped sitting's phases, whose record still names
+    /// what that sitting never decided, beside the sitting that decided it.
+    /// Read phase by phase, a finished resume would be told to resume again.
+    #[test]
+    fn a_resume_that_decided_what_the_first_sitting_left_asks_for_nothing() {
+        let mut resumed = crate::render::test_support::screened(
+            "192.0.2.0/29",
+            &["192.0.2.4-192.0.2.7"],
+            "192.0.2.1",
+        );
+        resumed.merge(crate::render::test_support::screened(
+            "192.0.2.4-192.0.2.7",
+            &[],
+            "192.0.2.1",
+        ));
+        let said = summarised_recorded(&resumed, true);
+
+        assert!(!said.contains("never asked"), "{said}");
     }
 
     // -----------------------------------------------------------------------
@@ -1572,6 +1635,21 @@ mod tests {
             scoped_at(vec![host(2)], "192.0.2.0/24", recorded_at() + day),
         );
         merge.finish()
+    }
+
+    /// What a narrator writes for a finished report of a run that did or did
+    /// not keep a record a resume could continue.
+    fn summarised_recorded(report: &ScanReport, resumable: bool) -> String {
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::default(),
+            Style::bare(),
+        );
+        narrator.resumable = resumable;
+
+        narrator.summary(report).expect("a capture never fails");
+        capture.text()
     }
 
     /// What a narrator writes for a finished report, as one string.

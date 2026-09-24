@@ -94,11 +94,15 @@ pub(crate) enum Phase<'a> {
     Discovery {
         /// What was asked about.
         targets: &'a Targets,
+        /// Whether the run is recorded, so that a resume can continue it.
+        resumable: bool,
     },
     /// Finding which of the named hosts' ports are open.
     PortScan {
         /// What was asked about, and on which ports.
         targets: &'a ScanTargets,
+        /// Whether the run is recorded, so that a resume can continue it.
+        resumable: bool,
     },
     /// Watching a link, having sent nothing.
     ///

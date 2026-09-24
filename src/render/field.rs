@@ -2429,7 +2429,7 @@ pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
     // unroutable in a document that says so is subtracted once.
     let mut turned_away = ranges(liveness.targets().ranges());
     turned_away.subtract(&ranges(ports.targets().ranges()));
-    turned_away.subtract(&ranges(liveness.undecided()));
+    turned_away.subtract(&ranges(&report.undecided()));
     let mut unreachable = IpSet::new();
     for phase in report.phases() {
         for address in phase.unroutable() {
@@ -2443,34 +2443,12 @@ pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
 /// How many addresses the run set out to ask whether anything is there and
 /// reached no verdict on.
 ///
-/// The addresses a discovery phase names as
-/// [`undecided`](ScanPhase::undecided), less any another phase of the report
-/// walked and did decide: the second sitting of a resumed sweep answers what
-/// the first left open, and counting it again would report a gap the job
-/// closed.
+/// The report's own reading, [`ScanReport::undecided`], rather than a sum over
+/// its phases: the second sitting of a resumed job answers what the first left
+/// open, and counting the first sitting's list again would tell a reader to
+/// resume a job that is finished.
 pub(crate) fn undecided(report: &ScanReport) -> u128 {
-    let mut open = IpSet::new();
-    let mut decided = IpSet::new();
-    for phase in report.phases() {
-        let mut walked = ranges(phase.targets().ranges());
-        let left = ranges(phase.undecided());
-        walked.subtract(&left);
-        for range in left.v4() {
-            open.push_v4_range(*range);
-        }
-        for range in left.v6() {
-            open.push_v6_range(*range);
-        }
-        for range in walked.v4() {
-            decided.push_v4_range(*range);
-        }
-        for range in walked.v6() {
-            decided.push_v6_range(*range);
-        }
-    }
-    open.subtract(&decided);
-    open.canonicalize();
-    open.len()
+    ranges(&report.undecided()).len()
 }
 
 /// `ranges` as one merged set.
@@ -2535,18 +2513,11 @@ pub(crate) fn listened_only(report: &ScanReport) -> (Vec<u16>, u128) {
 ///
 /// From `--host-timeout` and `--scan-timeout`: a host still outstanding when its
 /// budget expired is recorded as timed out, and its results are whatever the
-/// scan had reached, which is narrower than what was asked. Counted across
-/// phases and deduplicated, the way [`unroutable`] is, so a host cut short in
-/// two phases is one host cut short.
+/// scan had reached, which is narrower than what was asked. The report's own
+/// reading, [`ScanReport::timed_out`]: a host cut short in two phases is one
+/// host cut short, and one a later sitting finished is not cut short at all.
 pub(crate) fn timed_out(report: &ScanReport) -> u128 {
-    let mut seen: Vec<IpAddr> = report
-        .phases()
-        .iter()
-        .flat_map(|phase| phase.timed_out().iter().copied())
-        .collect();
-    seen.sort_unstable();
-    seen.dedup();
-    seen.len() as u128
+    report.timed_out().len() as u128
 }
 
 /// Why each part of the ground the engine declined went uncovered, once per
@@ -4196,7 +4167,7 @@ mod tests {
     fn addresses_the_liveness_pass_never_decided_are_not_counted_as_silent() {
         let report = crate::render::test_support::screened(
             "192.0.2.0/29",
-            "192.0.2.4-192.0.2.7",
+            &["192.0.2.4-192.0.2.7"],
             "192.0.2.1",
         );
 

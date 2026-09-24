@@ -2255,11 +2255,17 @@ mod tests {
         let scanned = ScanTargets::resumed(plan, 4, "192.0.2.0/30 on 1 port".to_owned());
 
         assert_eq!(
-            counting(Phase::Discovery { targets: &swept }),
+            counting(Phase::Discovery {
+                targets: &swept,
+                resumable: true
+            }),
             Some(Counting::Hosts)
         );
         assert_eq!(
-            counting(Phase::PortScan { targets: &scanned }),
+            counting(Phase::PortScan {
+                targets: &scanned,
+                resumable: true
+            }),
             Some(Counting::Ports)
         );
         assert_eq!(
