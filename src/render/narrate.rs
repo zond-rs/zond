@@ -507,7 +507,10 @@ impl Narrator {
             ))?;
         }
 
-        if report.is_partial() {
+        // Only the failures, since every other way a run falls short has its
+        // own line above, and a report the engine calls partial for one of
+        // those alone has no strategy or detection to count here.
+        if report.failures().next().is_some() {
             self.shortfall(report)?;
         }
 

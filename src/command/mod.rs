@@ -543,32 +543,18 @@ pub(crate) fn concluded(report: &ScanReport) -> Outcome {
 
 /// Whether the report covers everything the run was asked to cover.
 ///
-/// Three ways it can fall short, and the engine records them apart: a strategy
-/// that failed ([`is_partial`](ScanReport::is_partial)), ground it refused
-/// before sending because the scan as written had no strategy to walk it, and a
-/// host a time budget cut short. Any of the three narrows the result below what
-/// was asked, which is exactly what a `3` warns a script about, so any of them
-/// is enough to make the run partial.
+/// The engine's own [`is_partial`](ScanReport::is_partial), which counts every
+/// way it records a run falling short: a strategy that failed, ground it
+/// refused, a host a time budget cut short, an address discovery never
+/// decided and a port left unasked. Any of them narrows the result below what
+/// was asked, which is exactly what a `3` warns a script about.
 ///
-/// A [`Refusal`](zond_engine::report::Refusal) counts here where a
-/// [`ScannerFailure`](zond_engine::report::ScannerFailure) does because the two
-/// are the two halves of the same shortfall: `is_partial` sees only the fault,
-/// and a range too large for an unprivileged sweep is a refusal rather than a
-/// fault. The engine drew that line between them; this is where the line stops
-/// mattering, because either way the scan did not cover the ground.
-///
-/// An address with no route is deliberately *not* one of the three. The engine
-/// keeps [`unroutable`](zond_engine::report::ScanPhase::unroutable) apart from
-/// all of them, as ground that was never coverable rather than coverage that
-/// fell short, and a sweep of any range with a gap in it would otherwise never
-/// exit `0`.
+/// An address with no route is deliberately *not* among them. The engine
+/// keeps [`unroutable`](zond_engine::report::ScanPhase::unroutable) apart as
+/// ground that was never coverable rather than coverage that fell short, and a
+/// sweep of any range with a gap in it would otherwise never exit `0`.
 fn fully_covered(report: &ScanReport) -> bool {
     !report.is_partial()
-        && report.refusals().next().is_none()
-        && report
-            .phases()
-            .iter()
-            .all(|phase| phase.timed_out().is_empty())
 }
 
 /// What a run has turned up so far, counted as its events arrive.
