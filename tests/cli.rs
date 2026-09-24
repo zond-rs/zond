@@ -746,10 +746,9 @@ fn an_address_nothing_answers_for_is_not_port_scanned() {
 
 /// `--assume-up` is what reaches a host that is up and answering no knock.
 ///
-/// It does so by not knocking, which loopback shows as plainly as a silent host
-/// would and on every platform: the ports are probed, and no liveness round
-/// trip is measured. The same scan without the flag measures one, as
-/// `a_live_host_is_scanned_and_timed` pins.
+/// It does so by not knocking: the ports are probed on trust, and the host is
+/// timed by the connects that asked them, a SYN answered by a reset being as
+/// much a round trip as a liveness probe's.
 #[test]
 fn assume_up_scans_a_host_without_asking_whether_it_is_there() {
     let run = zond(
@@ -761,9 +760,9 @@ fn assume_up_scans_a_host_without_asking_whether_it_is_there() {
 
     let fields = record(&run);
     assert_eq!(fields[0], "127.0.0.1");
-    assert_eq!(
+    assert_ne!(
         fields[2], "-",
-        "no liveness phase ran to measure a round trip"
+        "the port connects measured a round trip to the host"
     );
     assert_eq!(
         fields[12], "2",
