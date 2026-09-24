@@ -4,6 +4,10 @@
 # is for everybody else. On Kali, which is where this program has its audience,
 # a tool arrives as a .deb or it does not arrive.
 #
+# The macOS tarballs are for the Homebrew tap (zond-rs/homebrew-tap), whose
+# formula points at them by URL and checksum, and for anybody who wants the
+# binary without either.
+#
 # The Windows installer is built by `windows/build.sh` and attached to the same
 # release. It does not bundle Npcap, which may not be redistributed without a
 # licence from the Nmap Project; it checks for it and points to npcap.com.
@@ -110,14 +114,88 @@ jobs:
           path: zond-cli/target/debian/*.deb
           if-no-files-found: error
 
+  macos:
+    name: macOS tarball (${{ matrix.target }})
+    # Both architectures on the one Apple Silicon runner. The macOS SDK carries
+    # libpcap for arm64 and x86_64 alike, so the Intel build is an ordinary
+    # cross-compile with nothing to install, and it does not wait on a runner
+    # image that is being retired.
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+
+    steps:
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zond-cli
+          key: ${{ matrix.target }}
+
+      - name: Check the tag against the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: zond-cli
+        run: |
+          crate="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$crate" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, Cargo.toml says $crate" >&2
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: zond-cli
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The binary, the licence and the README in one directory named for
+      # what it is, and a checksum beside it for the formula to pin.
+      - name: Package
+        working-directory: zond-cli
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          name="zond-$version-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/zond" "dist/$name/"
+          cp LICENSE README.md "dist/$name/"
+          file "dist/$name/zond"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          cat "dist/$name.tar.gz.sha256"
+
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: zond-${{ matrix.target }}
+          path: |
+            zond-cli/dist/*.tar.gz
+            zond-cli/dist/*.tar.gz.sha256
+          if-no-files-found: error
+
   publish:
     name: Attach the packages to the release
-    needs: package
+    needs: [package, macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - name: Collect both packages
+      - name: Collect the packages and tarballs
         uses: actions/download-artifact@v4
         with:
           path: packages
@@ -128,9 +206,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" packages/*.deb \
+            gh release upload "$GITHUB_REF_NAME" packages/* \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" packages/*.deb \
+            gh release create "$GITHUB_REF_NAME" packages/* \
               --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
           fi
