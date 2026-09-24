@@ -556,6 +556,7 @@ mod tests {
                 reached_by_connect: Vec::new(),
                 undecided: Vec::new(),
                 liveness_skipped: None,
+                silent: Vec::new(),
                 probes: Vec::new(),
                 origin: None,
             })

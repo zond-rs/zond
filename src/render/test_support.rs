@@ -156,11 +156,62 @@ pub(crate) fn scoped_at(
         reached_by_connect: Vec::new(),
         undecided: Vec::new(),
         liveness_skipped: None,
+        silent: Vec::new(),
         probes: Vec::new(),
         origin: None,
     });
 
     ScanReport::recorded("test", vec![phase], hosts)
+}
+
+/// A port scan that ran with no liveness pass, its port probes standing in for
+/// one: a single port phase over `probed` on two ports, naming `silent` the
+/// addresses it asked on every port and heard nothing from.
+pub(crate) fn standing_in(probed: &str, silent: &[&str]) -> zond_engine::ScanReport {
+    use std::time::Duration;
+
+    use zond_engine::ZondConfig;
+    use zond_engine::model::exclusion::Exclusions;
+    use zond_engine::model::ip::range::IpRange;
+    use zond_engine::model::parse::ip::to_set;
+    use zond_engine::report::{
+        LivenessSkip, PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope,
+    };
+    use zond_engine::system::privilege::Privilege;
+
+    // Two ports on every address, so the scope says what each was asked.
+    let mut targets = zond_engine::model::target::TargetMap::new();
+    targets.add_unit(zond_engine::model::target::TargetSet::new(
+        to_set(&[probed], None, None).expect("a parseable range"),
+        zond_engine::model::port::PortSet::try_from("1,2").expect("ports"),
+    ));
+    let silent = if silent.is_empty() {
+        Vec::new()
+    } else {
+        let set = to_set(silent, None, None).expect("parseable ranges");
+        set.v4().iter().copied().map(IpRange::V4).collect()
+    };
+    let phase = ScanPhase::from_parts(PhaseParts {
+        attachments: Vec::new(),
+        kind: ScanKind::PortScan,
+        started_at: recorded_at(),
+        elapsed: Duration::from_secs(1),
+        privilege: Some(Privilege::Raw),
+        targets: TargetScope::from_target_map(&mut targets, &Exclusions::none()),
+        settings: ScanSettings::from(&ZondConfig::default()),
+        failures: Vec::new(),
+        refusals: Vec::new(),
+        unroutable: Vec::new(),
+        timed_out: Vec::new(),
+        reached_by_connect: Vec::new(),
+        undecided: Vec::new(),
+        liveness_skipped: Some(LivenessSkip::PortsNoDearer),
+        silent,
+        probes: Vec::new(),
+        origin: None,
+    });
+
+    ScanReport::recorded("test", vec![phase], Vec::new())
 }
 
 /// A port scan's two phases: a liveness pass over `asked` that reached no
@@ -198,6 +249,7 @@ pub(crate) fn screened(asked: &str, undecided: &[&str], probed: &str) -> zond_en
             reached_by_connect: Vec::new(),
             undecided,
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         })

@@ -325,7 +325,10 @@ impl Narrator {
                 .get(&PortState::Unasked)
                 .copied()
                 .unwrap_or(0);
-            let probed = summary.ports_total.saturating_sub(unasked);
+            // With the ports of the addresses asked on every port and heard
+            // from on none, which are off the host list the summary counts.
+            let probed =
+                summary.ports_total.saturating_sub(unasked) as u128 + field::silent_probes(report);
             let ports = if probed > 0 {
                 format!(
                     "{} open {} of {probed} probed",
@@ -503,6 +506,18 @@ impl Narrator {
             self.note(&format!(
                 "{skipped} {} silent, not port-scanned (--assume-up)",
                 plural(skipped, "address"),
+            ))?;
+        }
+
+        // The same finding where the port probes stood in for the liveness
+        // pass: asked on every port rather than turned away, and left off the
+        // host list as the pass would have left it. Said, so a count of hosts
+        // smaller than the range does not read as ground the scan skipped.
+        let silent = field::silent(report);
+        if silent > 0 {
+            self.note(&format!(
+                "{silent} {} silent on every port (--assume-up lists them)",
+                plural(silent, "address"),
             ))?;
         }
 
@@ -986,6 +1001,7 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -1030,6 +1046,7 @@ mod tests {
             reached_by_connect: phase.reached_by_connect().to_vec(),
             undecided: phase.undecided().to_vec(),
             liveness_skipped: phase.liveness_skipped(),
+            silent: phase.silent().to_vec(),
             probes: vec![attempts],
             origin: phase.origin().cloned(),
         });
@@ -1147,6 +1164,7 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -1332,6 +1350,8 @@ mod tests {
             timed_out: Vec::new(),
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
+            liveness_skipped: None,
+            silent: Vec::new(),
             probes: Vec::new(),
             origin: None,
         });
@@ -1360,6 +1380,26 @@ mod tests {
         assert!(
             !summarised(&report).contains("budget"),
             "only when it ran out"
+        );
+    }
+
+    /// A scan whose port probes stood in for its liveness pass says how many
+    /// addresses answered none of them, since the engine lists those as no
+    /// host, and names the flag that lists them.
+    #[test]
+    fn addresses_silent_on_every_port_are_counted_with_the_flag_that_lists_them() {
+        let report =
+            crate::render::test_support::standing_in("192.0.2.0/29", &["192.0.2.2-192.0.2.7"]);
+        let said = summarised(&report);
+
+        assert!(
+            said.contains("6 addresses silent on every port (--assume-up lists them)"),
+            "{said}"
+        );
+        assert!(!said.contains("not port-scanned"), "{said}");
+        assert!(
+            said.contains("0 open ports of 12 probed"),
+            "their ports were asked, so the count says so: {said}"
         );
     }
 
@@ -1606,6 +1646,7 @@ mod tests {
             reached_by_connect: phase.reached_by_connect().to_vec(),
             undecided: phase.undecided().to_vec(),
             liveness_skipped: phase.liveness_skipped(),
+            silent: phase.silent().to_vec(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });

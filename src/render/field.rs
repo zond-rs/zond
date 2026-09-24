@@ -2458,6 +2458,61 @@ pub(crate) fn undecided(report: &ScanReport) -> u128 {
     ranges(&report.undecided()).len()
 }
 
+/// How many addresses a port phase that stood in for its liveness pass asked
+/// on every port and heard nothing from, and so left off the host list.
+///
+/// Across every phase and de-duplicated, less any address the report lists as
+/// a host after all: a document merged in may have heard one, and then it is
+/// on the page rather than missing from it.
+pub(crate) fn silent(report: &ScanReport) -> u128 {
+    let named: Vec<zond_engine::model::ip::range::IpRange> = report
+        .phases()
+        .iter()
+        .flat_map(|phase| phase.silent().iter().copied())
+        .collect();
+    let mut silent = ranges(&named);
+    let mut listed = IpSet::new();
+    for host in report.hosts() {
+        for address in host.ips() {
+            listed.insert(*address);
+        }
+    }
+    listed.canonicalize();
+    silent.subtract(&listed);
+    silent.len()
+}
+
+/// How many port probes went to the addresses [`silent`] counts.
+///
+/// Those addresses are off the host list, so their ports are not among the
+/// ones a summary counts, and a line reading "no ports probed" beside a note
+/// that says they were asked on every port would contradict it. Exact where
+/// the phase walked one port set for every address, which is a scan of a
+/// range; a phase whose addresses were given differing sets cannot say what
+/// any one of them was asked, and adds nothing rather than a guess.
+pub(crate) fn silent_probes(report: &ScanReport) -> u128 {
+    let mut listed = IpSet::new();
+    for host in report.hosts() {
+        for address in host.ips() {
+            listed.insert(*address);
+        }
+    }
+    listed.canonicalize();
+
+    report
+        .phases()
+        .iter()
+        .filter_map(|phase| {
+            let zond_engine::report::PortScope::Every(ports) = phase.targets().ports() else {
+                return None;
+            };
+            let mut silent = ranges(phase.silent());
+            silent.subtract(&listed);
+            Some(silent.len() * ports.len() as u128)
+        })
+        .sum()
+}
+
 /// `ranges` as one merged set.
 fn ranges(ranges: &[zond_engine::model::ip::range::IpRange]) -> IpSet {
     let mut set = IpSet::new();
@@ -3553,6 +3608,7 @@ mod tests {
             reached_by_connect: Vec::new(),
             undecided: Vec::new(),
             liveness_skipped: None,
+            silent: Vec::new(),
             probes: vec![probes],
             origin: None,
         });
