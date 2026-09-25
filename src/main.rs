@@ -168,6 +168,9 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     }
 
     report_provisioning(provisioned);
+    if let Some(note) = settings::home_note() {
+        tracing::info!(verbosity = 1, "{note}");
+    }
     for warning in warnings {
         tracing::warn!("{warning}");
     }

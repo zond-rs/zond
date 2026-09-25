@@ -23,8 +23,9 @@
 //! The locations come from the engine's
 //! [`paths`](zond_engine::import::settings::paths) so that the two files cannot
 //! land in different directories. That is `$XDG_CONFIG_HOME` when it is
-//! absolute, `$HOME/.config` otherwise, and `/etc/zond` for a host-wide file
-//! underneath both.
+//! absolute, `~/.config` otherwise, and `/etc/zond` for a host-wide file
+//! underneath both. Under `sudo`, `~` is the invoking user's home rather than
+//! root's, as it is for the journal.
 //!
 //! ## When the files appear
 //!
@@ -38,8 +39,9 @@
 //!
 //! Discovery wants root, so the first run is very often `sudo zond discover lan`.
 //! The files would then be created `root`-owned and mode `0600`, which the
-//! user's own later runs cannot read. When `SUDO_UID` and `SUDO_GID` say who
-//! asked, anything newly created is handed to them. See [`provision`].
+//! user's own later runs cannot read. So whatever such a run creates inside the
+//! invoking user's home, the files and every directory made on the way to
+//! them, is handed to that user. See [`provision`].
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -556,6 +558,37 @@ pub(crate) fn engine(
     Ok((EngineSettings { config, ports }, warnings))
 }
 
+/// The line saying whose settings a run under `sudo` reads, when that is not
+/// the home the environment names.
+///
+/// On Linux `sudo` points `HOME` at root's home, and the settings read are the
+/// invoking user's instead, as the engine's paths resolve them. That is the
+/// decision behind every setting the run then applies, so it is said to a
+/// reader asking why, and it is not said at all where `sudo` kept `HOME`, as it
+/// does on macOS, since then nothing differs from what the user would expect.
+#[must_use]
+pub(crate) fn home_note() -> Option<String> {
+    note_for(
+        zond_engine::journal::paths::invoking_user().as_ref(),
+        engine_settings::paths::user_directory().as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    )
+}
+
+/// [`home_note`] from values rather than from the process, so a test can put
+/// it under `sudo`.
+fn note_for(
+    invoking: Option<&zond_engine::journal::paths::InvokingUser>,
+    directory: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<String> {
+    let user = invoking?;
+    let directory = directory?;
+
+    (directory.starts_with(&user.home) && home != Some(user.home.as_path()))
+        .then(|| format!("settings read from {} (under sudo)", directory.display()))
+}
+
 /// Whether a settings file exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Provisioned {
@@ -610,13 +643,22 @@ pub(crate) fn provision_all() -> Provisioning {
 /// records which networks somebody scans. Anything created under `sudo` is
 /// handed to the user who invoked it; see [`hand_to_invoker`].
 pub(crate) fn provision(path: &Path, template: &str) -> Result<Provisioned, SettingsError> {
-    let fresh_directory = match path.parent() {
-        Some(parent) if !parent.exists() => {
-            create_directory(parent)?;
-            Some(parent)
+    provision_with(path, template, hand_to_invoker)
+}
+
+fn provision_with(
+    path: &Path,
+    template: &str,
+    mut hand_to_invoker: impl FnMut(&Path),
+) -> Result<Provisioned, SettingsError> {
+    // Handed over as soon as they exist rather than once the file does, so
+    // a file that then cannot be written still leaves nothing of root's in the
+    // user's home.
+    if let Some(parent) = path.parent() {
+        for directory in create_directory(parent)? {
+            hand_to_invoker(&directory);
         }
-        _ => None,
-    };
+    }
 
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -636,9 +678,6 @@ pub(crate) fn provision(path: &Path, template: &str) -> Result<Provisioned, Sett
                     source,
                 })?;
 
-            if let Some(directory) = fresh_directory {
-                hand_to_invoker(directory);
-            }
             hand_to_invoker(path);
 
             Ok(Provisioned::Created)
@@ -651,51 +690,92 @@ pub(crate) fn provision(path: &Path, template: &str) -> Result<Provisioned, Sett
     }
 }
 
-/// Creates a directory and its parents, restrictively on Unix.
-fn create_directory(path: &Path) -> Result<(), SettingsError> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
+/// Creates a directory and whatever is missing above it, restrictively on
+/// Unix, and returns the directories it made, outermost first.
+///
+/// One at a time rather than with `create_dir_all`, because only what this run
+/// made is its to hand over: a `~/.config` that was already there belongs to
+/// whoever made it, and one this run made on the way is the user's as much as
+/// the settings file is.
+fn create_directory(path: &Path) -> Result<Vec<PathBuf>, SettingsError> {
+    let uncreatable = |source| SettingsError::Uncreatable {
+        path: path.to_path_buf(),
+        source,
+    };
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+    let mut missing: Vec<&Path> = Vec::new();
+    for ancestor in path.ancestors() {
+        if ancestor.as_os_str().is_empty() {
+            break;
+        }
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(ancestor),
+            Err(e) => return Err(uncreatable(e)),
+        }
     }
 
-    builder
-        .create(path)
-        .map_err(|source| SettingsError::Uncreatable {
-            path: path.to_path_buf(),
-            source,
-        })
+    let mut created = Vec::new();
+    for directory in missing.into_iter().rev() {
+        let mut builder = std::fs::DirBuilder::new();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+
+        match builder.create(directory) {
+            Ok(()) => created.push(directory.to_path_buf()),
+            // Another process made it first, so it is not this run's to give.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(uncreatable(e)),
+        }
+    }
+
+    Ok(created)
 }
 
-/// Gives something just created to the user who invoked `sudo`.
+/// Gives something just created to the user who invoked `sudo`, when it lies
+/// inside that user's home.
 ///
 /// Without this, a first run under `sudo` leaves `0600` `root`-owned files in a
 /// directory the user is meant to edit, and every later unprivileged run fails
 /// to read them.
 ///
-/// Does nothing when `SUDO_UID` and `SUDO_GID` are absent. Failure is ignored.
+/// Who invoked the run is the engine's answer, the one its journal is given
+/// to, so the settings and the journal cannot be handed to two different
+/// people. Nothing outside that user's home is handed over, whatever this
+/// crate was asked to create. Failure is ignored.
 #[cfg(unix)]
 fn hand_to_invoker(path: &Path) {
-    let invoker = std::env::var("SUDO_UID")
-        .ok()
-        .and_then(|uid| uid.parse::<u32>().ok())
-        .zip(
-            std::env::var("SUDO_GID")
-                .ok()
-                .and_then(|gid| gid.parse::<u32>().ok()),
-        );
+    let invoking = zond_engine::journal::paths::invoking_user();
 
-    if let Some((uid, gid)) = invoker {
-        let _ = std::os::unix::fs::chown(path, Some(uid), Some(gid));
+    if let Some((uid, gid)) = owner_for(invoking.as_ref(), path) {
+        // `lchown`: a link where something was just created is not followed
+        // to whatever it names.
+        let _ = std::os::unix::fs::lchown(path, Some(uid), Some(gid));
     }
 }
 
 /// No `sudo`, and no ownership to hand over.
 #[cfg(not(unix))]
 fn hand_to_invoker(_path: &Path) {}
+
+/// Who `path` is handed to: the invoking user, when there is one and the path
+/// lies strictly inside their home, spelled without `..`.
+#[cfg(unix)]
+fn owner_for(
+    invoking: Option<&zond_engine::journal::paths::InvokingUser>,
+    path: &Path,
+) -> Option<(u32, u32)> {
+    let user = invoking?;
+    let climbs = path
+        .components()
+        .any(|part| part == std::path::Component::ParentDir);
+
+    (!climbs && path != user.home && path.starts_with(&user.home)).then_some((user.uid, user.gid))
+}
 
 // ╔════════════════════════════════════════════╗
 // ║ ████████╗███████╗███████╗████████╗███████╗ ║
@@ -1047,5 +1127,105 @@ mod tests {
 
         assert_eq!(ours.parent(), theirs.parent());
         assert_ne!(ours.file_name(), theirs.file_name());
+    }
+
+    /// A first run under `sudo` hands the user everything it made on the way
+    /// to their settings file, not only the last directory. With no
+    /// `~/.config` yet, one left to root is a directory no other program of
+    /// theirs can keep its configuration in.
+    #[test]
+    fn provisioning_hands_over_every_directory_it_made() {
+        let home = std::env::temp_dir().join(format!("zond-cli-provision-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("a scratch home");
+        let path = home.join(".config/zond").join(FILE_NAME);
+
+        let mut handed = Vec::new();
+        let outcome = provision_with(&path, TEMPLATE, |made| handed.push(made.to_path_buf()))
+            .expect("provisions");
+
+        assert_eq!(outcome, Provisioned::Created);
+        assert_eq!(
+            handed,
+            [
+                home.join(".config"),
+                home.join(".config/zond"),
+                path.clone()
+            ],
+            "something created for the settings file was left to root"
+        );
+
+        // A second run made nothing, and hands nothing over.
+        handed.clear();
+        let outcome = provision_with(&path, TEMPLATE, |made| handed.push(made.to_path_buf()))
+            .expect("provisions");
+        assert_eq!(outcome, Provisioned::Existed);
+        assert_eq!(handed, Vec::<PathBuf>::new());
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Only what lies inside the invoking user's home is handed to them: a
+    /// host-wide file stays root's, and so does a path that climbs out.
+    #[cfg(unix)]
+    #[test]
+    fn only_what_lies_inside_the_invoking_users_home_is_handed_over() {
+        let erik = zond_engine::journal::paths::InvokingUser {
+            uid: 1000,
+            gid: 1000,
+            home: PathBuf::from("/home/erik"),
+        };
+
+        assert_eq!(
+            owner_for(Some(&erik), Path::new("/home/erik/.config/zond")),
+            Some((1000, 1000))
+        );
+        for outside in ["/etc/zond", "/home/erik", "/home/erik/../root/.config"] {
+            assert_eq!(
+                owner_for(Some(&erik), Path::new(outside)),
+                None,
+                "{outside}"
+            );
+        }
+        assert_eq!(owner_for(None, Path::new("/home/erik/.config")), None);
+    }
+
+    /// The line appears only when the settings came from somewhere other
+    /// than the home the environment names, which is plain `sudo` on Linux.
+    /// Where `sudo` kept `HOME`, or configured a root of its own, nothing
+    /// differs and nothing is said.
+    #[test]
+    fn whose_settings_are_read_is_said_only_when_the_homes_differ() {
+        let erik = zond_engine::journal::paths::InvokingUser {
+            uid: 1000,
+            gid: 1000,
+            home: PathBuf::from("/home/erik"),
+        };
+        let settings = Path::new("/home/erik/.config/zond");
+
+        assert_eq!(
+            note_for(Some(&erik), Some(settings), Some(Path::new("/root"))).as_deref(),
+            Some("settings read from /home/erik/.config/zond (under sudo)")
+        );
+
+        // `HOME` kept, as on macOS.
+        assert_eq!(
+            note_for(Some(&erik), Some(settings), Some(Path::new("/home/erik"))),
+            None
+        );
+        // A configured root that is nobody's home.
+        assert_eq!(
+            note_for(
+                Some(&erik),
+                Some(Path::new("/config/zond")),
+                Some(Path::new("/root"))
+            ),
+            None
+        );
+        // Nothing elevated.
+        assert_eq!(
+            note_for(None, Some(settings), Some(Path::new("/root"))),
+            None
+        );
     }
 }
