@@ -752,28 +752,27 @@ fn produced_by(engine_version: &str) -> String {
 /// The line that opens a document being read.
 ///
 /// Three facts, each present only where the document has it: what is being read,
-/// who produced it, and when. This engine's own attribution is left off, because
-/// a reader of `zond read latest` knows what produced it and a line saying so on
-/// every read is furniture; another scanner's is the whole point, since nothing
-/// else on a terminal says whose findings these are.
+/// who produced it, and how long ago. This engine's own attribution is left off,
+/// because a reader of `zond read latest` knows what produced it and a line
+/// saying so on every read is furniture; another scanner's is the whole point,
+/// since nothing else on a terminal says whose findings these are.
+///
+/// An age rather than a timestamp, as a comparison dates its two scans: what a
+/// reader checks here is that they opened the scan they meant to, and `3d`
+/// answers that where a UTC timestamp to the microsecond makes them work it out.
+/// The record itself keeps the instant.
 fn read_line(id: &str, started_at: Option<std::time::SystemTime>, produced_by: &str) -> String {
     let by = if names_its_scanner(produced_by) {
-        format!(" by {produced_by}")
+        format!(", a scan by {produced_by}")
     } else {
         String::new()
     };
-    let from = match started_at {
-        Some(at) => format!(" from {}", field::timestamp(at)),
+    let age = match started_at {
+        Some(at) => format!(" ({})", field::age(at)),
         None => String::new(),
     };
 
-    // A document with neither is a document there is nothing to say about but
-    // its name, and "a scan" on its own is not worth a clause.
-    if by.is_empty() && from.is_empty() {
-        return format!("reading {id}");
-    }
-
-    format!("reading {id}, a scan{by}{from}")
+    format!("reading {id}{by}{age}")
 }
 
 // ╔════════════════════════════════════════════╗
@@ -930,8 +929,8 @@ mod tests {
         assert_eq!(
             said,
             format!(
-                "reading q1.xml, a scan by nmap 7.94 from {}",
-                field::timestamp(recorded_at())
+                "reading q1.xml, a scan by nmap 7.94 ({})",
+                field::age(recorded_at())
             )
         );
     }
@@ -943,7 +942,28 @@ mod tests {
         let said = read_line("latest", Some(recorded_at()), "0.13.0");
 
         assert!(!said.contains("0.13.0"), "{said}");
-        assert!(said.starts_with("reading latest, a scan from"), "{said}");
+        assert_eq!(
+            said,
+            format!("reading latest ({})", field::age(recorded_at()))
+        );
+    }
+
+    /// A document is dated by its age, as a comparison dates its two scans.
+    /// What a reader checks on this line is that they opened the scan they
+    /// meant to, and a timestamp to the microsecond in UTC makes them work
+    /// that out where `3d` says it.
+    #[test]
+    fn a_document_being_read_is_dated_by_its_age() {
+        let said = read_line("06GDJ2QVMBGAEAF9", Some(recorded_at()), "0.18.0");
+
+        assert!(
+            !said.contains(&field::timestamp(recorded_at())),
+            "a full timestamp: {said}"
+        );
+        assert!(
+            said.ends_with(&format!("({})", field::age(recorded_at()))),
+            "{said}"
+        );
     }
 
     /// A document with nothing to date it by is not dated, and one with nothing
