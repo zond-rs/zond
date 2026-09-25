@@ -327,9 +327,10 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
     inherited: &Exclusions,
     resolve_names: bool,
 ) -> Result<Targets, TargetError> {
-    // Constructing one reads the host's resolver configuration, which a run
-    // forbidden from sending DNS should not touch at all. Shared by both halves
-    // of the grammar: a name to keep out costs the same query as a name to scan.
+    // Resolving with one reads the host's resolver configuration and asks its
+    // servers, which a run forbidden from sending DNS should not touch at all.
+    // Shared by both halves of the grammar: a name to keep out costs the same
+    // query as a name to scan.
     let resolver = resolve_names.then(Resolver::from_system);
 
     let discovery = resolve::for_discovery(expressions, resolver.as_ref())
