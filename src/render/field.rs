@@ -2191,15 +2191,18 @@ pub(crate) fn packed_ports(host: &Host) -> Option<String> {
     )
 }
 
-/// How many ports came back plainly closed.
+/// How many ports came back plainly closed, or `None` where no port was asked.
+///
+/// A host whose every port went unasked is on the record with its ports so a
+/// short list cannot pass for a complete one, and nothing about it is known
+/// closed or otherwise: its count is unknown rather than nought.
 pub(crate) fn closed_ports(host: &Host) -> Option<String> {
-    let closed = host.ports().filter(|port| !notable(port.state())).count();
-
-    if host.port_count() == 0 {
-        None
-    } else {
-        Some(closed.to_string())
+    if !host.ports().any(|port| port.state() != PortState::Unasked) {
+        return None;
     }
+
+    let closed = host.ports().filter(|port| !notable(port.state())).count();
+    Some(closed.to_string())
 }
 
 /// Whether a service name is a name rather than the engine's placeholder.
@@ -4144,6 +4147,26 @@ mod tests {
     fn a_host_that_was_never_port_scanned_has_no_port_lines() {
         assert!(ports(&host(1), true, Showing::default()).is_empty());
         assert_eq!(closed_ports(&host(1)), None);
+    }
+
+    /// A host whose every port went unasked has no closed count, rather than a
+    /// count of nought: nothing was asked, so nothing is known closed or not.
+    /// A `0` in that field reads as a host scanned and found with every port
+    /// open or filtered.
+    #[test]
+    fn a_host_whose_ports_were_all_unasked_has_no_closed_count() {
+        let mut host = host(1);
+        for number in [22, 80] {
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::Unasked));
+        }
+        assert_eq!(closed_ports(&host), None);
+
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+        assert_eq!(
+            closed_ports(&host).as_deref(),
+            Some("0"),
+            "one port was asked, and it was not closed"
+        );
     }
 
     /// One field, sub-delimited, so a record stays one line and one host.
