@@ -1008,6 +1008,10 @@ pub(crate) struct DiscoverArgs {
     /// id. An address that answered, or that was asked as many times as it was
     /// going to be, is not asked again; one whose probes were cut off mid-way is.
     ///
+    /// So do the options it ran under. A flag that changes what the sweep asks,
+    /// such as `--effort`, is refused; one that changes its pace, such as
+    /// `--max-probe-rate`, applies to this sitting.
+    ///
     /// `zond journal` lists what can be continued. A record's scope is fixed,
     /// so `--exclude` cannot be added to one: withholding an address the record
     /// counted would renumber every address after it.
@@ -1135,6 +1139,10 @@ pub(crate) struct ScanArgs {
     /// but the id. Naming them anyway is allowed and checked: a position in a
     /// record means nothing against a different plan, so a mismatch is refused
     /// rather than quietly scanning something else.
+    ///
+    /// So do the options it ran under. A flag that changes what the scan asks,
+    /// such as `--assume-up` or `--effort`, is refused; one that changes its
+    /// pace, such as `--max-probe-rate`, applies to this sitting.
     ///
     /// `zond journal` lists what can be continued. A record's scope is fixed,
     /// so `--exclude` cannot be added to one: withholding an address the record

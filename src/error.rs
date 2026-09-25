@@ -195,6 +195,14 @@ pub(crate) enum Error {
     #[error("{0}; drop the targets to continue the scan as it was recorded")]
     PlanChanged(#[from] zond_engine::journal::manifest::PlanChanged),
 
+    /// A flag was given alongside `--resume` that changes what the recorded
+    /// scan asks, which would put two scans' answers in one record.
+    #[error("{flag} differs from the record (drop it to resume)")]
+    OptionChanged {
+        /// The flag, as it is typed.
+        flag: &'static str,
+    },
+
     /// A journal was named that this machine has no record of.
     #[error(
         "no scan on record with id '{id}'{}",
@@ -347,7 +355,8 @@ impl Error {
             // A plan that does not match, or a scan already running: both are
             // the caller asking for something that cannot be done, not a fault.
             | Error::JournalOpen(_)
-            | Error::PlanChanged(_) => Code::Usage,
+            | Error::PlanChanged(_)
+            | Error::OptionChanged { .. } => Code::Usage,
             // A document that will not parse is a fault in the file rather than
             // in what was asked for: the name was right and the contents were
             // not. It joins the outright failures for that reason.

@@ -978,6 +978,107 @@ fn a_scan_is_continued_by_its_id_alone() {
     );
 }
 
+/// The phases a report written to `path` records, by kind, in order.
+fn phase_kinds(path: &Path) -> Vec<String> {
+    let text: String = std::fs::read_to_string(path)
+        .expect("the report was written")
+        .split_whitespace()
+        .collect();
+    text.match_indices("\"kind\":\"")
+        .map(|(at, found)| {
+            let rest = &text[at + found.len()..];
+            rest[..rest.find('"').expect("a closing quote")].to_owned()
+        })
+        .filter(|kind| matches!(kind.as_str(), "discovery" | "port_scan" | "listen"))
+        .collect()
+}
+
+/// **A scan continued by its id alone asks what its first sitting asked.**
+///
+/// Begun with `--assume-up` and cut short by its budget, then continued with
+/// nothing but the id: the second sitting has to probe the ports it has left
+/// without asking first whether the host is there, as the first did. Resumed
+/// under this run's defaults instead, it would run a liveness pass the job
+/// never asked for and port-scan only what answered it, which on a range of
+/// hosts that answer no knock is most of the job left undone.
+#[test]
+fn a_scan_continued_by_its_id_alone_keeps_the_options_it_ran_under() {
+    let home = config_home("journal-resume-options");
+    let first = home.join("first.json");
+    let second = home.join("second.json");
+
+    // Every port, and a second's budget, so the first sitting is cut short on
+    // any machine; the property holds of a finished one as well.
+    let scan = zond_in(
+        &home,
+        &[
+            "-q",
+            "s",
+            "::1",
+            "-n",
+            "-p-",
+            "--assume-up",
+            "--scan-timeout",
+            "1s",
+            "-o",
+            first.to_str().expect("a path"),
+        ],
+    );
+    assert_ne!(status(&scan), 2, "{}", stderr(&scan));
+    let id = recorded_ids(&home)
+        .into_iter()
+        .next()
+        .expect("a listed scan");
+
+    let resumed = zond_in(
+        &home,
+        &[
+            "-q",
+            "s",
+            "--resume",
+            &id,
+            "-o",
+            second.to_str().expect("a path"),
+        ],
+    );
+    assert_ne!(status(&resumed), 2, "{}", stderr(&resumed));
+
+    assert_eq!(
+        phase_kinds(&second),
+        ["port_scan", "port_scan"],
+        "the resumed sitting ran a liveness pass the job never asked for"
+    );
+}
+
+/// A flag given with `--resume` that changes what the recorded scan asks is
+/// refused and named, rather than continuing one job as two.
+#[test]
+fn a_flag_that_changes_what_a_record_asks_is_refused_on_resume() {
+    let home = config_home("journal-resume-option-changed");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-n", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    let id = recorded_ids(&home)
+        .into_iter()
+        .next()
+        .expect("a listed scan");
+
+    let changed = zond_in(&home, &["-q", "s", "--resume", &id, "--assume-up"]);
+    assert_eq!(status(&changed), 2, "{}", stderr(&changed));
+    assert!(
+        stderr(&changed).contains("--assume-up differs from the record"),
+        "{}",
+        stderr(&changed)
+    );
+
+    // Pace is this sitting's to set.
+    let slower = zond_in(
+        &home,
+        &["-q", "s", "--resume", &id, "--max-probe-rate", "50"],
+    );
+    assert_eq!(status(&slower), 0, "{}", stderr(&slower));
+}
+
 /// Targets named alongside `--resume` are checked, and refused when they
 /// describe something else.
 #[test]

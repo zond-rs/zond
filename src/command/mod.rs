@@ -338,6 +338,66 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
     })
 }
 
+/// Lays the options a record ran under over `config`, where it recorded them.
+///
+/// A resumed sitting asks what the first one asked, so this comes after the
+/// settings files and before the flags typed for this sitting: a file edited
+/// since, or a profile named now, does not change a job already under way, and
+/// a flag typed now is either the same answer or refused by
+/// [`held_to_record`].
+///
+/// A record from before options were recorded says nothing about them, so the
+/// run's own stand, and saying so is the one thing to do about it.
+pub(crate) fn restore(resumed: &Resumed, config: &mut ZondConfig) {
+    if let Some(options) = resumed.journal.options() {
+        options.apply_to(config);
+    } else {
+        tracing::info!("options not on record; using this run's (older record)");
+    }
+}
+
+/// Refuses a flag typed for this sitting that changes what the record asks.
+///
+/// The engine refuses the same thing. Checking here as well is what lets the
+/// refusal name the flag as it is typed, rather than the engine's field.
+pub(crate) fn held_to_record(resumed: &Resumed, config: &ZondConfig) -> Result<(), Error> {
+    let Some(options) = resumed.journal.options() else {
+        return Ok(());
+    };
+
+    options
+        .check(config)
+        .map_err(|changed| Error::OptionChanged {
+            flag: flag_for(changed.option),
+        })
+}
+
+/// The flag that sets an engine option, as a person types it.
+fn flag_for(option: &'static str) -> &'static str {
+    match option {
+        "assume_up" => "--assume-up",
+        "tcp_technique" => "--tcp-technique",
+        "sctp_technique" => "--sctp-technique",
+        "retry.effort" => "--effort",
+        "retry.max_attempts" => "--max-attempts",
+        "retry.timeout_scale" => "--timeout-scale",
+        "retry.dampen_silent_hosts" => "--no-dampen",
+        "os_detection" => "--os-detection",
+        "service_detection" => "--service-detection",
+        "detection" => "--detection",
+        "traceroute" => "--traceroute",
+        "characterise" => "--characterise",
+        "ip_protocols" => "--ip-protocols",
+        "tls_enumeration" => "--tls-enum",
+        "listen_only_ports" => "--probe-print-ports",
+        "idle_scan" => "--idle-scan",
+        "evasion" => "an evasion flag",
+        // An option the engine holds a job to that no flag here sets, named by
+        // the engine's own word rather than guessed at.
+        _ => option,
+    }
+}
+
 /// What continuing this record means, in the terms its own phase has.
 ///
 /// **A watch settles nothing, so it cannot be announced as though it had.** The

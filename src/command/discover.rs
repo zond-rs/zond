@@ -45,12 +45,26 @@ pub(crate) async fn run(
     // on the `no_dns` these layers settle on, which a file may set as well as a
     // flag.
     let mut config = command::engine_settings(args.engine.profile.as_deref())?.config;
+
+    // A resume asks what the recorded sweep asked; see `scan` for the order
+    // the layers go on in.
+    let resumed = args
+        .resume
+        .as_deref()
+        .map(|id| command::reopen(id, "addresses"))
+        .transpose()?;
+    if let Some(resumed) = &resumed {
+        command::restore(resumed, &mut config);
+    }
     args.engine.apply_to(&mut config);
+    if let Some(resumed) = &resumed {
+        command::held_to_record(resumed, &config)?;
+    }
 
     // A resume needs no targets: the plan comes from the record, which is what
     // ran rather than what somebody types the second time.
-    let (targets, journal) = match args.resume.as_deref() {
-        Some(id) => continued(id, &mut config)?,
+    let (targets, journal) = match resumed {
+        Some(resumed) => continued(resumed, &mut config)?,
         None => started(args, recording, &mut config).await?,
     };
 
@@ -146,9 +160,10 @@ async fn started(
 /// the engine is handed back is the whole of it. The addresses this sitting has
 /// to ask about are worked out from the record's own cursor, which is the only
 /// thing that knows what the earlier sittings earned.
-fn continued(id: &str, config: &mut ZondConfig) -> Result<(Targets, Option<Journal>), Error> {
-    let resumed = command::reopen(id, "addresses")?;
-
+fn continued(
+    resumed: command::Resumed,
+    config: &mut ZondConfig,
+) -> Result<(Targets, Option<Journal>), Error> {
     let Some(addresses) = resumed.plan.addresses().cloned() else {
         return Err(Error::WrongPhase {
             id: resumed.id,

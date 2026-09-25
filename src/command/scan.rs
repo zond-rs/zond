@@ -67,7 +67,22 @@ pub(crate) async fn run(
     // twice and warning about it twice. See `settings::EngineSettings`.
     let settings = command::engine_settings(args.engine.profile.as_deref())?;
     let mut config = settings.config;
+
+    // A resume asks what the recorded scan asked: its options go over the
+    // settings files, and the flags typed for this sitting over those, where
+    // one that changes what the scan asks is refused.
+    let resumed = args
+        .resume
+        .as_deref()
+        .map(|id| command::reopen(id, "targets"))
+        .transpose()?;
+    if let Some(resumed) = &resumed {
+        command::restore(resumed, &mut config);
+    }
     args.apply_to(&mut config);
+    if let Some(resumed) = &resumed {
+        command::held_to_record(resumed, &config)?;
+    }
 
     // A SYN scan reaches `filtered` from silence and from a refusal alike, so it
     // does not ask its capture for ICMP unless something wants to tell the two
@@ -81,8 +96,8 @@ pub(crate) async fn run(
     // A resume needs no targets: the plan comes from the record, which is what
     // ran rather than what somebody types the second time. Targets given anyway
     // are checked against it.
-    let (targets, journal) = match args.resume.as_deref() {
-        Some(id) => continued(id, args, ports, &config).await?,
+    let (targets, journal) = match resumed {
+        Some(resumed) => continued(resumed, args, ports, &config).await?,
         None => started(args, recording, ports, &mut config).await?,
     };
 
@@ -187,13 +202,11 @@ async fn started(
 /// the wrong scan quietly would count positions against a plan they were never
 /// counted in.
 async fn continued(
-    id: &str,
+    resumed: command::Resumed,
     args: &ScanArgs,
     ports: PortSet,
     config: &ZondConfig,
 ) -> Result<(ScanTargets, Option<Journal>), Error> {
-    let resumed = command::reopen(id, "targets")?;
-
     let Some(plan) = resumed.plan.targets().cloned() else {
         return Err(Error::WrongPhase {
             id: resumed.id,
