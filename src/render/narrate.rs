@@ -51,6 +51,10 @@ pub(crate) struct Narrator {
     /// Whether the run stopped because its own time budget ran out, which
     /// explains a short count and is nothing the user did.
     budget_spent: bool,
+    /// Whether the engine opened this run with the line naming the privilege
+    /// it probes with, as a sweep or a port scan run here does. A record read
+    /// back has had no such line, so its summary is where that is said.
+    announced: bool,
 }
 
 impl Narrator {
@@ -63,6 +67,7 @@ impl Narrator {
             style,
             resumable: false,
             budget_spent: false,
+            announced: false,
         }
     }
 
@@ -159,6 +164,8 @@ impl Narrator {
                 ..
             }
         );
+
+        self.announced = matches!(phase, Phase::Discovery { .. } | Phase::PortScan { .. });
 
         let (line, excluded) = match phase {
             Phase::Discovery { targets, .. } => {
@@ -441,10 +448,13 @@ impl Narrator {
             self.note(&format!("not covered: {reason}"))?;
         }
 
-        // Beside the count rather than before the scan: both notes say the
-        // count is an undercount, which matters when somebody is looking at it.
-        // The engine already announced the privilege level; this adds the
-        // remedy.
+        // For a record read back, which nothing else on the console dates to a
+        // run without raw sockets. A sweep or scan run here has already said so
+        // in the engine's opening line, remedy and all, and saying it again
+        // here is the same fact twice.
+        //
+        // Beside the count rather than before it: both notes say the count is
+        // an undercount, which matters when somebody is looking at it.
         //
         // A report with no phase at all measured nothing and has no privilege
         // level to advise about. That is a record read back from a scan which
@@ -460,7 +470,8 @@ impl Narrator {
         // A port scan's note is a claim about how its TCP ports were probed,
         // so it is made only where one was. A scan whose technique was refused
         // probed none, and one that named only UDP completed no connection.
-        if let Some(kind) = field::kind(report)
+        if !self.announced
+            && let Some(kind) = field::kind(report)
             && field::privilege(report) == Some(Privilege::Connect)
         {
             match kind {
@@ -1568,6 +1579,55 @@ mod tests {
             lines.iter().any(|line| line.contains("no raw sockets")),
             "the note this relies on was not printed: {said}"
         );
+    }
+
+    /// A connect scan run here says it had no raw sockets once, in the line
+    /// the engine opened it with, and not again above its count.
+    ///
+    /// The note below the hosts is for a record read back, which nothing else
+    /// on the console dates to an unprivileged run. Under a live run it repeats
+    /// the engine's opening line in other words, two lines for one fact.
+    #[test]
+    fn a_live_connect_scan_leaves_the_privilege_to_the_engines_opening_line() {
+        use crate::target::ScanTargets;
+        use zond_engine::PortSet;
+        use zond_engine::model::target::{TargetMap, TargetSet};
+
+        let report = port_scanned_by(
+            Privilege::Connect,
+            vec![host_with(22, zond_engine::Protocol::Tcp)],
+            "192.0.2.1",
+            Vec::new(),
+        );
+        let mut plan = TargetMap::new();
+        plan.add_unit(TargetSet::new(
+            "192.0.2.1"
+                .parse::<zond_engine::IpSet>()
+                .expect("an address"),
+            "22".parse::<PortSet>().expect("a port"),
+        ));
+        let targets = ScanTargets::resumed(plan, 1, "192.0.2.1 on 1 port".to_owned());
+
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::default(),
+            Style::bare(),
+        );
+        narrator
+            .started(
+                Phase::PortScan {
+                    targets: &targets,
+                    resumable: false,
+                },
+                Redaction::None,
+            )
+            .expect("a capture never fails");
+        narrator.summary(&report).expect("a capture never fails");
+        let said = capture.text();
+
+        assert!(!said.contains("raw sockets"), "{said}");
+        assert!(said.contains("1 host up"), "{said}");
     }
 
     /// A connect scan that probed TCP ports says how it probed them, and what
