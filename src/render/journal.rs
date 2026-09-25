@@ -434,10 +434,7 @@ mod tests {
         Entry {
             directory: std::path::PathBuf::from("/tmp").join(id),
             manifest,
-            checkpoint: settled.map(|watermark| Checkpoint {
-                watermark,
-                settled_above: Vec::new(),
-            }),
+            checkpoint: settled.map(|watermark| Checkpoint::new(watermark, [])),
             lock,
         }
     }

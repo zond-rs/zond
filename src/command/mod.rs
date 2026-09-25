@@ -310,7 +310,7 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
     let (journal, checkpoint, plan) = Journal::reopen(&directory, Privilege::current())?;
 
     let total = journal.manifest().total_targets;
-    let settled = u128::from(checkpoint.watermark) + checkpoint.settled_above.len() as u128;
+    let settled = u128::from(checkpoint.settled_count());
     tracing::info!(
         "continuing {id} ({})",
         continuation(&plan, &journal, settled, total, counted)
