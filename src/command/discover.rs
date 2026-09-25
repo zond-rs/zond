@@ -77,10 +77,21 @@ pub(crate) async fn run(
     )?;
 
     let ips = targets.into_ips();
+    // Taken before the journal is handed over, and only for a record this run
+    // claimed: a resumed one was announced as it was reopened.
+    let fresh = journal
+        .as_ref()
+        .filter(|_| args.resume.is_none())
+        .map(|journal| journal.manifest().id.clone());
+
     let (session, task) = match journal {
         Some(journal) => discover_with_journal(ips, &config, journal).await?,
         None => discover(ips, &config).await?,
     };
+
+    if let Some(id) = fresh {
+        command::announce(&id, recording.limit);
+    }
 
     command::drive(
         session,
@@ -113,8 +124,8 @@ async fn started(
 
     // After `apply_to`, because whether this is a segment sweep is part of what
     // gets recorded, and `lan` is one of the things that decides it. Before the
-    // sweep is announced, so that where it is being written appears above the
-    // results rather than in the middle of them.
+    // sweep is announced, so a record that cannot be claimed is said above it
+    // rather than in the middle of its results.
     targets.apply_to(config);
     let journal = recording
         .wanted
@@ -122,7 +133,6 @@ async fn started(
             command::record(
                 &Plan::discovery(targets.ips(), &config.exclusions, config.segment_sweep),
                 summarise(targets.ips()),
-                recording.limit,
             )
         })
         .flatten();

@@ -161,17 +161,19 @@ pub(crate) struct Recording {
 
 /// Starts a record for this run, or says why it could not and carries on.
 ///
-/// Both subcommands record by default, so this is where either of them asks
-/// for a journal. `summary` is the line a listing shows and nothing decides
-/// anything from it.
+/// Every subcommand that scans records by default, so this is where each of
+/// them asks for a journal. `summary` is the line a listing shows and nothing
+/// decides anything from it.
 ///
 /// A run that cannot be recorded is still a run worth having. Every way this
 /// fails is reported and returns `None`, and the caller scans anyway: no home
 /// directory, a state directory that will not take a write, an id that could not
 /// be claimed.
 ///
-/// The record having been claimed, `limit` is applied: see [`enforce`].
-fn record(plan: &Plan, summary: String, limit: settings::EntryLimit) -> Option<Journal> {
+/// Silent when it succeeds. The engine may yet refuse the scan, and it removes
+/// a record no sitting ran against when it does, so the record is announced by
+/// [`announce`] once the scan has started rather than here.
+fn record(plan: &Plan, summary: String) -> Option<Journal> {
     let Some(root) = paths::root() else {
         tracing::warn!("not recording this run: this environment names no home");
         return None;
@@ -190,20 +192,32 @@ fn record(plan: &Plan, summary: String, limit: settings::EntryLimit) -> Option<J
     }
 
     match Journal::create(&root, plan, Privilege::current(), summary) {
-        Ok(journal) => {
-            // To stderr: where a scan is writing is commentary on the run, and
-            // somebody piping its results should still be told.
-            tracing::info!("recording this run as {}", journal.manifest().id);
-
-            // After the record exists, so the limit is a limit on what is there
-            // once this run has been counted rather than one record more.
-            enforce(&root, limit);
-            Some(journal)
-        }
+        Ok(journal) => Some(journal),
         Err(e) => {
             tracing::warn!("not recording this run: {e}");
             None
         }
+    }
+}
+
+/// Says where a run the engine has started is being recorded, and applies the
+/// standing limit on records.
+///
+/// After the start rather than when the record is claimed, because a scan
+/// refused up front leaves no record: announcing one would name a record that
+/// is gone, and applying the limit would push out a real record to make room
+/// for it. See [`record`].
+///
+/// `limit` is applied now that this run's record is counted, so it is a limit
+/// on what is there with this run rather than one record more; see
+/// [`enforce`].
+pub(crate) fn announce(id: &str, limit: settings::EntryLimit) {
+    // To stderr: where a scan is writing is commentary on the run, and
+    // somebody piping its results should still be told.
+    tracing::info!("recording this run as {id}");
+
+    if let Some(root) = paths::root() {
+        enforce(&root, limit);
     }
 }
 

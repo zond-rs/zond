@@ -75,10 +75,21 @@ pub(crate) async fn run(
         redaction,
     )?;
 
+    // Taken before the journal is handed over, and only for a record this run
+    // claimed: a resumed one was announced as it was reopened.
+    let fresh = journal
+        .as_ref()
+        .filter(|_| args.resume.is_none())
+        .map(|journal| journal.manifest().id.clone());
+
     let (session, task) = match journal {
         Some(journal) => listen_with_journal(scope, &config, journal).await?,
         None => listen(scope, &config).await?,
     };
+
+    if let Some(id) = fresh {
+        command::announce(&id, recording.limit);
+    }
 
     // **The one phase where being stopped is how it finishes.** A watch with no
     // `--for` was asked to run until somebody stopped it, so `Ctrl-C` and `q`
@@ -114,13 +125,7 @@ fn started(args: &ListenArgs, recording: Recording) -> Result<(Vec<Zone>, Option
 
     let journal = recording
         .wanted
-        .then(|| {
-            command::record(
-                &Plan::listen(links.clone()),
-                summarise(&links),
-                recording.limit,
-            )
-        })
+        .then(|| command::record(&Plan::listen(links.clone()), summarise(&links)))
         .flatten();
 
     Ok((links, journal))

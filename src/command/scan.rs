@@ -117,10 +117,21 @@ pub(crate) async fn run(
         .map(command::cve_catalogue)
         .transpose()?;
 
+    // Taken before the journal is handed over, and only for a record this run
+    // claimed: a resumed one was announced as it was reopened.
+    let fresh = journal
+        .as_ref()
+        .filter(|_| args.resume.is_none())
+        .map(|journal| journal.manifest().id.clone());
+
     let (session, task) = match journal {
         Some(journal) => scan_with_journal(plan, &config, detections, journal).await?,
         None => scan(plan, &config, detections).await?,
     };
+
+    if let Some(id) = fresh {
+        command::announce(&id, recording.limit);
+    }
 
     command::drive(
         session,
@@ -162,7 +173,6 @@ async fn started(
             command::record(
                 &Plan::port_scan(targets.map(), &config.exclusions, config.tcp_technique),
                 summarise(targets.map()),
-                recording.limit,
             )
         })
         .flatten();
