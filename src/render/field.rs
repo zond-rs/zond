@@ -1605,8 +1605,9 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
 /// reads as the whole answer and the second as a refusal.
 ///
 /// Grouped by cause, because the cause is what a reader acts on: `unanswered`
-/// is the endpoint going quiet, which a slower scan gets past, and `stopped` is
-/// this scan's own budget or stop, which a longer one does. The versions are
+/// is the endpoint going quiet, which a slower scan gets past, `stopped` is
+/// this scan's own budget or stop, which a longer one does, and `file-limit`
+/// is this machine running out of sockets, which a higher limit does. The versions are
 /// the value and nothing is a note, so a long list of them never moves the
 /// column every other port's certificate expiry is drawn in.
 ///
