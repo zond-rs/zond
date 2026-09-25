@@ -54,7 +54,7 @@ pub(crate) async fn run(
     // A resume needs no links: they come from the record, which is what was
     // being watched rather than what somebody types the second time.
     let (links, journal) = match args.resume.as_deref() {
-        Some(id) => continued(id)?,
+        Some(id) => continued(id, args.take_over)?,
         None => started(args, recording)?,
     };
 
@@ -136,8 +136,8 @@ fn started(args: &ListenArgs, recording: Recording) -> Result<(Vec<Zone>, Option
 /// Nothing is skipped, because a watch settles nothing. What reopening buys is
 /// that the earlier sittings' findings are restored before this one starts, so
 /// the report describes the whole watch rather than the last few minutes of it.
-fn continued(id: &str) -> Result<(Vec<Zone>, Option<Journal>), Error> {
-    let resumed = command::reopen(id, "links")?;
+fn continued(id: &str, take_over: bool) -> Result<(Vec<Zone>, Option<Journal>), Error> {
+    let resumed = command::reopen(id, "links", take_over)?;
 
     let Some(links) = resumed.plan.links().map(<[Zone]>::to_vec) else {
         return Err(Error::WrongPhase {

@@ -35,9 +35,10 @@ use zond_engine::export::Redaction;
 use zond_engine::import::report::{ReportFormat, ReportOptions};
 
 use crate::export::ReportFile;
+use zond_engine::journal::lock::{LockRefused, LockState};
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
-use zond_engine::journal::store::{self, Journal, Retention};
+use zond_engine::journal::store::{self, Journal, OpenError, Retention};
 use zond_engine::scanner::handle::StopCause;
 use zond_engine::system::privilege::Privilege;
 use zond_engine::{ScanEvent, ScanReport, ScanSession, ScanTask, ScopedIp, ZondConfig};
@@ -308,7 +309,11 @@ pub(crate) struct Resumed {
 /// [`Journal::reopen`](zond_engine::journal::store::Journal::reopen), because a
 /// missing one means somebody named a record this machine does not have, and
 /// that deserves a message saying how many there are to look through.
-pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> {
+///
+/// `take_over` continues a record whose lock names a live process that has
+/// stopped checkpointing, which is refused otherwise; see
+/// [`Journal::take_over`](zond_engine::journal::store::Journal::take_over).
+pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result<Resumed, Error> {
     let id = journal::newest_if_latest(id)?;
 
     let directory = paths::scan(&id).ok_or(Error::NoJournalDirectory)?;
@@ -321,7 +326,20 @@ pub(crate) fn reopen(id: &str, counted: &'static str) -> Result<Resumed, Error> 
         });
     }
 
-    let (journal, checkpoint, plan) = Journal::reopen(&directory, Privilege::current())?;
+    let opened = if take_over {
+        Journal::take_over(&directory, Privilege::current())
+    } else {
+        Journal::reopen(&directory, Privilege::current())
+    };
+    let (journal, checkpoint, plan) = opened.map_err(|error| match error {
+        OpenError::Locked(LockRefused::Held(LockState::Stale { pid, last_beat })) => {
+            Error::StaleLock {
+                pid,
+                silent: last_beat.as_secs(),
+            }
+        }
+        other => Error::JournalOpen(other),
+    })?;
 
     let total = journal.manifest().total_targets;
     let settled = u128::from(checkpoint.settled_count());

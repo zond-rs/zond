@@ -929,6 +929,19 @@ pub(crate) struct ListenArgs {
     #[arg(long, value_name = "ID", conflicts_with = "links")]
     pub resume: Option<String>,
 
+    /// Continue the record even though its lock names a process that has
+    /// stopped checkpointing.
+    ///
+    /// A record is locked while a run writes it, so two runs never write one.
+    /// A lock whose process is gone is released on its own. One naming a
+    /// process that is alive and silent is refused, because a hung run and a
+    /// crashed one whose process number was handed to something else look
+    /// the same from here. Once the process it names is known not to be the
+    /// run, this takes the record over. A lock its run is still beating is
+    /// refused whatever is passed.
+    #[arg(long, requires = "resume")]
+    pub take_over: bool,
+
     /// Settings that change what the watch reads.
     #[command(flatten)]
     pub engine: EngineArgs,
@@ -1025,6 +1038,19 @@ pub(crate) struct DiscoverArgs {
     /// counted would renumber every address after it.
     #[arg(long, value_name = "ID", conflicts_with_all = ["targets", "exclude"])]
     pub resume: Option<String>,
+
+    /// Continue the record even though its lock names a process that has
+    /// stopped checkpointing.
+    ///
+    /// A record is locked while a run writes it, so two runs never write one.
+    /// A lock whose process is gone is released on its own. One naming a
+    /// process that is alive and silent is refused, because a hung run and a
+    /// crashed one whose process number was handed to something else look
+    /// the same from here. Once the process it names is known not to be the
+    /// run, this takes the record over. A lock its run is still beating is
+    /// refused whatever is passed.
+    #[arg(long, requires = "resume")]
+    pub take_over: bool,
 
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
@@ -1157,6 +1183,19 @@ pub(crate) struct ScanArgs {
     /// counted would renumber every target after it.
     #[arg(long, value_name = "ID", conflicts_with = "exclude")]
     pub resume: Option<String>,
+
+    /// Continue the record even though its lock names a process that has
+    /// stopped checkpointing.
+    ///
+    /// A record is locked while a run writes it, so two runs never write one.
+    /// A lock whose process is gone is released on its own. One naming a
+    /// process that is alive and silent is refused, because a hung run and a
+    /// crashed one whose process number was handed to something else look
+    /// the same from here. Once the process it names is known not to be the
+    /// run, this takes the record over. A lock its run is still beating is
+    /// refused whatever is passed.
+    #[arg(long, requires = "resume")]
+    pub take_over: bool,
 
     /// Scan every target without checking first that anything is there.
     ///

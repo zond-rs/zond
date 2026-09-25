@@ -197,6 +197,16 @@ pub(crate) enum Error {
     #[error("{0}")]
     JournalOpen(#[from] zond_engine::journal::store::OpenError),
 
+    /// The record's lock names a live process that has stopped checkpointing:
+    /// a hung run, or a process given a crashed run's number.
+    #[error("record locked by process {pid}, silent {silent}s (--take-over)")]
+    StaleLock {
+        /// The process the lock names.
+        pid: u32,
+        /// How many seconds since the lock was last touched.
+        silent: u64,
+    },
+
     /// Targets were named alongside `--resume` that describe a different scan.
     #[error("{0}; drop the targets to continue the scan as it was recorded")]
     PlanChanged(#[from] zond_engine::journal::manifest::PlanChanged),
@@ -372,6 +382,7 @@ impl Error {
             // A plan that does not match, or a scan already running: both are
             // the caller asking for something that cannot be done, not a fault.
             | Error::JournalOpen(_)
+            | Error::StaleLock { .. }
             | Error::PlanChanged(_)
             | Error::OptionChanged { .. } => Code::Usage,
             // A document that will not parse is a fault in the file rather than

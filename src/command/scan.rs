@@ -74,7 +74,7 @@ pub(crate) async fn run(
     let resumed = args
         .resume
         .as_deref()
-        .map(|id| command::reopen(id, "targets"))
+        .map(|id| command::reopen(id, "targets", args.take_over))
         .transpose()?;
     if let Some(resumed) = &resumed {
         command::restore(resumed, &mut config);
