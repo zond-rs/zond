@@ -215,6 +215,19 @@ async fn continued(
         });
     };
 
+    // Ports named without targets are held to the plan as a flag is held to
+    // the record's options: the ports every target was asked are the same
+    // scan, and any others would be ignored, since what this sitting asks
+    // comes from the record. Named with targets, they are checked with them
+    // below, where a target that carries ports of its own is told apart from
+    // one given these.
+    if args.targets.is_empty()
+        && let Some((named, flag)) = typed_ports(args)
+        && !plan.units.iter().all(|unit| *unit.ports() == named)
+    {
+        return Err(Error::OptionChanged { flag });
+    }
+
     if !args.targets.is_empty() {
         let named = target::resolve_ports(
             &args.targets,
@@ -275,13 +288,27 @@ fn summarise(plan: &TargetMap) -> String {
 /// line is a decision about this run, and a default written in a configuration
 /// file is a decision about every other one.
 fn ports(args: &ScanArgs, configured: Option<PortSet>) -> PortSet {
+    typed_ports(args)
+        .map(|(ports, _)| ports)
+        .or(configured)
+        .unwrap_or_else(|| PortSet::top_tcp(DEFAULT_TOP_PORTS))
+}
+
+/// The ports named on the command line, if any flag named them, and that flag
+/// as it is typed, for a refusal that has to say which one to drop.
+fn typed_ports(args: &ScanArgs) -> Option<(PortSet, &'static str)> {
     if let Some(ports) = args.ports.clone() {
-        return ports;
+        return Some((ports, "--ports"));
     }
     if args.top_ports.is_some() || args.top_ports_udp.is_some() {
         let tcp = PortSet::top_tcp(args.top_ports.unwrap_or(0));
         let udp = PortSet::top_udp(args.top_ports_udp.unwrap_or(0));
-        return tcp.union(&udp);
+        let flag = if args.top_ports.is_some() {
+            "--top-ports"
+        } else {
+            "--top-ports-udp"
+        };
+        return Some((tcp.union(&udp), flag));
     }
-    configured.unwrap_or_else(|| PortSet::top_tcp(DEFAULT_TOP_PORTS))
+    None
 }

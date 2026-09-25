@@ -1079,6 +1079,42 @@ fn a_flag_that_changes_what_a_record_asks_is_refused_on_resume() {
     assert_eq!(status(&slower), 0, "{}", stderr(&slower));
 }
 
+/// Ports named alongside `--resume` without targets are held to the ports on
+/// record: the same ports continue the scan, and any others are refused and
+/// named rather than ignored, since the sitting asks what the record planned
+/// whatever this one was told.
+#[test]
+fn ports_named_with_resume_must_be_the_ports_on_record() {
+    let home = config_home("journal-resume-ports");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-n", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    let id = recorded_ids(&home)
+        .into_iter()
+        .next()
+        .expect("a listed scan");
+
+    let narrower = zond_in(&home, &["-q", "s", "--resume", &id, "-p", "2"]);
+    assert_eq!(status(&narrower), 2, "{}", stderr(&narrower));
+    assert!(
+        stderr(&narrower).contains("--ports differs from the record"),
+        "{}",
+        stderr(&narrower)
+    );
+
+    let ranked = zond_in(&home, &["-q", "s", "--resume", &id, "--top-ports", "2"]);
+    assert_eq!(status(&ranked), 2, "{}", stderr(&ranked));
+    assert!(
+        stderr(&ranked).contains("--top-ports differs from the record"),
+        "{}",
+        stderr(&ranked)
+    );
+
+    // The same ports, however they are spelt.
+    let same = zond_in(&home, &["-q", "s", "--resume", &id, "-p", "1-2"]);
+    assert_eq!(status(&same), 0, "{}", stderr(&same));
+}
+
 /// Targets named alongside `--resume` are checked, and refused when they
 /// describe something else.
 #[test]
