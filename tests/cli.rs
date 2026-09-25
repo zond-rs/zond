@@ -1170,6 +1170,11 @@ fn targets_given_with_resume_must_agree_with_the_record() {
     let agreeing = zond_in(&home, &["-q", "s", "::1", "-p", "1,2", "--resume", &id]);
     assert_eq!(status(&agreeing), 0, "{}", stderr(&agreeing));
 
+    // Named without ports, a target is taken at the ports every target on
+    // record was asked, not at a default the record never ran.
+    let portless = zond_in(&home, &["-q", "s", "::1", "-n", "--resume", &id]);
+    assert_eq!(status(&portless), 0, "{}", stderr(&portless));
+
     let disagreeing = zond_in(&home, &["-q", "s", "::1", "-p", "1,2,3", "--resume", &id]);
     assert_eq!(status(&disagreeing), 2, "{}", stderr(&disagreeing));
     assert!(

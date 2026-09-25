@@ -229,6 +229,17 @@ async fn continued(
     }
 
     if !args.targets.is_empty() {
+        // A target named without ports stands for the one it names on record,
+        // so it is given the ports the record asked, where it asked every
+        // target the same ones: the settings file's or the built-in default
+        // would describe a scan the record never ran. A plan whose targets were
+        // asked differing ports has no one set to lend, so there a target is
+        // resolved as a fresh scan would resolve it, and agrees only where it
+        // names its own ports or the default happens to be the record's.
+        let ports = typed_ports(args)
+            .map(|(ports, _)| ports)
+            .or_else(|| uniform_ports(&plan))
+            .unwrap_or(ports);
         let named = target::resolve_ports(
             &args.targets,
             &args.engine.exclude,
@@ -249,6 +260,15 @@ async fn continued(
         ScanTargets::resumed(plan, resumed.remaining, resumed.id),
         Some(resumed.journal),
     ))
+}
+
+/// The ports a plan asked every one of its targets, or `None` where its
+/// targets were asked differing ports, or it has none.
+fn uniform_ports(plan: &TargetMap) -> Option<PortSet> {
+    let (first, rest) = plan.units.split_first()?;
+    rest.iter()
+        .all(|unit| unit.ports() == first.ports())
+        .then(|| first.ports().clone())
 }
 
 /// How a plan is described in a listing.
