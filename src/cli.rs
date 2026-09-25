@@ -715,6 +715,9 @@ pub(crate) struct ExportArgs {
     ///
     /// For a destination whose extension would say the wrong thing, or nothing
     /// at all. Repeatable, like `--output`.
+    ///
+    /// A named pipe is opened before the scan starts, so the scan waits there
+    /// until something opens the pipe to read.
     #[arg(long = "output-as", value_name = "FORMAT=FILE", action = ArgAction::Append)]
     pub output_as: Vec<crate::export::FormatAndPath>,
 
