@@ -227,19 +227,34 @@ pub(crate) fn standing_in(probed: &str, silent: &[&str]) -> zond_engine::ScanRep
 /// The shape a front end reads "answered no liveness probe" from, with the
 /// one field that says which of those addresses were never asked at all.
 pub(crate) fn screened(asked: &str, undecided: &[&str], probed: &str) -> zond_engine::ScanReport {
+    sittings(&[(asked, undecided, probed)])
+}
+
+/// A port scan resumed over several sittings, each a liveness pass over its
+/// `asked` that reached no verdict on its `undecided`, and a port phase over
+/// its `probed`, which is empty where it found nothing live.
+///
+/// Every phase this process's own, as a job resumed from its journal reports
+/// its sittings.
+pub(crate) fn sittings(sittings: &[(&str, &[&str], &str)]) -> zond_engine::ScanReport {
     use std::time::Duration;
 
     use zond_engine::ZondConfig;
     use zond_engine::model::exclusion::Exclusions;
     use zond_engine::model::ip::range::IpRange;
+    use zond_engine::model::ip::set::IpSet;
     use zond_engine::model::parse::ip::to_set;
     use zond_engine::report::{
         PhaseParts, ScanKind, ScanPhase, ScanReport, ScanSettings, TargetScope,
     };
     use zond_engine::system::privilege::Privilege;
 
-    let phase = |kind: ScanKind, covered: &str, undecided: Vec<IpRange>| {
-        let mut targets = to_set(&[covered], None, None).expect("a parseable range");
+    let set = |ranges: &[&str]| match ranges {
+        [] | [""] => IpSet::new(),
+        ranges => to_set(ranges, None, None).expect("parseable ranges"),
+    };
+    let phase = |kind: ScanKind, covered: &str, undecided: &[&str]| {
+        let mut targets = set(&[covered]);
         ScanPhase::from_parts(PhaseParts {
             attachments: Vec::new(),
             kind,
@@ -254,7 +269,12 @@ pub(crate) fn screened(asked: &str, undecided: &[&str], probed: &str) -> zond_en
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
-            undecided,
+            undecided: set(undecided)
+                .v4()
+                .iter()
+                .copied()
+                .map(IpRange::V4)
+                .collect(),
             liveness_skipped: None,
             silent: Vec::new(),
             stopped: None,
@@ -264,18 +284,14 @@ pub(crate) fn screened(asked: &str, undecided: &[&str], probed: &str) -> zond_en
         })
     };
 
-    let open: Vec<IpRange> = if undecided.is_empty() {
-        Vec::new()
-    } else {
-        let open = to_set(undecided, None, None).expect("a parseable range");
-        open.v4().iter().copied().map(IpRange::V4).collect()
-    };
-    ScanReport::recorded(
-        "test",
-        vec![
-            phase(ScanKind::Discovery, asked, open),
-            phase(ScanKind::PortScan, probed, Vec::new()),
-        ],
-        vec![host(1)],
-    )
+    let phases = sittings
+        .iter()
+        .flat_map(|(asked, undecided, probed)| {
+            [
+                phase(ScanKind::Discovery, asked, undecided),
+                phase(ScanKind::PortScan, probed, &[]),
+            ]
+        })
+        .collect();
+    ScanReport::recorded("test", phases, vec![host(1)])
 }

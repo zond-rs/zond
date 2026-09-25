@@ -2424,31 +2424,62 @@ pub(crate) fn addresses_scanned(report: &ScanReport) -> Option<u128> {
 /// liveness phase reached no verdict on is subtracted too and reported by
 /// [`undecided`]: it was not found down, and scanning on trust is not what it
 /// needs, asking it is.
+///
+/// **Read across every sitting of the job.** A resumed scan's report holds
+/// each sitting's liveness pass and port phase, and what the job turned away
+/// is what any of its liveness passes asked and none of its port phases
+/// scanned: an address a later sitting found live is not counted, and one
+/// the report as a whole left undecided is not either, since that is the
+/// report's own reading across sittings.
+///
+/// **A liveness pass counts only beside a port phase of the same account.**
+/// A report merged from several documents holds each one's phases, marked
+/// with the document they came from, and a sweep's own document ran no port
+/// phase: what it found silent was never going to be port-scanned, so it was
+/// not turned away from one. A host the report lists was heard from, by one
+/// document or another, and is not silent whatever a pass found.
 pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
-    // Exactly a sweep and the port scan that followed it, which is the one shape
-    // this subtraction means anything in. Two port-scan sittings of a resumed
-    // job, or the phases of several scans folded into one report, are not one
-    // job's before and after, and subtracting them names a number of addresses
-    // nothing turned away.
-    let [liveness, ports] = report.phases() else {
-        return 0;
+    let phases = report.phases();
+    let scanned_by_its_own = |liveness: &ScanPhase| {
+        phases
+            .iter()
+            .any(|ports| ports.kind() == ScanKind::PortScan && ports.origin() == liveness.origin())
     };
-    if liveness.kind() != ScanKind::Discovery || ports.kind() != ScanKind::PortScan {
-        return 0;
-    }
 
     // As sets rather than as counts, so an address both undecided and
     // unroutable in a document that says so is subtracted once.
-    let mut turned_away = ranges(liveness.targets().ranges());
-    turned_away.subtract(&ranges(ports.targets().ranges()));
-    turned_away.subtract(&ranges(&report.undecided()));
-    let mut unreachable = IpSet::new();
-    for phase in report.phases() {
-        for address in phase.unroutable() {
-            unreachable.insert(*address);
+    let mut turned_away = IpSet::new();
+    let mut accounted = IpSet::new();
+    for phase in phases {
+        let into = match phase.kind() {
+            ScanKind::Discovery if scanned_by_its_own(phase) => &mut turned_away,
+            ScanKind::PortScan => &mut accounted,
+            _ => continue,
+        };
+        for range in phase.targets().ranges() {
+            into.insert_range(*range);
         }
     }
-    turned_away.subtract(&unreachable);
+    if turned_away.is_empty() {
+        return 0;
+    }
+
+    for phase in phases {
+        for address in phase.unroutable() {
+            accounted.insert(*address);
+        }
+    }
+    for range in report.undecided() {
+        accounted.insert_range(range);
+    }
+    for host in report.hosts().filter(|host| host.is_alive()) {
+        for address in host.ips() {
+            accounted.insert(*address);
+        }
+    }
+    accounted.canonicalize();
+
+    turned_away.subtract(&accounted);
     turned_away.len()
 }
 
@@ -4302,5 +4333,64 @@ mod tests {
             3,
             "eight asked, one scanned, four never decided: three found silent"
         );
+    }
+
+    /// **A resumed scan counts what every sitting's liveness pass found
+    /// silent.** Its report holds each sitting's two phases, and read as one
+    /// liveness pass and one port scan it names nothing: a job stopped during
+    /// discovery and finished by a resume said nothing of the addresses it
+    /// turned away, where the same scan run once counts them.
+    #[test]
+    fn a_resumed_scan_counts_what_each_sitting_found_silent() {
+        let report = crate::render::test_support::sittings(&[
+            ("192.0.2.0/29", &["192.0.2.4-192.0.2.7"], "192.0.2.1"),
+            ("192.0.2.4-192.0.2.7", &[], ""),
+        ]);
+
+        assert_eq!(undecided(&report), 0);
+        assert_eq!(
+            skipped_as_down(&report),
+            7,
+            "the first sitting found three silent, the second four"
+        );
+    }
+
+    /// An address one sitting found silent and a later one found live and
+    /// scanned was port-scanned, and is not counted as turned away.
+    #[test]
+    fn an_address_a_later_sitting_scanned_is_not_counted_as_silent() {
+        let report = crate::render::test_support::sittings(&[
+            ("192.0.2.0/30", &["192.0.2.2-192.0.2.3"], "192.0.2.1"),
+            ("192.0.2.2-192.0.2.3", &[], "192.0.2.3"),
+        ]);
+
+        assert_eq!(skipped_as_down(&report), 2, "192.0.2.0 and 192.0.2.2");
+    }
+
+    /// **A sweep's silence is not a scan's.** Folded in beside a scan, a
+    /// document holding only a liveness sweep asked about addresses no port
+    /// phase of its own was going to scan, so they were not turned away from
+    /// one; counted, the note would tell a reader to scan on trust ground
+    /// nobody set out to port-scan.
+    #[test]
+    fn a_sweep_merged_beside_a_scan_turns_nothing_away() {
+        use zond_engine::report::PhaseOrigin;
+
+        let mut report = crate::render::test_support::screened("192.0.2.0/30", &[], "192.0.2.1");
+        let mut sweep = crate::render::test_support::sittings(&[("198.51.100.0/29", &[], "")]);
+        let phases: Vec<_> = sweep
+            .phases()
+            .iter()
+            .filter(|phase| phase.kind() == ScanKind::Discovery)
+            .cloned()
+            .map(|mut phase| {
+                phase.attribute(PhaseOrigin::new("0.18.0").with_label("sweep.json"));
+                phase
+            })
+            .collect();
+        sweep = ScanReport::recorded("0.18.0", phases, Vec::new());
+        report.merge(sweep);
+
+        assert_eq!(skipped_as_down(&report), 3, "the scan's own three");
     }
 }

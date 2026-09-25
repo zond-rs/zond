@@ -1566,6 +1566,24 @@ mod tests {
         assert!(!said.contains("without a verdict"), "{said}");
     }
 
+    /// **A resume that finished the job counts what it found silent, as the
+    /// same scan run once does.** Each sitting's liveness pass turned some
+    /// addresses away, and the note is the one place a reader learns why the
+    /// hosts listed are fewer than the range.
+    #[test]
+    fn a_resume_counts_the_addresses_every_sitting_found_silent() {
+        let resumed = crate::render::test_support::sittings(&[
+            ("192.0.2.0/29", &["192.0.2.4-192.0.2.7"], "192.0.2.1"),
+            ("192.0.2.4-192.0.2.7", &[], ""),
+        ]);
+        let said = summarised_recorded(&resumed, true);
+
+        assert!(
+            said.contains("7 addresses silent, not port-scanned (--assume-up)"),
+            "{said}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // What a scan without raw sockets says it did
     // -----------------------------------------------------------------------
