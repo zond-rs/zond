@@ -34,7 +34,7 @@ use zond_engine::cve::Catalogue;
 use zond_engine::export::Redaction;
 use zond_engine::import::report::{ReportFormat, ReportOptions};
 
-use crate::export::Destination;
+use crate::export::ReportFile;
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
 use zond_engine::journal::store::{self, Journal, Retention};
@@ -473,7 +473,7 @@ pub(crate) enum Stopping {
 async fn drive(
     session: ScanSession,
     task: ScanTask,
-    destinations: &[Destination],
+    destinations: &[ReportFile],
     redaction: Redaction,
     stopping: Stopping,
     catalogue: Option<&Catalogue>,
@@ -571,7 +571,7 @@ async fn drive(
 /// twice is a rule that drifts.
 pub(crate) fn deliver(
     report: &ScanReport,
-    destinations: &[Destination],
+    destinations: &[ReportFile],
     redaction: Redaction,
     renderer: &mut dyn Renderer,
 ) -> Result<bool, Error> {

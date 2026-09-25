@@ -211,7 +211,7 @@ fn write_all(
             // piping its records should still be told.
             Ok(()) => tracing::info!("wrote {}", path.display()),
             Err(e) => {
-                tracing::error!("could not write {}: {e}", path.display());
+                crate::export::not_written(path, &e);
                 all_written = false;
             }
         }

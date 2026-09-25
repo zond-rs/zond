@@ -248,6 +248,16 @@ pub(crate) enum Error {
         known: String,
     },
 
+    /// A file a report is to be written to could not be opened, which is found
+    /// before the work that would fill it starts.
+    #[error("{} not writable ({})", path.display(), crate::export::reason(cause))]
+    Unwritable {
+        /// The destination as it was given.
+        path: std::path::PathBuf,
+        /// Why it could not be opened.
+        cause: std::io::Error,
+    },
+
     /// `--output-as` was given something that is not `FORMAT=FILE`.
     #[error("--output-as takes FORMAT=FILE, as in `json=report.out`, not '{written}' ({known})")]
     MalformedOutputAs {
@@ -334,6 +344,7 @@ impl Error {
             | Error::NoSuchJournal { .. }
             | Error::NoSuchPage { .. }
             | Error::UnknownExportFormat { .. }
+            | Error::Unwritable { .. }
             | Error::UnknownReportFormat { .. }
             | Error::UnknownDiffFormat { .. }
             | Error::MalformedOutputAs { .. }

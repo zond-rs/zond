@@ -727,21 +727,26 @@ pub(crate) struct ExportArgs {
 }
 
 impl ExportArgs {
-    /// Every file this run was told to write, with the format each names.
+    /// Every file this run was told to write, with the format each names,
+    /// opened and held until its report is written.
     ///
     /// Here rather than at each command because all four of them asked the same
     /// three-argument question and one of them could have got the order wrong
     /// without anything noticing. Call it before the work starts: see
-    /// [`export`](crate::export) for why a misspelt extension is worth answering
-    /// in the first second rather than the last.
+    /// [`export`](crate::export) for why a misspelt extension or a missing
+    /// directory is worth answering in the first second rather than the last,
+    /// and why a report's file is safer held from then.
     pub(crate) fn destinations(
         &self,
-    ) -> Result<Vec<crate::export::Destination>, crate::error::Error> {
+    ) -> Result<Vec<crate::export::ReportFile>, crate::error::Error> {
         crate::export::Destination::resolve(
             &self.output,
             &self.output_as,
             self.output_all.as_deref(),
-        )
+        )?
+        .into_iter()
+        .map(crate::export::Destination::open)
+        .collect()
     }
 }
 

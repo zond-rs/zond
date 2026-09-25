@@ -49,6 +49,79 @@ pub(crate) fn raise() {
     }
 }
 
+/// Running a test out of descriptors without taking every other test down
+/// with it.
+///
+/// A test that fills this process's descriptor table would take every test
+/// running beside it down too, so it runs its body in a process of its own:
+/// [`in_a_process_of_its_own`](testing::in_a_process_of_its_own) re-runs the
+/// test binary on that one test, and the re-run fills its own table with
+/// [`exhaust`](testing::exhaust).
+#[cfg(all(test, unix))]
+pub(crate) mod testing {
+    use rustix::process::{Resource, getrlimit, setrlimit};
+
+    /// The variable a re-run finds itself under, naming the test it is.
+    const OWN_PROCESS: &str = "ZOND_TEST_IN_OWN_PROCESS";
+
+    /// How many descriptors past those already open [`exhaust`] lowers the
+    /// limit to, so filling the table costs a few dozen opens rather than as
+    /// many as the shell allows.
+    const HEADROOM: u64 = 32;
+
+    /// Whether this is the process the test `name`, in the module `module`
+    /// (its `module_path!()`), should run its body in.
+    ///
+    /// The first call re-runs this binary on that one test and fails if the
+    /// re-run does, and the re-run is the call that answers `true`.
+    pub(crate) fn in_a_process_of_its_own(module: &str, name: &str) -> bool {
+        if std::env::var(OWN_PROCESS).is_ok_and(|running| running == name) {
+            return true;
+        }
+        let path = format!(
+            "{}::{name}",
+            module.split_once("::").expect("a crate path").1
+        );
+        let run = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+            .args([path.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(OWN_PROCESS, name)
+            .output()
+            .expect("re-running the test in a process of its own");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success(),
+            "{name} failed in its own process:\n{stdout}{}",
+            String::from_utf8_lossy(&run.stderr),
+        );
+        // A filter that matched nothing exits cleanly too.
+        assert!(
+            stdout.contains("1 passed"),
+            "{name} did not run in its own process:\n{stdout}"
+        );
+        false
+    }
+
+    /// Opens files until this process may open no more, so the next file or
+    /// socket anything asks for is refused. The files are handed back, and
+    /// dropping them is what frees the table.
+    pub(crate) fn exhaust() -> Vec<std::fs::File> {
+        let mut limit = getrlimit(Resource::Nofile);
+        let open = std::fs::read_dir("/dev/fd").map_or(0, Iterator::count);
+        limit.current = Some(open as u64 + HEADROOM);
+        setrlimit(Resource::Nofile, limit).expect("lowering the descriptor limit");
+
+        let refused = rustix::io::Errno::MFILE.raw_os_error();
+        let mut held = Vec::new();
+        loop {
+            match std::fs::File::open("/dev/null") {
+                Ok(file) => held.push(file),
+                Err(e) if e.raw_os_error() == Some(refused) => return held,
+                Err(e) => panic!("filling the descriptor table: {e}"),
+            }
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

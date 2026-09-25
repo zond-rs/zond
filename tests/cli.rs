@@ -1375,6 +1375,41 @@ fn a_written_file_is_named_before_the_count() {
     );
 }
 
+/// A report file that cannot be opened is refused before anything is sent,
+/// naming the file, rather than found out once the scan it was for is over.
+#[test]
+fn a_report_file_that_cannot_be_opened_is_refused_before_the_scan() {
+    let home = config_home("unwritable-report");
+
+    let out = home.join("missing").join("scan.json");
+    let path = out.to_str().expect("a printable path");
+    let scan = zond_in(
+        &home,
+        &[
+            "-q",
+            "s",
+            "::1",
+            "-n",
+            "-p",
+            "1",
+            "--no-journal",
+            "-o",
+            path,
+        ],
+    );
+
+    assert_eq!(status(&scan), 2, "{}", stderr(&scan));
+    assert!(
+        stderr(&scan).contains("scan.json not writable"),
+        "{}",
+        stderr(&scan)
+    );
+    assert!(
+        stdout(&scan).is_empty(),
+        "nothing was scanned, so nothing should be reported"
+    );
+}
+
 /// A report written to a file is read back out of it, whichever command wrote
 /// it. This is the loop that was open: everything could write one and nothing
 /// could open one.
