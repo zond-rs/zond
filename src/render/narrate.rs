@@ -619,44 +619,63 @@ impl Narrator {
     /// and they are counted apart because only one of them costs the scan
     /// ground. A strategy that fell short left hosts or ports without a
     /// verdict, whether something on this machine or this network broke or a
-    /// pinned source port was still busy. A detection that did not finish is
-    /// almost always one its own declared budget stopped against a target
-    /// that cost more than it allowed: it ran, and was cut short. The engine
-    /// has already said which detection, which budget and how far it got, a
-    /// line each as it happened, so this counts them rather than repeating
-    /// them. Counted as strategies that fell short, they would send a reader
-    /// looking for a fault where the detections ran and the target cost more
-    /// than their budgets allowed.
+    /// pinned source port was still busy. The passes over ports already found
+    /// ran and could not finish every port: fingerprinting that could not
+    /// reach a port leaves its state standing and only what answers on it
+    /// unnamed, and a detection is almost always one its own declared budget
+    /// stopped against a target that cost more than it allowed. The engine has
+    /// already said which port or detection and why, a line each as it
+    /// happened, so this counts them rather than repeating them. Counted as
+    /// strategies that fell short, they would send a reader looking for a
+    /// fault where the passes ran and the targets cost more than they could
+    /// spend.
     ///
-    /// Said as a note when detections are all there is, since no ground was
-    /// lost, and as a warning when a strategy fell short.
+    /// Fingerprinting is said without a count, since the engine files a group
+    /// of ports that fell short for one reason as one entry, and a count of
+    /// entries is not a count of anything a reader knows.
+    ///
+    /// Said as a note when unfinished passes are all there is, since no
+    /// ground was lost, and as a warning when a strategy fell short.
     fn shortfall(&mut self, report: &ScanReport) -> io::Result<()> {
-        let (detections, strategies): (Vec<_>, Vec<_>) = report
-            .failures()
-            .partition(|failure| failure.scanner() == ScannerKind::Detection);
-        let strategies = strategies.len();
-        let detections = detections.len();
-
-        // Written out rather than passed through `plural`, which knows the four
-        // words a scan counts and not this one.
-        let fell_short = format!(
-            "{strategies} {} fell short",
-            if strategies == 1 {
-                "strategy"
-            } else {
-                "strategies"
+        let mut strategies = 0_usize;
+        let mut fingerprinting = false;
+        let mut detections = 0_usize;
+        for failure in report.failures() {
+            match failure.scanner() {
+                ScannerKind::Service => fingerprinting = true,
+                ScannerKind::Detection => detections += 1,
+                _ => strategies += 1,
             }
-        );
-        let unfinished = format!(
-            "{detections} {} did not finish",
-            plural(detections as u128, "detection")
-        );
-        let what = match (strategies, detections) {
-            (_, 0) => fell_short,
-            (0, _) => unfinished,
-            _ => format!("{fell_short}, {unfinished}"),
-        };
-        let line = format!("{what}; coverage incomplete");
+        }
+
+        let mut unfinished = Vec::new();
+        if fingerprinting {
+            unfinished.push(String::from("fingerprinting"));
+        }
+        if detections > 0 {
+            unfinished.push(format!(
+                "{detections} {}",
+                plural(detections as u128, "detection")
+            ));
+        }
+
+        let mut said = Vec::new();
+        if strategies > 0 {
+            // Written out rather than passed through `plural`, which knows the
+            // four words a scan counts and not this one.
+            said.push(format!(
+                "{strategies} {} fell short",
+                if strategies == 1 {
+                    "strategy"
+                } else {
+                    "strategies"
+                }
+            ));
+        }
+        if !unfinished.is_empty() {
+            said.push(format!("{} did not finish", unfinished.join(" and ")));
+        }
+        let line = format!("{}; coverage incomplete", said.join(", "));
 
         if strategies == 0 {
             self.note(&line)
@@ -1933,17 +1952,17 @@ mod tests {
     }
 
     /// Detections that ran and were cut short are counted as what they are.
-    /// Nothing about them failed to run, and a line saying strategies did not
-    /// run sends a reader looking for a fault on their machine.
+    /// No ground was lost to them, and a line saying strategies fell short
+    /// sends a reader looking for a fault on their machine.
     #[test]
-    fn detections_cut_short_are_not_counted_as_strategies_that_did_not_run() {
+    fn detections_cut_short_are_not_counted_as_strategies_that_fell_short() {
         let said = summarised(&failing(vec![cut_short(80), cut_short(443)]));
 
         assert!(
             said.contains("2 detections did not finish; coverage incomplete"),
             "{said}"
         );
-        assert!(!said.contains("did not run"), "{said}");
+        assert!(!said.contains("strateg"), "{said}");
     }
 
     /// A strategy that fell short is still counted, as a warning, beside the
@@ -1958,6 +1977,35 @@ mod tests {
             said.contains(
                 "\u{d7} 1 strategy fell short, 1 detection did not finish; coverage incomplete"
             ),
+            "{said}"
+        );
+    }
+
+    /// A port the service pass could not reach, as the engine files one.
+    fn unfingerprinted(port: u16) -> zond_engine::report::ScannerFailure {
+        zond_engine::report::ScannerFailure::new(
+            ScannerKind::Service,
+            format!("192.0.2.1:{port} could not be fingerprinted: no answer within 1.2s"),
+        )
+    }
+
+    /// A service pass that could not reach a port ran, and the port's state
+    /// stands: only what answers on it went unnamed, and the engine has named
+    /// the port already. Counted as a strategy that fell short, it would send
+    /// a reader looking for a fault on their machine, so it is said as
+    /// fingerprinting that did not finish, a note rather than a warning.
+    #[test]
+    fn a_service_pass_that_could_not_reach_a_port_is_fingerprinting_that_did_not_finish() {
+        let said = summarised(&failing(vec![unfingerprinted(80), unfingerprinted(443)]));
+        assert!(
+            said.contains("\u{2501} fingerprinting did not finish; coverage incomplete"),
+            "{said}"
+        );
+        assert!(!said.contains("strateg"), "{said}");
+
+        let said = summarised(&failing(vec![unfingerprinted(80), cut_short(443)]));
+        assert!(
+            said.contains("fingerprinting and 1 detection did not finish; coverage incomplete"),
             "{said}"
         );
     }
