@@ -332,8 +332,8 @@ impl Narrator {
                 .get(&PortState::Unasked)
                 .copied()
                 .unwrap_or(0);
-            // With the ports of the addresses asked on every port and heard
-            // from on none, which are off the host list the summary counts.
+            // With the ports asked of the addresses heard from on none, which
+            // are off the host list the summary counts.
             let probed =
                 summary.ports_total.saturating_sub(unasked) as u128 + field::silent_probes(report);
             let ports = if probed > 0 {
@@ -1066,6 +1066,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -1114,6 +1115,7 @@ mod tests {
             silent: phase.silent().to_vec(),
             stopped: phase.stopped(),
             unreached: phase.unreached(),
+            unheard_probes: phase.unheard_probes(),
             probes: vec![attempts],
             origin: phase.origin().cloned(),
         });
@@ -1235,6 +1237,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -1371,6 +1374,7 @@ mod tests {
             silent: phase.silent().to_vec(),
             stopped: Some(StopReason::TimedOut),
             unreached: 6_600,
+            unheard_probes: phase.unheard_probes(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });
@@ -1479,6 +1483,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -1510,9 +1515,34 @@ mod tests {
         );
     }
 
+    /// **A scan that gave different addresses different ports counts the
+    /// probes its silent ones were asked.** The scope records the ports'
+    /// union and no address's own set, so the count comes from the phase,
+    /// which kept it as it dropped their records; without it the line read
+    /// "no ports probed" beside a note saying they were asked on every port.
+    #[test]
+    fn a_scan_of_differing_port_sets_counts_what_its_silent_addresses_were_asked() {
+        let report = crate::render::test_support::standing_in_over(
+            &[("192.0.2.0/30", "1,2"), ("198.51.100.0/30", "3")],
+            &["192.0.2.0-192.0.2.3", "198.51.100.0-198.51.100.3"],
+            12,
+        );
+        let said = summarised(&report);
+
+        assert!(
+            said.contains("8 addresses silent on every port (--assume-up lists them)"),
+            "{said}"
+        );
+        assert!(said.contains("0 open ports of 12 probed"), "{said}");
+    }
+
     /// A scan whose port probes stood in for its liveness pass says how many
     /// addresses answered none of them, since the engine lists those as no
     /// host, and names the flag that lists them.
+    ///
+    /// Its record counts no probes at them, as one written before the count
+    /// was kept reads back, and one port set was walked for every address, so
+    /// the count is derived from the two.
     #[test]
     fn addresses_silent_on_every_port_are_counted_with_the_flag_that_lists_them() {
         let report =
@@ -1844,6 +1874,7 @@ mod tests {
             silent: phase.silent().to_vec(),
             stopped: phase.stopped(),
             unreached: phase.unreached(),
+            unheard_probes: phase.unheard_probes(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });
@@ -1878,6 +1909,7 @@ mod tests {
             silent: phase.silent().to_vec(),
             stopped: phase.stopped(),
             unreached: phase.unreached(),
+            unheard_probes: phase.unheard_probes(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });

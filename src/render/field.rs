@@ -2518,14 +2518,21 @@ pub(crate) fn silent(report: &ScanReport) -> u128 {
     silent.len()
 }
 
-/// How many port probes went to the addresses [`silent`] counts.
+/// How many port probes went to the addresses [`silent`] counts, and to the
+/// ones a port phase standing in for a liveness pass left undecided.
 ///
 /// Those addresses are off the host list, so their ports are not among the
 /// ones a summary counts, and a line reading "no ports probed" beside a note
-/// that says they were asked on every port would contradict it. Exact where
-/// the phase walked one port set for every address, which is a scan of a
-/// range; a phase whose addresses were given differing sets cannot say what
-/// any one of them was asked, and adds nothing rather than a guess.
+/// that says they were asked on every port would contradict it.
+///
+/// The phase's own count where it kept one, which is exact whatever ports
+/// each address was given; see
+/// [`ScanPhase::unheard_probes`](zond_engine::report::ScanPhase::unheard_probes).
+/// A record written before the count was kept says nothing, and there it is
+/// derived where the phase walked one port set for every address, which is a
+/// scan of a range: its silent addresses were each asked that set. One whose
+/// addresses were given differing sets cannot say what any one of them was
+/// asked, and adds nothing rather than a guess.
 pub(crate) fn silent_probes(report: &ScanReport) -> u128 {
     let mut listed = IpSet::new();
     for host in report.hosts() {
@@ -2538,13 +2545,18 @@ pub(crate) fn silent_probes(report: &ScanReport) -> u128 {
     report
         .phases()
         .iter()
-        .filter_map(|phase| {
+        .map(|phase| {
+            // A phase that asked a silent address anything counted it, so a
+            // count of none beside a silent list is a record that kept none.
+            if phase.unheard_probes() > 0 {
+                return phase.unheard_probes();
+            }
             let zond_engine::report::PortScope::Every(ports) = phase.targets().ports() else {
-                return None;
+                return 0;
             };
             let mut silent = ranges(phase.silent());
             silent.subtract(&listed);
-            Some(silent.len() * ports.len() as u128)
+            silent.len() * ports.len() as u128
         })
         .sum()
 }
@@ -3659,6 +3671,7 @@ mod tests {
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: vec![probes],
             origin: None,
         });

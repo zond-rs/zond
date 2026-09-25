@@ -160,6 +160,7 @@ pub(crate) fn scoped_at(
         silent: Vec::new(),
         stopped: None,
         unreached: 0,
+        unheard_probes: 0,
         probes: Vec::new(),
         origin: None,
     });
@@ -170,7 +171,21 @@ pub(crate) fn scoped_at(
 /// A port scan that ran with no liveness pass, its port probes standing in for
 /// one: a single port phase over `probed` on two ports, naming `silent` the
 /// addresses it asked on every port and heard nothing from.
+///
+/// Counting no probes at them, as a record written before the count was kept
+/// reads back.
 pub(crate) fn standing_in(probed: &str, silent: &[&str]) -> zond_engine::ScanReport {
+    standing_in_over(&[(probed, "1,2")], silent, 0)
+}
+
+/// A port phase standing in for a liveness pass over `units`, each a range and
+/// the ports it was given, naming `silent` the addresses it heard nothing from
+/// and counting `unheard_probes` the ports it asked them.
+pub(crate) fn standing_in_over(
+    units: &[(&str, &str)],
+    silent: &[&str],
+    unheard_probes: u128,
+) -> zond_engine::ScanReport {
     use std::time::Duration;
 
     use zond_engine::ZondConfig;
@@ -182,12 +197,13 @@ pub(crate) fn standing_in(probed: &str, silent: &[&str]) -> zond_engine::ScanRep
     };
     use zond_engine::system::privilege::Privilege;
 
-    // Two ports on every address, so the scope says what each was asked.
     let mut targets = zond_engine::model::target::TargetMap::new();
-    targets.add_unit(zond_engine::model::target::TargetSet::new(
-        to_set(&[probed], None, None).expect("a parseable range"),
-        zond_engine::model::port::PortSet::try_from("1,2").expect("ports"),
-    ));
+    for (range, ports) in units {
+        targets.add_unit(zond_engine::model::target::TargetSet::new(
+            to_set(&[range], None, None).expect("a parseable range"),
+            zond_engine::model::port::PortSet::try_from(*ports).expect("ports"),
+        ));
+    }
     let silent = if silent.is_empty() {
         Vec::new()
     } else {
@@ -213,6 +229,7 @@ pub(crate) fn standing_in(probed: &str, silent: &[&str]) -> zond_engine::ScanRep
         silent,
         stopped: None,
         unreached: 0,
+        unheard_probes,
         probes: Vec::new(),
         origin: None,
     });
@@ -279,6 +296,7 @@ pub(crate) fn sittings(sittings: &[(&str, &[&str], &str)]) -> zond_engine::ScanR
             silent: Vec::new(),
             stopped: None,
             unreached: 0,
+            unheard_probes: 0,
             probes: Vec::new(),
             origin: None,
         })
