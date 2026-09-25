@@ -127,11 +127,22 @@ impl fmt::Display for Warning {
 #[non_exhaustive]
 pub(crate) enum SettingsError {
     /// The file exists and could not be read.
-    #[error("{path}: {source}")]
-    Io {
+    #[error("{}", unreadable(path, source))]
+    Unreadable {
         /// The file.
         path: PathBuf,
         /// Why it could not be read.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The file, or the directory it belongs in, was missing and could not be
+    /// created.
+    #[error("{} not created ({})", path.display(), crate::export::reason(source))]
+    Uncreatable {
+        /// What was being created.
+        path: PathBuf,
+        /// Why it could not be.
         #[source]
         source: std::io::Error,
     },
@@ -157,8 +168,29 @@ pub(crate) enum SettingsError {
     },
 
     /// The engine's own settings could not be resolved.
-    #[error("{0}")]
+    ///
+    /// A file the engine could not read is said as this crate's own is, since
+    /// the two sit side by side and a person reading either wants the same
+    /// line; everything else is in the engine's words.
+    #[error("{}", engine_failure(.0))]
     Engine(#[from] engine_settings::SettingsError),
+}
+
+/// The engine's settings failure as [`SettingsError`] says its own.
+fn engine_failure(error: &engine_settings::SettingsError) -> String {
+    match error {
+        engine_settings::SettingsError::Io { path, source } => unreadable(path, source),
+        other => other.to_string(),
+    }
+}
+
+/// A settings file that could not be read, in the one line a console gives it.
+fn unreadable(path: &Path, source: &std::io::Error) -> String {
+    format!(
+        "{} not readable ({})",
+        path.display(),
+        crate::export::reason(source)
+    )
 }
 
 /// What this crate's settings file said.
@@ -464,7 +496,7 @@ pub(crate) fn resolve() -> Result<(Settings, Vec<Warning>), SettingsError> {
             continue;
         }
 
-        let text = std::fs::read_to_string(&path).map_err(|source| SettingsError::Io {
+        let text = std::fs::read_to_string(&path).map_err(|source| SettingsError::Unreadable {
             path: path.clone(),
             source,
         })?;
@@ -599,7 +631,7 @@ pub(crate) fn provision(path: &Path, template: &str) -> Result<Provisioned, Sett
         Ok(mut file) => {
             use std::io::Write;
             file.write_all(template.as_bytes())
-                .map_err(|source| SettingsError::Io {
+                .map_err(|source| SettingsError::Uncreatable {
                     path: path.to_path_buf(),
                     source,
                 })?;
@@ -612,7 +644,7 @@ pub(crate) fn provision(path: &Path, template: &str) -> Result<Provisioned, Sett
             Ok(Provisioned::Created)
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(Provisioned::Existed),
-        Err(source) => Err(SettingsError::Io {
+        Err(source) => Err(SettingsError::Uncreatable {
             path: path.to_path_buf(),
             source,
         }),
@@ -630,10 +662,12 @@ fn create_directory(path: &Path) -> Result<(), SettingsError> {
         builder.mode(0o700);
     }
 
-    builder.create(path).map_err(|source| SettingsError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    builder
+        .create(path)
+        .map_err(|source| SettingsError::Uncreatable {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// Gives something just created to the user who invoked `sudo`.
@@ -678,6 +712,40 @@ mod tests {
 
     fn parse_text(text: &str) -> Result<(Settings, Vec<Warning>), SettingsError> {
         parse(text, Path::new("cli.toml"))
+    }
+
+    /// A file that could not be read or created is one console line: the path,
+    /// what did not happen to it, and the system's words for why, without the
+    /// error number a person reading it has no use for. The engine's file is
+    /// said the same way as this crate's.
+    #[test]
+    fn a_settings_file_that_could_not_be_touched_is_said_in_one_short_line() {
+        let path = PathBuf::from("/home/someone/.config/zond/engine.toml");
+        let full = || std::io::Error::from_raw_os_error(24);
+
+        let ours = SettingsError::Unreadable {
+            path: path.clone(),
+            source: full(),
+        };
+        let engines = SettingsError::Engine(engine_settings::SettingsError::Io {
+            path: path.clone(),
+            source: full(),
+        });
+        for error in [ours, engines] {
+            assert_eq!(
+                error.to_string(),
+                "/home/someone/.config/zond/engine.toml not readable (too many open files)"
+            );
+        }
+
+        let created = SettingsError::Uncreatable {
+            path,
+            source: std::io::Error::from_raw_os_error(13),
+        };
+        assert_eq!(
+            created.to_string(),
+            "/home/someone/.config/zond/engine.toml not created (permission denied)"
+        );
     }
 
     /// The promise [`provision`] makes: a file appearing changes nothing about

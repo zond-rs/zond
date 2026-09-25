@@ -257,6 +257,6 @@ fn report_provisioning(provisioned: settings::Provisioning) {
         tracing::info!("created {}", path.display());
     }
     for problem in provisioned.problems {
-        tracing::warn!(verbosity = 1, "could not create settings file: {problem}");
+        tracing::warn!(verbosity = 1, "{problem}");
     }
 }
