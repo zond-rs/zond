@@ -2017,7 +2017,13 @@ impl EngineArgs {
         let Some(name) = &self.send_interface else {
             return;
         };
-        if let Some(family) = unpinned_family(&config.send_source, targets) {
+        let held: Vec<zond_engine::system::interface::LinkAddress> =
+            zond_engine::system::interface::interfaces()
+                .into_iter()
+                .filter(|link| link.is_up() && !link.is_loopback())
+                .flat_map(|link| link.addresses().to_vec())
+                .collect();
+        if let Some(family) = unpinned_family(&config.send_source, &held, targets) {
             tracing::warn!(
                 "{family} targets not pinned: {name} has no {family} (--send-interface)"
             );
@@ -2033,10 +2039,13 @@ impl EngineArgs {
 /// the flag was given to avoid. Asked only of the run's own targets, since an
 /// interface without IPv6 is the common case and an IPv4 scan loses nothing
 /// by it. Loopback and link-local targets, and an IPv4 address written inside
-/// IPv6, are no interface's to pin and are passed over. Nothing forced is
-/// nothing to fall short of.
+/// IPv6, are no interface's to pin and are passed over. So is a target inside
+/// a prefix `held` by one of this host's links: that link is its one route,
+/// and the engine sends it there whatever is forced. Nothing forced is nothing
+/// to fall short of.
 fn unpinned_family(
     forced: &[std::net::IpAddr],
+    held: &[zond_engine::system::interface::LinkAddress],
     targets: impl IntoIterator<Item = std::net::IpAddr>,
 ) -> Option<&'static str> {
     use std::net::IpAddr;
@@ -2048,6 +2057,7 @@ fn unpinned_family(
     let (pin_v4, pin_v6) = (pinned(true), pinned(false));
     targets
         .into_iter()
+        .filter(|ip| !held.iter().any(|prefix| prefix.contains(ip)))
         .find(|ip| match ip {
             IpAddr::V4(v4) => !pin_v4 && !v4.is_loopback() && !v4.is_link_local(),
             IpAddr::V6(v6) => {
@@ -2281,27 +2291,60 @@ mod tests {
         let lan_v4 = [ip("192.0.2.10")];
 
         assert_eq!(
-            unpinned_family(&lan_v4, [ip("198.51.100.1"), ip("2001:db8::1")]),
+            unpinned_family(&lan_v4, &[], [ip("198.51.100.1"), ip("2001:db8::1")]),
             Some("IPv6")
         );
-        assert_eq!(unpinned_family(&lan_v4, [ip("198.51.100.1")]), None);
+        assert_eq!(unpinned_family(&lan_v4, &[], [ip("198.51.100.1")]), None);
         assert_eq!(
-            unpinned_family(&lan_v4, [ip("::1"), ip("fe80::1"), ip("::ffff:192.0.2.1")]),
+            unpinned_family(
+                &lan_v4,
+                &[],
+                [ip("::1"), ip("fe80::1"), ip("::ffff:192.0.2.1")]
+            ),
             None,
             "no interface's to pin"
         );
         assert_eq!(
-            unpinned_family(&[ip("2001:db8::10")], [ip("198.51.100.1")]),
+            unpinned_family(&[ip("2001:db8::10")], &[], [ip("198.51.100.1")]),
             Some("IPv4")
         );
         assert_eq!(
-            unpinned_family(&[ip("192.0.2.10"), ip("2001:db8::10")], [ip("2001:db8::1")]),
+            unpinned_family(
+                &[ip("192.0.2.10"), ip("2001:db8::10")],
+                &[],
+                [ip("2001:db8::1")]
+            ),
             None
         );
         assert_eq!(
-            unpinned_family(&[], [ip("2001:db8::1")]),
+            unpinned_family(&[], &[], [ip("2001:db8::1")]),
             None,
             "nothing forced"
+        );
+    }
+
+    /// A target inside a prefix one of this host's links holds is sent by that
+    /// link whatever is forced, so it goes nowhere near the routing table the
+    /// warning is about. An IPv6 neighbour on the LAN, scanned with the flag
+    /// naming an interface that holds only IPv4, is told nothing; a routed
+    /// IPv6 target beside it still is.
+    #[test]
+    fn an_on_link_target_is_not_warned_about() {
+        use zond_engine::system::interface::LinkAddress;
+
+        let ip = |text: &str| text.parse::<std::net::IpAddr>().expect("a literal");
+        let lan_v4 = [ip("192.0.2.10")];
+        let held = [LinkAddress::new(ip("2001:db8:1::10"), 64)];
+
+        assert_eq!(
+            unpinned_family(&lan_v4, &held, [ip("2001:db8:1::20")]),
+            None,
+            "on-link"
+        );
+        assert_eq!(
+            unpinned_family(&lan_v4, &held, [ip("2001:db8:1::20"), ip("2001:db8:2::1")]),
+            Some("IPv6"),
+            "routed"
         );
     }
 
