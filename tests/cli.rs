@@ -178,6 +178,42 @@ fn a_malformed_target_is_a_usage_error() {
     assert_eq!(status(&run), 2, "{}", stderr(&run));
 }
 
+/// A process started with almost no descriptors cannot build the runtime every
+/// command runs on, and has to say so in a line and a status a script can act
+/// on rather than panic with exit 101.
+///
+/// Each limit is a hard one, set by the shell before the binary starts, so the
+/// binary's own raise cannot lift it. Which of them leave room for a runtime
+/// differs by platform, so every one is held to not panicking, and the lowest,
+/// where nothing can be built anywhere, to the short error itself.
+#[cfg(unix)]
+#[test]
+fn a_process_too_short_of_descriptors_to_start_says_so_without_panicking() {
+    let directory = config_home("no-descriptors");
+    for limit in 4..=8 {
+        let run = Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!("ulimit -n {limit} && exec \"$0\" --pipe journal"),
+                env!("CARGO_BIN_EXE_zond"),
+            ])
+            .env("XDG_CONFIG_HOME", &directory)
+            .env("XDG_STATE_HOME", &directory)
+            .output()
+            .expect("the shell should run");
+        let said = stderr(&run);
+        assert!(
+            !said.contains("panicked") && run.status.code() != Some(101),
+            "at a limit of {limit} the binary panicked:\n{said}"
+        );
+        if limit == 4 {
+            assert_eq!(status(&run), 1, "{said}");
+            assert!(said.starts_with("error: could not start ("), "{said}");
+            assert_eq!(said.lines().count(), 1, "{said}");
+        }
+    }
+}
+
 /// Refused by the front end: how long a person will wait is not a question the
 /// engine can answer.
 #[test]

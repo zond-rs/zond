@@ -58,13 +58,13 @@ use crate::exit::Outcome;
 use crate::render::style::{Palette, Style};
 use crate::settings::EntryLimit;
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     // Before anything is written: a console that is going to be drawn on has to
     // be told to interpret what is drawn.
     render::terminal::prepare();
 
-    // Before any scan, which sizes itself from the limit it finds.
+    // Before any scan, which sizes itself from the limit it finds, and before
+    // the runtime, which takes descriptors of its own.
     descriptors::raise();
 
     // Nmap's output spellings first: `-oX f` cannot be expressed as an argument,
@@ -81,7 +81,8 @@ async fn main() -> ExitCode {
     // not come through the code below.
     let cli = Cli::parse_from(arguments);
 
-    match run(cli).await {
+    let outcome = runtime().and_then(|runtime| runtime.block_on(run(cli)));
+    match outcome {
         Ok(outcome) => outcome.code(),
         Err(error) => {
             error.report();
@@ -89,6 +90,33 @@ async fn main() -> ExitCode {
         }
     }
     .into()
+}
+
+/// Builds the runtime every command runs on.
+///
+/// Built here rather than by an attribute on `main`, because a process started
+/// with almost no descriptors cannot build one, and that has to reach the
+/// shell as an error and a status rather than a panic. Tokio returns most of
+/// the ways a build fails, but panics on one: the socket pair it opens to hear
+/// signals. That panic is caught, with the default hook set aside so its
+/// message does not reach the console, and stands for the same error.
+fn runtime() -> Result<tokio::runtime::Runtime, Error> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let built = std::panic::catch_unwind(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+    });
+    std::panic::set_hook(hook);
+
+    match built {
+        Ok(Ok(runtime)) => Ok(runtime),
+        Ok(Err(cause)) => Err(Error::Runtime(cause)),
+        Err(_) => Err(Error::Runtime(std::io::Error::other(
+            "no socket pair for signals",
+        ))),
+    }
 }
 
 /// Runs a parsed command line to completion.

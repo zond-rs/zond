@@ -56,6 +56,12 @@ pub(crate) enum Error {
     #[error("{0}")]
     Io(#[from] std::io::Error),
 
+    /// The runtime every command runs on could not be built, before anything
+    /// was read or sent. The process was started with too few descriptors, or
+    /// threads, to hold one.
+    #[error("could not start ({})", crate::export::reason(.0))]
+    Runtime(std::io::Error),
+
     /// A settings file could not be read, parsed, or used.
     #[error("{0}")]
     Settings(#[from] crate::settings::SettingsError),
@@ -375,6 +381,7 @@ impl Error {
             | Error::Scan(_)
             | Error::Journal(_)
             | Error::NoJournalDirectory
+            | Error::Runtime(_)
             | Error::MalformedTarget { .. } => Code::Failure,
             Error::Io(e) => {
                 if e.kind() == ErrorKind::BrokenPipe {
