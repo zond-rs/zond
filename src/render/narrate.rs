@@ -430,9 +430,12 @@ impl Narrator {
         // an interruption, because nobody stopped this run: it ended where it
         // was told to.
         if self.budget_spent {
+            // This sitting's budget, whose phases a resumed job's report holds
+            // last: an earlier sitting's may have been another.
             let budget = report
                 .phases()
                 .iter()
+                .rev()
                 .find_map(|phase| phase.settings().scan_timeout);
             self.note(&match budget {
                 Some(budget) => format!(
@@ -1534,6 +1537,67 @@ mod tests {
         assert!(
             !summarised(&report).contains("budget"),
             "only when it ran out"
+        );
+    }
+
+    /// **A resumed job stopped by its budget names this sitting's budget.** A
+    /// job's report holds every sitting's phases, earliest first, and a job
+    /// first run with a one-second budget and resumed with a longer one named
+    /// the second's stop by the first's budget.
+    #[test]
+    fn a_resumed_job_its_budget_stopped_names_this_sittings_budget() {
+        use zond_engine::ZondConfig;
+        use zond_engine::model::exclusion::Exclusions;
+        use zond_engine::report::{PhaseParts, ScanKind, ScanPhase, ScanSettings, TargetScope};
+
+        let sitting = |budget: u64| {
+            let mut cfg = ZondConfig::default();
+            cfg.scan_timeout = Some(std::time::Duration::from_secs(budget));
+            let mut targets = zond_engine::model::parse::ip::to_set(&["192.0.2.1"], None, None)
+                .expect("a parseable address");
+            ScanPhase::from_parts(PhaseParts {
+                attachments: Vec::new(),
+                kind: ScanKind::PortScan,
+                started_at: crate::render::test_support::recorded_at(),
+                elapsed: std::time::Duration::from_secs(budget),
+                privilege: Some(zond_engine::system::privilege::Privilege::Raw),
+                targets: TargetScope::from_ip_set(&mut targets, &Exclusions::none()),
+                settings: ScanSettings::from(&cfg),
+                failures: Vec::new(),
+                refusals: Vec::new(),
+                unroutable: Vec::new(),
+                timed_out: Vec::new(),
+                icmp_rate_limited: Vec::new(),
+                reached_by_connect: Vec::new(),
+                undecided: Vec::new(),
+                liveness_skipped: None,
+                silent: Vec::new(),
+                stopped: Some(zond_engine::report::StopReason::TimedOut),
+                unreached: 0,
+                unheard_probes: 0,
+                probes: Vec::new(),
+                origin: None,
+            })
+        };
+        let report = ScanReport::recorded(
+            "test",
+            vec![sitting(1), sitting(2)],
+            vec![crate::render::test_support::host(1)],
+        );
+
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::default(),
+            Style::bare(),
+        );
+        narrator.budget_spent();
+        narrator.summary(&report).expect("a capture never fails");
+        let said = capture.text();
+
+        assert!(
+            said.contains("stopped: scan budget spent (--scan-timeout 2s)"),
+            "{said}"
         );
     }
 
