@@ -616,18 +616,20 @@ impl Narrator {
     /// The line closing a run that covered less than it was asked to.
     ///
     /// The engine files two different things as work that did not complete,
-    /// and they are counted apart because only one of them is a fault. A
-    /// strategy that did not run is something broken on this machine or this
-    /// network. A detection that did not finish is almost always one its own
-    /// declared budget stopped against a target that cost more than it
-    /// allowed: it ran, and was cut short. The engine has already said which
-    /// detection, which budget and how far it got, a line each as it happened,
-    /// so this counts them rather than repeating them. Counted as strategies
-    /// that did not run, they would send a reader looking for a fault where
-    /// the detections ran and the target cost more than their budgets allowed.
+    /// and they are counted apart because only one of them costs the scan
+    /// ground. A strategy that fell short left hosts or ports without a
+    /// verdict, whether something on this machine or this network broke or a
+    /// pinned source port was still busy. A detection that did not finish is
+    /// almost always one its own declared budget stopped against a target
+    /// that cost more than it allowed: it ran, and was cut short. The engine
+    /// has already said which detection, which budget and how far it got, a
+    /// line each as it happened, so this counts them rather than repeating
+    /// them. Counted as strategies that fell short, they would send a reader
+    /// looking for a fault where the detections ran and the target cost more
+    /// than their budgets allowed.
     ///
-    /// Said as a note when detections are all there is, since nothing failed,
-    /// and as a warning when a strategy did not run.
+    /// Said as a note when detections are all there is, since no ground was
+    /// lost, and as a warning when a strategy fell short.
     fn shortfall(&mut self, report: &ScanReport) -> io::Result<()> {
         let (detections, strategies): (Vec<_>, Vec<_>) = report
             .failures()
@@ -637,8 +639,8 @@ impl Narrator {
 
         // Written out rather than passed through `plural`, which knows the four
         // words a scan counts and not this one.
-        let not_run = format!(
-            "{strategies} {} did not run",
+        let fell_short = format!(
+            "{strategies} {} fell short",
             if strategies == 1 {
                 "strategy"
             } else {
@@ -650,9 +652,9 @@ impl Narrator {
             plural(detections as u128, "detection")
         );
         let what = match (strategies, detections) {
-            (_, 0) => not_run,
+            (_, 0) => fell_short,
             (0, _) => unfinished,
-            _ => format!("{not_run}, {unfinished}"),
+            _ => format!("{fell_short}, {unfinished}"),
         };
         let line = format!("{what}; coverage incomplete");
 
@@ -1944,17 +1946,17 @@ mod tests {
         assert!(!said.contains("did not run"), "{said}");
     }
 
-    /// A strategy that did not run is still said to have not run, beside the
+    /// A strategy that fell short is still counted, as a warning, beside the
     /// detections that did not finish.
     #[test]
-    fn a_strategy_that_did_not_run_is_counted_apart_from_detections_that_did_not_finish() {
+    fn a_strategy_that_fell_short_is_counted_apart_from_detections_that_did_not_finish() {
         let broken =
             zond_engine::report::ScannerFailure::new(ScannerKind::Local, "raw socket unavailable");
         let said = summarised(&failing(vec![broken, cut_short(443)]));
 
         assert!(
             said.contains(
-                "1 strategy did not run, 1 detection did not finish; coverage incomplete"
+                "\u{d7} 1 strategy fell short, 1 detection did not finish; coverage incomplete"
             ),
             "{said}"
         );
