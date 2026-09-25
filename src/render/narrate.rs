@@ -345,7 +345,10 @@ impl Narrator {
             } else {
                 String::from("no ports probed")
             };
-            let ports = match unasked {
+            // With the targets a stop left the walk short of, which are on no
+            // host: every port the scan was asked about is probed or unasked,
+            // and the two add up to the plan.
+            let ports = match unasked as u128 + report.unreached() {
                 0 => ports,
                 unasked => format!("{ports}, {unasked} unasked"),
             };
@@ -1061,6 +1064,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -1107,6 +1112,8 @@ mod tests {
             undecided: phase.undecided().to_vec(),
             liveness_skipped: phase.liveness_skipped(),
             silent: phase.silent().to_vec(),
+            stopped: phase.stopped(),
+            unreached: phase.unreached(),
             probes: vec![attempts],
             origin: phase.origin().cloned(),
         });
@@ -1226,6 +1233,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -1316,6 +1325,60 @@ mod tests {
 
         assert!(
             said.contains("1 open port of 1 probed, 20 unasked"),
+            "{said}"
+        );
+    }
+
+    /// The targets a stop left the walk short of are unasked too, and counted
+    /// so, so the two numbers on the line add up to the plan.
+    ///
+    /// Measured: every port of one host with a one-second budget ended
+    /// `57853 probed, 1027 unasked`, some 6,600 short of 65,535. The rest are
+    /// on no host, so only the report's count of them can say they were asked
+    /// about and never reached.
+    #[test]
+    fn a_port_scan_counts_what_a_stop_left_unreached_as_unasked() {
+        use zond_engine::report::{PhaseParts, ScanPhase, StopReason};
+
+        let mut host = host_holding(
+            1..=20,
+            zond_engine::Protocol::Tcp,
+            zond_engine::PortState::Unasked,
+        );
+        host.add_port(zond_engine::Port::new(
+            80,
+            zond_engine::Protocol::Tcp,
+            zond_engine::PortState::Open,
+        ));
+        let report = port_scanned(vec![host], "192.0.2.1");
+        let phase = &report.phases()[0];
+        let stopped = ScanPhase::from_parts(PhaseParts {
+            attachments: phase.attachments().to_vec(),
+            kind: phase.kind(),
+            started_at: phase.started_at(),
+            elapsed: phase.elapsed(),
+            privilege: phase.privilege(),
+            targets: phase.targets().clone(),
+            settings: phase.settings().clone(),
+            failures: phase.failures().to_vec(),
+            refusals: phase.refusals().to_vec(),
+            unroutable: phase.unroutable().to_vec(),
+            timed_out: phase.timed_out().to_vec(),
+            icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
+            reached_by_connect: phase.reached_by_connect().to_vec(),
+            undecided: phase.undecided().to_vec(),
+            liveness_skipped: phase.liveness_skipped(),
+            silent: phase.silent().to_vec(),
+            stopped: Some(StopReason::TimedOut),
+            unreached: 6_600,
+            probes: phase.probe_stats().to_vec(),
+            origin: phase.origin().cloned(),
+        });
+        let hosts: Vec<_> = report.hosts().cloned().collect();
+        let said = summarised(&ScanReport::recorded("test", vec![stopped], hosts));
+
+        assert!(
+            said.contains("1 open port of 1 probed, 6620 unasked"),
             "{said}"
         );
     }
@@ -1414,6 +1477,8 @@ mod tests {
             undecided: Vec::new(),
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         });
@@ -1759,6 +1824,8 @@ mod tests {
             undecided: phase.undecided().to_vec(),
             liveness_skipped: phase.liveness_skipped(),
             silent: phase.silent().to_vec(),
+            stopped: phase.stopped(),
+            unreached: phase.unreached(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });
@@ -1791,6 +1858,8 @@ mod tests {
             undecided: phase.undecided().to_vec(),
             liveness_skipped: phase.liveness_skipped(),
             silent: phase.silent().to_vec(),
+            stopped: phase.stopped(),
+            unreached: phase.unreached(),
             probes: phase.probe_stats().to_vec(),
             origin: phase.origin().cloned(),
         });

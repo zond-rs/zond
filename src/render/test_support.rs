@@ -158,6 +158,8 @@ pub(crate) fn scoped_at(
         undecided: Vec::new(),
         liveness_skipped: None,
         silent: Vec::new(),
+        stopped: None,
+        unreached: 0,
         probes: Vec::new(),
         origin: None,
     });
@@ -209,6 +211,8 @@ pub(crate) fn standing_in(probed: &str, silent: &[&str]) -> zond_engine::ScanRep
         undecided: Vec::new(),
         liveness_skipped: Some(LivenessSkip::PortsNoDearer),
         silent,
+        stopped: None,
+        unreached: 0,
         probes: Vec::new(),
         origin: None,
     });
@@ -253,6 +257,8 @@ pub(crate) fn screened(asked: &str, undecided: &[&str], probed: &str) -> zond_en
             undecided,
             liveness_skipped: None,
             silent: Vec::new(),
+            stopped: None,
+            unreached: 0,
             probes: Vec::new(),
             origin: None,
         })
