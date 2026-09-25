@@ -1071,22 +1071,13 @@ mod tests {
         );
     }
 
-    /// A newline is escaped like anything else, which is a trap worth writing
-    /// down.
-    ///
-    /// It is the right behaviour, since a hostname carrying a newline could
-    /// forge a line of output that no scan produced. It does mean a role is a
-    /// thing you hand *one line* to. Whitespace a renderer wants for itself has
-    /// to be written outside the paint, which is why the commentary writers have
-    /// a separate call for a blank line.
     /// A commentary line too wide for the terminal continues under its own
     /// words. The terminal would begin the remainder in column zero, under the
     /// glyph, where it reads as a new event rather than as the rest of this one.
     #[test]
     fn a_wrapped_commentary_line_continues_under_its_words() {
         let style = Style::bare();
-        let text = "paced down to 16 in flight and 96% still unanswered; those may be \
-                    dropped probes rather than filtered ports";
+        let text = "tcp-port: 50% unanswered at 16 in flight (maybe loss)";
 
         // `line` asks the real stderr for its width, so the wrap itself is
         // exercised through the piece that does it.
@@ -1137,6 +1128,14 @@ mod tests {
         assert_eq!(drawn.lines().count(), 1, "{drawn}");
     }
 
+    /// A newline is escaped like anything else, which is a trap worth writing
+    /// down.
+    ///
+    /// It is the right behaviour, since a hostname carrying a newline could
+    /// forge a line of output that no scan produced. It does mean a role is a
+    /// thing you hand *one line* to. Whitespace a renderer wants for itself has
+    /// to be written outside the paint, which is why the commentary writers have
+    /// a separate call for a blank line.
     #[test]
     fn a_newline_is_escaped_too_so_a_role_takes_one_line() {
         let painted = painting().faint("above\nbelow");
