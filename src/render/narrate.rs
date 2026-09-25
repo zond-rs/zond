@@ -345,9 +345,10 @@ impl Narrator {
             } else {
                 String::from("no ports probed")
             };
-            // With the targets a stop left the walk short of, which are on no
-            // host: every port the scan was asked about is probed or unasked,
-            // and the two add up to the plan.
+            // With the targets the scan never asked and holds on no host: every
+            // port it was handed is probed or unasked, and the two add up to
+            // that. The ports of an address a liveness pass found silent were
+            // never handed to it, so are in neither.
             let ports = match unasked as u128 + report.unreached() {
                 0 => ports,
                 unasked => format!("{ports}, {unasked} unasked"),
