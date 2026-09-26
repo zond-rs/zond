@@ -56,10 +56,12 @@
 //! [`Asked`] is where the two phases meet. Whatever the expressions settle is
 //! held and written in one place, so the phases cannot answer it differently.
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::net::IpAddr;
 
 use zond_engine::model::parse::ip::{Keyword, ResolverFn, ZoneResolverFn, names_keyword};
-use zond_engine::model::parse::target::{self as engine_parse, TargetContext, TargetParseError};
+use zond_engine::model::parse::target::{TargetContext, TargetParseError};
 use zond_engine::resolve;
 use zond_engine::system::interface;
 use zond_engine::{Exclusions, IpSet, PortSet, Resolver, TargetMap, ZondConfig};
@@ -428,6 +430,9 @@ pub(crate) const MAX_PROBES: u128 = 1 << 22;
 pub(crate) struct ScanTargets {
     asked: Asked,
     map: TargetMap,
+    /// The name each address was reached by, where an expression named a
+    /// host; see [`ZondConfig::target_names`].
+    names: BTreeMap<IpAddr, String>,
     probes: u128,
     hosts: u128,
 }
@@ -452,6 +457,8 @@ impl ScanTargets {
             probes: remaining,
             hosts,
             map,
+            // A resumed scan's names come back with its options.
+            names: BTreeMap::new(),
         }
     }
 
@@ -500,9 +507,11 @@ impl ScanTargets {
             .saturating_sub(self.hosts)
     }
 
-    /// Writes what these targets imply into `cfg`.
+    /// Writes what these targets imply into `cfg`, the names each address
+    /// was reached by among them.
     pub(crate) fn apply_to(&self, cfg: &mut ZondConfig) {
         self.asked.apply_to(cfg);
+        cfg.target_names = self.names.clone();
     }
 }
 
@@ -542,14 +551,11 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     let context = host_context();
     let resolver = resolve_names.then(Resolver::from_system);
 
-    let map = match &resolver {
-        Some(resolver) => resolve::to_target_map(expressions, ports, &context, resolver)
-            .await
-            .map_err(name_needs_dns)?,
-        None => {
-            engine_parse::to_target_map(expressions, ports, &context).map_err(name_needs_dns)?
-        }
-    };
+    let planned = resolve::for_port_scan(expressions, ports, &context, resolver.as_ref())
+        .await
+        .map_err(name_needs_dns)?;
+    let names = planned.names().clone();
+    let map = planned.into_map();
 
     let exclusions = inherit(inherited, exclude, resolver.as_ref()).await?;
 
@@ -565,6 +571,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
         probes: walked.gross_targets().unwrap_or(u128::MAX),
         hosts: walked.gross_ips().unwrap_or(u128::MAX),
         map,
+        names,
     };
 
     if targets.hosts == 0 && !targets.map.is_empty() {
@@ -703,6 +710,7 @@ mod tests {
             let port_scan = ScanTargets {
                 asked,
                 map: TargetMap::default(),
+                names: BTreeMap::new(),
                 probes: 0,
                 hosts: 0,
             };
