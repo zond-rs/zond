@@ -182,7 +182,10 @@ impl Narrator {
                         plural(count, "address")
                     )
                 };
-                (line, withheld(targets.exclusions(), targets.excluded()))
+                (
+                    line,
+                    withheld(targets.exclusions(), targets.excluded(), targets.tied()),
+                )
             }
             // No exclusion line, and no count of ground: a watch covers no
             // address. Where it is standing and how long it means to stand
@@ -214,7 +217,10 @@ impl Narrator {
                         plural(hosts, "host"),
                     )
                 };
-                (line, withheld(targets.exclusions(), targets.excluded()))
+                (
+                    line,
+                    withheld(targets.exclusions(), targets.excluded(), targets.tied()),
+                )
             }
             // No exclusion line: what a record holds is what the scan covered,
             // and whatever it was kept out of was kept out at the time.
@@ -759,7 +765,12 @@ impl Narrator {
 /// scope document, and what they are checking is which ranges were named; the
 /// count is what tells them the ranges actually met the targets, which is the
 /// mistake a typo in an exclusion produces.
-fn withheld(exclusions: &Exclusions, addresses: u128) -> Option<String> {
+///
+/// `tied` is how many of `addresses` are another address of a machine the
+/// exclusions name, which the scan withholds with it. Said apart, since the
+/// ranges printed do not hold them, and a count they do not explain reads as
+/// the policy meeting targets it names none of.
+fn withheld(exclusions: &Exclusions, addresses: u128, tied: u128) -> Option<String> {
     if exclusions.is_empty() {
         return None;
     }
@@ -776,8 +787,13 @@ fn withheld(exclusions: &Exclusions, addresses: u128) -> Option<String> {
         })
         .collect();
 
+    let tied = if tied > 0 {
+        format!(", {tied} by MAC")
+    } else {
+        String::new()
+    };
     Some(format!(
-        "excluding {} ({addresses} {} withheld)",
+        "excluding {} ({addresses} {} withheld{tied})",
         ranges.join(", "),
         plural(addresses, "address"),
     ))
@@ -1477,6 +1493,22 @@ mod tests {
         assert!(
             said.contains("1 open port of 1 probed, 6620 unasked"),
             "{said}"
+        );
+    }
+
+    /// The exclusion line counts what the scan withholds by hardware address
+    /// with the rest, and says how many, since the ranges it prints do not
+    /// hold them.
+    #[test]
+    fn the_exclusion_line_names_what_it_withholds_by_hardware() {
+        let policy = Exclusions::new("192.0.2.254".parse().expect("an address"));
+        assert_eq!(
+            withheld(&policy, 1, 1).as_deref(),
+            Some("excluding 192.0.2.254 (1 address withheld, 1 by MAC)")
+        );
+        assert_eq!(
+            withheld(&policy, 2, 0).as_deref(),
+            Some("excluding 192.0.2.254 (2 addresses withheld)")
         );
     }
 

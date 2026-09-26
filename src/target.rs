@@ -270,6 +270,9 @@ pub(crate) struct Targets {
     asked: Asked,
     ips: IpSet,
     remaining: u128,
+    /// How many of the addresses left are withheld as another address of a
+    /// machine the exclusions name; see [`measured`].
+    tied: u128,
 }
 
 impl Targets {
@@ -293,6 +296,7 @@ impl Targets {
             },
             ips,
             remaining,
+            tied: 0,
         }
     }
 
@@ -330,10 +334,18 @@ impl Targets {
         &self.asked.exclusions
     }
 
-    /// How many addresses the exclusions take out of what was named.
+    /// How many addresses the exclusions take out of what was named, those
+    /// tied to a machine they name among them.
     #[must_use]
     pub(crate) fn excluded(&self) -> u128 {
         self.ips.len().saturating_sub(self.remaining)
+    }
+
+    /// How many of [`excluded`](Self::excluded) are another address of a
+    /// machine the exclusions name, which the scan withholds with it.
+    #[must_use]
+    pub(crate) fn tied(&self) -> u128 {
+        self.tied
     }
 
     /// Writes what these targets imply into `cfg`.
@@ -380,8 +392,7 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
     // header both want is the ground this run will actually cover, and the
     // engine wants the set as it was named. So the subtraction is performed here
     // to be counted and there to be enforced.
-    let mut walked = ips.clone();
-    asked.exclusions.withhold(&mut walked);
+    let (walked, tied) = measured(&ips, &asked.exclusions, &held(&asked.exclusions));
     let remaining = walked.len();
 
     if remaining == 0 && !ips.is_empty() {
@@ -403,7 +414,27 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
         asked,
         ips,
         remaining,
+        tied,
     })
+}
+
+/// `exclusions` as the scan will hold them, machine and all.
+///
+/// The engine withholds every address the host's neighbour tables tie to a
+/// machine the exclusions name, so a count taken from the policy alone says
+/// nothing was withheld where the scan's report says a target was. See
+/// [`with_machines_tied`](zond_engine::system::neighbor_cache::with_machines_tied).
+fn held(exclusions: &Exclusions) -> Exclusions {
+    zond_engine::system::neighbor_cache::with_machines_tied(exclusions)
+}
+
+/// `ips` less what `policy` names and what `held`, the policy as the scan
+/// holds it, withholds beside that, and how many the second took.
+fn measured(ips: &IpSet, policy: &Exclusions, held: &Exclusions) -> (IpSet, u128) {
+    let mut walked = ips.clone();
+    policy.withhold(&mut walked);
+    let tied = held.withhold(&mut walked);
+    (walked, tied)
 }
 
 /// The whole exclusion policy in force: what the settings files already
@@ -515,6 +546,9 @@ pub(crate) struct ScanTargets {
     names: BTreeMap<IpAddr, String>,
     probes: u128,
     hosts: u128,
+    /// How many of the addresses left are withheld as another address of a
+    /// machine the exclusions name; see [`measured`].
+    tied: u128,
 }
 
 impl ScanTargets {
@@ -536,6 +570,7 @@ impl ScanTargets {
             },
             probes: remaining,
             hosts,
+            tied: 0,
             map,
             // A resumed scan's names come back with its options.
             names: BTreeMap::new(),
@@ -578,13 +613,21 @@ impl ScanTargets {
         &self.asked.exclusions
     }
 
-    /// How many addresses the exclusions take out of what was named.
+    /// How many addresses the exclusions take out of what was named, those
+    /// tied to a machine they name among them.
     #[must_use]
     pub(crate) fn excluded(&self) -> u128 {
         self.map
             .gross_ips()
             .unwrap_or(u128::MAX)
             .saturating_sub(self.hosts)
+    }
+
+    /// How many of [`excluded`](Self::excluded) are another address of a
+    /// machine the exclusions name, which the scan withholds with it.
+    #[must_use]
+    pub(crate) fn tied(&self) -> u128 {
+        self.tied
     }
 
     /// Writes what these targets imply into `cfg`, the names each address
@@ -646,6 +689,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     // has been forbidden to send.
     let mut walked = map.clone();
     exclusions.withhold_targets(&mut walked);
+    let tied = held(&exclusions).withhold_targets(&mut walked);
     let addressed = !walked.is_empty();
     walked.withhold_ports(excluded_ports);
 
@@ -654,6 +698,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
         asked: Asked::from_expressions(expressions, exclusions),
         probes: walked.gross_targets().unwrap_or(u128::MAX),
         hosts: walked.gross_ips().unwrap_or(u128::MAX),
+        tied,
         map,
         names,
     };
@@ -780,6 +825,22 @@ mod tests {
         assert_eq!(prefix.len(), 256);
     }
 
+    /// A target named at another address of an excluded machine is counted
+    /// withheld, apart from what the policy names itself.
+    ///
+    /// The scan sends it nothing and its report counts it withheld, so a
+    /// header counting against the policy alone says the policy met nothing.
+    #[test]
+    fn a_target_the_scan_holds_to_an_excluded_machine_is_counted_withheld() {
+        let policy = Exclusions::new("192.0.2.30".parse().expect("an address"));
+        let held = Exclusions::new("192.0.2.30, 192.0.2.40".parse().expect("addresses"));
+        let named: IpSet = "192.0.2.40-192.0.2.41".parse().expect("a range");
+
+        let (walked, tied) = measured(&named, &policy, &held);
+        assert_eq!(tied, 1);
+        assert_eq!(walked, "192.0.2.41".parse().expect("an address"));
+    }
+
     /// Both phases write the same setting from the same words. They are two
     /// types because they resolve to different things, not because they settle
     /// different questions, and only one of them has an engine call that does
@@ -795,6 +856,7 @@ mod tests {
                 asked: asked.clone(),
                 ips: IpSet::new(),
                 remaining: 0,
+                tied: 0,
             };
             let port_scan = ScanTargets {
                 asked,
@@ -802,6 +864,7 @@ mod tests {
                 names: BTreeMap::new(),
                 probes: 0,
                 hosts: 0,
+                tied: 0,
             };
 
             let mut from_discovery = ZondConfig::default();
