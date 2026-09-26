@@ -602,6 +602,9 @@ pub(crate) struct ScanTargets {
     names: BTreeMap<IpAddr, String>,
     probes: u128,
     hosts: u128,
+    /// How many addresses the exclusions take out of what was named; see
+    /// [`excluded`](Self::excluded).
+    excluded: u128,
     /// How many of the addresses left are withheld as another address of a
     /// machine the exclusions name; see [`measured`].
     tied: u128,
@@ -627,6 +630,9 @@ impl ScanTargets {
             },
             probes: remaining,
             hosts,
+            // The recorded plan is what the exclusions left of it, so they
+            // take nothing out of it here.
+            excluded: 0,
             tied: 0,
             map,
             // A resumed scan's names come back with its options.
@@ -652,7 +658,8 @@ impl ScanTargets {
     }
 
     /// How many probes this run will actually spend: addresses times ports,
-    /// across every unit, once the exclusions are out of it.
+    /// across every unit, once the exclusions, the excluded ports and what the
+    /// scan withholds rather than probes are out of it.
     #[must_use]
     pub(crate) fn probes(&self) -> u128 {
         self.probes
@@ -674,10 +681,7 @@ impl ScanTargets {
     /// tied to a machine they name among them.
     #[must_use]
     pub(crate) fn excluded(&self) -> u128 {
-        self.map
-            .gross_ips()
-            .unwrap_or(u128::MAX)
-            .saturating_sub(self.hosts)
+        self.excluded
     }
 
     /// How many of [`excluded`](Self::excluded) are another address of a
@@ -749,12 +753,18 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     let tied = held(&exclusions).withhold_targets(&mut walked);
     let addressed = !walked.is_empty();
     walked.withhold_ports(excluded_ports);
+    let ported = walked.gross_ips().unwrap_or(u128::MAX);
+    // What the scan then refuses rather than probes, a link-local range on no
+    // segment among it, which it names in its report and never asks.
+    let mut probed = walked.clone();
+    zond_engine::scanner::withhold_unprobeable(&mut probed);
 
     // The same question the engine answers for a sweep, asked the same way.
     let targets = ScanTargets {
         asked: Asked::from_expressions(expressions, exclusions),
-        probes: walked.gross_targets().unwrap_or(u128::MAX),
-        hosts: walked.gross_ips().unwrap_or(u128::MAX),
+        probes: probed.gross_targets().unwrap_or(u128::MAX),
+        hosts: probed.gross_ips().unwrap_or(u128::MAX),
+        excluded: map.gross_ips().unwrap_or(u128::MAX).saturating_sub(ported),
         tied,
         map,
         names,
@@ -765,7 +775,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
             expression: targets.to_string(),
         });
     }
-    if targets.hosts == 0 && addressed {
+    if ported == 0 && addressed {
         return Err(TargetError::EveryPortExcluded {
             expression: targets.to_string(),
         });
@@ -930,6 +940,7 @@ mod tests {
                 names: BTreeMap::new(),
                 probes: 0,
                 hosts: 0,
+                excluded: 0,
                 tied: 0,
             };
 
@@ -1087,6 +1098,34 @@ mod tests {
         // the one that did it: the flag adds to the settings file.
         assert!(error.to_string().contains("--exclude-ports"), "{error}");
         assert!(error.to_string().contains("engine.toml"), "{error}");
+    }
+
+    /// A target the scan withholds rather than probes is counted out of what
+    /// it will cost: a link-local range naming no interface is on no segment
+    /// the scan can send to, and the engine refuses it by name in the report.
+    /// It is not one the exclusions took out, so the exclusion line does not
+    /// count it either.
+    ///
+    /// A header counting it announces probes the run never sends.
+    #[tokio::test]
+    async fn targets_the_scan_withholds_are_not_counted_as_probes() {
+        let targets = resolve_ports(
+            &["fe80::1-fe80::2", "192.0.2.1"],
+            &[] as &[&str],
+            &Exclusions::none(),
+            "80-83".parse().expect("a valid port set"),
+            &PortSet::new(),
+            false,
+        )
+        .await
+        .expect("well-formed");
+
+        assert_eq!(
+            (targets.probes(), targets.hosts()),
+            (4, 1),
+            "the unscoped link-local range was counted"
+        );
+        assert_eq!(targets.excluded(), 0, "counted as excluded");
     }
 
     /// A port scan is counted the same way, in probes rather than addresses.
