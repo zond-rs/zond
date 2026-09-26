@@ -66,7 +66,10 @@ use zond_engine::model::parse::ip::{
 };
 use zond_engine::model::parse::target::{TargetContext, TargetParseError};
 use zond_engine::resolve;
+use zond_engine::scanner::plan::DiscoveryPlan;
+use zond_engine::scanner::strategy::local::Scope;
 use zond_engine::system::interface;
+use zond_engine::system::privilege::Privilege;
 use zond_engine::{Exclusions, IpSet, PortSet, Resolver, TargetMap, ZondConfig};
 
 /// The most IPv4 addresses one run will accept: a `/12` exactly.
@@ -415,8 +418,12 @@ pub(crate) struct Targets {
     /// [`summary`](Self::summary).
     summary: String,
     /// How many of the addresses left are withheld as another address of a
-    /// machine the exclusions name; see [`measured`].
+    /// machine the exclusions name, and of the neighbours below; see
+    /// [`measured`] and [`kept_from_sweep`].
     tied: u128,
+    /// How many addresses from this host's neighbour table the exclusions
+    /// keep from the sweep; see [`kept_from_sweep`].
+    neighbours: u128,
 }
 
 impl Targets {
@@ -443,6 +450,7 @@ impl Targets {
             remaining,
             summary: label,
             tied: 0,
+            neighbours: 0,
         }
     }
 
@@ -489,11 +497,12 @@ impl Targets {
         &self.asked.exclusions
     }
 
-    /// How many addresses the exclusions take out of what was named, those
-    /// tied to a machine they name among them.
+    /// How many addresses the exclusions take out of the run: out of what
+    /// was named, those tied to a machine they name among them, and out of
+    /// the neighbours a sweep takes as candidates.
     #[must_use]
     pub(crate) fn excluded(&self) -> u128 {
-        self.ips.len().saturating_sub(self.remaining)
+        self.ips.len().saturating_sub(self.remaining) + self.neighbours
     }
 
     /// How many of [`excluded`](Self::excluded) are another address of a
@@ -565,13 +574,46 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
         });
     }
 
+    let (neighbours, neighbours_tied) = kept_from_sweep(&walked, &asked);
+
     Ok(Targets {
         asked: asked.withholding(&walked),
         ips,
         remaining,
         summary: swept(&walked),
-        tied,
+        tied: tied + neighbours_tied,
+        neighbours,
     })
+}
+
+/// How many addresses from this host's neighbour table the exclusions keep
+/// from the sweep `walked` and `asked` make, and how many of those for
+/// answering from a machine the exclusions name rather than for being named.
+///
+/// A sweep of a segment run with raw sockets or the link layer takes the IPv6
+/// addresses the table lists there as candidates, and the scan's report counts
+/// the ones the policy keeps back among the addresses it withheld. A count of
+/// the named targets alone falls short of the report by every address of an
+/// excluded machine the table knows. The engine answers which, from the same
+/// tables and the same rule its sweep reads them by; a run without either
+/// privilege takes no candidates, and so is kept from none.
+fn kept_from_sweep(walked: &IpSet, asked: &Asked) -> (u128, u128) {
+    if !asked.segment_sweep || !Privilege::current().is_raw() {
+        return (0, 0);
+    }
+    let kept =
+        DiscoveryPlan::withheld_neighbours(walked.clone(), Scope::Sweep, &asked.exclusions, &[]);
+    by_machine(&kept, &asked.exclusions)
+}
+
+/// How many addresses `kept` holds, and how many of them `policy` does not
+/// name, which it withholds for the machine they answer from.
+fn by_machine(kept: &IpSet, policy: &Exclusions) -> (u128, u128) {
+    let tied = kept
+        .iter()
+        .filter(|address| !policy.excludes(address))
+        .count() as u128;
+    (kept.len(), tied)
 }
 
 /// `exclusions` as the scan will hold them, machine and all.
@@ -1055,6 +1097,21 @@ mod tests {
         assert_eq!(walked, "192.0.2.41".parse().expect("an address"));
     }
 
+    /// A neighbour the exclusions keep from a sweep is counted withheld, and
+    /// by MAC where the policy does not name it, as the scan's report counts
+    /// it. The table lists an excluded machine's IPv6 addresses beside its
+    /// named IPv4 one, and a header counting the named targets alone says
+    /// fewer were withheld than the report does.
+    #[test]
+    fn a_neighbour_kept_from_the_sweep_is_counted_withheld_and_by_mac_where_unnamed() {
+        let policy = Exclusions::new("192.0.2.30, 2001:db8::30".parse().expect("addresses"));
+        let kept: IpSet = "2001:db8::30, 2001:db8::31, fe80::31"
+            .parse()
+            .expect("addresses");
+
+        assert_eq!(by_machine(&kept, &policy), (3, 2));
+    }
+
     /// Both phases write the same setting from the same words. They are two
     /// types because they resolve to different things, not because they settle
     /// different questions, and only one of them has an engine call that does
@@ -1071,6 +1128,7 @@ mod tests {
                 ips: IpSet::new(),
                 remaining: 0,
                 tied: 0,
+                neighbours: 0,
                 summary: String::new(),
             };
             let port_scan = ScanTargets {
