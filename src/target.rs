@@ -556,7 +556,9 @@ fn restate(error: TargetParseError, resolve_names: bool) -> TargetError {
             expression,
             source: IpParseError::UnknownInterface(name),
         } => {
+            // No candidates to name where the table cannot be read.
             let candidates = interface::interfaces()
+                .unwrap_or_default()
                 .into_iter()
                 .filter(|link| {
                     link.is_up()

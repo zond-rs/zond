@@ -2176,6 +2176,7 @@ impl EngineArgs {
         };
         let held: Vec<zond_engine::system::interface::LinkAddress> =
             zond_engine::system::interface::interfaces()
+                .unwrap_or_default()
                 .into_iter()
                 .filter(|link| link.is_up() && !link.is_loopback())
                 .flat_map(|link| link.addresses().to_vec())
@@ -2233,7 +2234,13 @@ fn unpinned_family(
 /// interface or the interface holds nothing usable, which is said in a line
 /// naming the interfaces that would serve.
 fn source_addresses_of(name: &str) -> Vec<std::net::IpAddr> {
-    let links = zond_engine::system::interface::interfaces();
+    let links = match zond_engine::system::interface::interfaces() {
+        Ok(links) => links,
+        Err(error) => {
+            tracing::warn!("--send-interface {name} ignored: interfaces unreadable ({error})");
+            return Vec::new();
+        }
+    };
     let sources = links
         .iter()
         .find(|link| link.name() == name)
