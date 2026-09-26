@@ -327,6 +327,7 @@ fn finding_counts(diff: &ScanDiff) -> (usize, usize) {
 mod tests {
     use zond_engine::diff::change::Change;
     use zond_engine::diff::host::HostChange;
+    use zond_engine::export::HostRedaction;
     use zond_engine::export::diff::schema::ChangeDto;
     use zond_engine::report::ScanKind;
     use zond_engine::{Port, PortState, Protocol};
@@ -626,9 +627,9 @@ mod tests {
     fn a_set_member_that_went_is_not_also_said_to_be_none() {
         // Through the engine's own lowering rather than a hand-written DTO, so
         // the `kind` these assertions read is the one a real comparison emits.
-        let options = ExportOptions::default();
+        let masking = HostRedaction::default();
         let dto = |change| {
-            ChangeDto::of_host(&change, &options)
+            ChangeDto::of_host(&change, &masking)
                 .pop()
                 .expect("the change lowers to one fact")
         };
@@ -682,7 +683,7 @@ mod tests {
                 unsettled: vec![finding],
                 reassessed: Vec::new(),
             },
-            &ExportOptions::default(),
+            &HostRedaction::default(),
         );
         assert_eq!(
             sentence(&lowered[0], field::Reader::default()),
@@ -713,8 +714,8 @@ mod tests {
             .expect("a valid finding")
         };
 
-        let options = ExportOptions::default();
-        let lower = |change| ChangeDto::of_host(&change, &options);
+        let masking = HostRedaction::default();
+        let lower = |change| ChangeDto::of_host(&change, &masking);
 
         let appeared = lower(HostChange::Findings {
             appeared: vec![finding(Severity::High)],

@@ -313,7 +313,7 @@ fn children<'a>(
         children.push(Child::one("roles", style.plain(&roles)));
     }
 
-    if let Some(os) = field::os(host) {
+    if let Some(os) = field::os(reader, host) {
         children.push(Child::one("system", style.plain(&os)));
     }
 
@@ -331,7 +331,7 @@ fn children<'a>(
     // each reply the verdict was drawn from. Only under detail, because a person
     // using the finding wants the finding and a person checking it wants this.
     if verbosity.explains()
-        && let Some(working) = field::os_evidence(host)
+        && let Some(working) = field::os_evidence(reader, host)
     {
         children.push(Child::one("evidence", style.plain(&working)));
     }
@@ -421,7 +421,7 @@ fn children<'a>(
     // says is wrong with this host or one of its ports. The severity carries the
     // colour, so the eye lands on the worst line first; the rest of the line is
     // plain, the subject included, so nothing competes with the verdict.
-    let risks = field::findings(host, showing.risk);
+    let risks = field::findings(reader, host, showing.risk);
     if !risks.rows.is_empty() || risks.withheld > 0 {
         children.push(findings(style, &risks, verbosity, showing));
     }
@@ -668,7 +668,7 @@ impl Renderer for FancyRenderer {
         // Once, for the whole listing: a host whose highest port is `9100/tcp`
         // and one whose highest is `80/tcp` used to put `open` in different
         // columns, because each measured its own table.
-        let listings = field::port_listings(&hosts, trustworthy, self.showing);
+        let listings = field::port_listings(self.reader, &hosts, trustworthy, self.showing);
 
         // Every block is built before any of it is drawn, because the columns
         // are measured across the listing: a handle right-aligned to the widest,
@@ -827,7 +827,7 @@ mod tests {
             ..showing
         };
 
-        let listing = field::port_listings(&[host], true, showing);
+        let listing = field::port_listings(reader, &[host], true, showing);
         let blocks = vec![Block {
             header: header(style, reader, host, 1),
             children: children(style, reader, host, &listing[0], verbosity, showing),
@@ -867,7 +867,7 @@ mod tests {
     fn value_column(host: &Host) -> usize {
         let style = Style::bare();
         let showing = field::Showing::default();
-        let listing = field::port_listings(&[host], true, showing);
+        let listing = field::port_listings(field::Reader::default(), &[host], true, showing);
 
         block::Columns::of(
             &[Block {
@@ -1136,7 +1136,7 @@ mod tests {
             };
             let style = Style::bare();
             let reader = field::Reader::default();
-            let listing = field::port_listings(&[&host], true, showing);
+            let listing = field::port_listings(reader, &[&host], true, showing);
             let blocks = vec![Block {
                 header: header(style, reader, &host, 1),
                 children: children(
@@ -1201,7 +1201,7 @@ mod tests {
         };
         let style = Style::bare();
         let reader = field::Reader::default();
-        let listing = field::port_listings(&[&host], true, showing);
+        let listing = field::port_listings(reader, &[&host], true, showing);
         let blocks = vec![Block {
             header: header(style, reader, &host, 1),
             children: children(
@@ -2049,6 +2049,83 @@ mod tests {
         assert!(!masked.contains("00:00:5e:00:53:01"), "{masked}");
     }
 
+    /// A host names itself in its replies as well as in its name fields: in
+    /// a finding's title, its excerpt and its advice, a product's extra
+    /// information, a certificate's subject and issuer, what its system was
+    /// read off. Every line the block draws of those is masked under
+    /// redaction, the binary reply an SMB finding quotes withheld whole.
+    #[test]
+    fn redaction_masks_the_names_a_host_repeats_in_its_replies() {
+        use zond_engine::model::host::{HostName, NameKind, NameSource};
+
+        let mut host = host(9);
+        for (kind, name) in [
+            (NameKind::NetbiosHost, "FS01"),
+            (NameKind::NetbiosDomain, "CONTOSO"),
+        ] {
+            host.record_name(HostName::new(kind, NameSource::Smb, name).expect("a name"));
+        }
+        host.set_os(
+            OsFingerprint::new("Windows Server 2019", 90)
+                .with_evidence("smb native os on FS01: Windows Server 2019"),
+        );
+        let reply: String = b"\x00\x00\x00\x55\xffSMBrC\x00O\x00N\x00T\x00O\x00S\x00O\x00"
+            .iter()
+            .map(|byte| char::from(*byte))
+            .collect();
+        host.add_port(
+            Port::new(445, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("microsoft-ds", 95).with_extrainfo("CONTOSO")),
+        );
+        host.add_port_finding(
+            445,
+            Protocol::Tcp,
+            finding(
+                "smbv1-enabled",
+                "SMBv1 is enabled on FS01",
+                Severity::High,
+                Confidence::Certain,
+            )
+            .with_excerpt(Excerpt::new(reply))
+            .with_remediation("turn it off on FS01"),
+        );
+        host.add_port(
+            Port::new(636, Protocol::Tcp, PortState::Open).with_security(
+                Security::new().with_certificate(CertificateInfo::new(
+                    "fs01.contoso.example",
+                    "CN=contoso-FS01-CA",
+                    std::time::SystemTime::now() - Duration::from_secs(86_400),
+                    std::time::SystemTime::now() + Duration::from_secs(400 * 86_400),
+                    "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                )),
+            ),
+        );
+
+        let draw = |reader| {
+            drawn_showing(
+                Style::bare(),
+                reader,
+                &host,
+                Verbosity::new(1, false),
+                field::Showing {
+                    certificates: true,
+                    excerpts: true,
+                    remedies: true,
+                    ..Default::default()
+                },
+            )
+            .replace('\0', "")
+            .to_lowercase()
+        };
+
+        let plain = draw(field::Reader::default());
+        let masked = draw(field::Reader::new(Redaction::Standard));
+        for name in ["fs01", "contoso"] {
+            assert!(plain.contains(name), "{plain}");
+            assert!(!masked.contains(name), "{masked}");
+        }
+    }
+
     /// Redaction is off unless asked for. A scan holds what it found.
     #[test]
     fn nothing_is_masked_by_default() {
@@ -2345,7 +2422,7 @@ mod hostile {
         let style = Style::bare();
         let reader = field::Reader::default();
         let showing = field::Showing::default();
-        let listing = field::port_listings(&[&scanned], false, showing);
+        let listing = field::port_listings(reader, &[&scanned], false, showing);
         let blocks = vec![Block {
             header: header(style, reader, &scanned, 1),
             children: children(

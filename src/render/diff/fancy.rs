@@ -104,6 +104,7 @@ fn happened(style: Style, host: &HostDelta) -> String {
 /// What moved, as children of the host it moved on.
 fn changes(host: &HostDelta, options: &ExportOptions, style: Style) -> Vec<Child<'static>> {
     let reader = field::Reader::new(options.redaction);
+    let masking = options.redaction.for_delta(host);
     let mut children = Vec::new();
 
     // The presence first, because everything under it is qualified by whether
@@ -139,7 +140,7 @@ fn changes(host: &HostDelta, options: &ExportOptions, style: Style) -> Vec<Child
     // their children in the same places whatever order the engine reported them.
     let mut grouped: Vec<(&'static str, Vec<String>)> = Vec::new();
     for change in host.changes() {
-        for change in ChangeDto::of_host(change, options) {
+        for change in ChangeDto::of_host(change, &masking) {
             let label = child_for(change.kind);
             let sentence = style.plain(&change::sentence(&change, reader));
 
@@ -162,7 +163,7 @@ fn changes(host: &HostDelta, options: &ExportOptions, style: Style) -> Vec<Child
 
     let mut ports: Vec<String> = notable
         .iter()
-        .flat_map(|port| change::port_lines(port, options, reader))
+        .flat_map(|port| change::port_lines(port, &masking, reader))
         .map(|line| paint_change(style, &line))
         .collect();
     ports.extend(

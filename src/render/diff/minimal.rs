@@ -69,6 +69,7 @@ fn terse(host: &HostDelta, options: &ExportOptions, out: &mut dyn Write) -> io::
     };
 
     let reader = field::Reader::new(options.redaction);
+    let masking = options.redaction.for_delta(host);
     let named = host
         .current()
         .or(host.baseline())
@@ -97,7 +98,7 @@ fn terse(host: &HostDelta, options: &ExportOptions, out: &mut dyn Write) -> io::
     }
 
     for change in host.changes() {
-        for change in ChangeDto::of_host(change, options) {
+        for change in ChangeDto::of_host(change, &masking) {
             tagged(
                 out,
                 tag_for(change.kind),
@@ -117,7 +118,7 @@ fn terse(host: &HostDelta, options: &ExportOptions, out: &mut dyn Write) -> io::
 
     let mut ports: Vec<String> = notable
         .iter()
-        .flat_map(|port| change::port_lines(port, options, reader))
+        .flat_map(|port| change::port_lines(port, &masking, reader))
         .collect();
     ports.extend(change::counted_bulk(&bulk));
 

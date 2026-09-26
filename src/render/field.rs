@@ -23,7 +23,7 @@ use std::time::Duration;
 use crate::settings::Risk;
 
 use zond_engine::Host;
-use zond_engine::export::Redaction;
+use zond_engine::export::{HostRedaction, Redaction};
 use zond_engine::model::confidence::Confidence;
 use zond_engine::model::finding::{Reference, Severity};
 use zond_engine::model::host::EvidenceSource;
@@ -148,6 +148,13 @@ impl Reader {
     /// Reading under `redaction`.
     pub(crate) fn new(redaction: Redaction) -> Self {
         Self { redaction }
+    }
+
+    /// The policy as it applies to the text `host`'s replies filled: a
+    /// finding's title and excerpt, a product, an issuer, an operating system.
+    /// The engine's, so this program masks what the exported report masks.
+    pub(crate) fn masking(self, host: &Host) -> HostRedaction {
+        self.redaction.for_host(host)
     }
 
     /// Every address the host answers at, primary first, comma-joined.
@@ -423,12 +430,13 @@ fn protocol_name(protocol: &StatusProtocol) -> String {
 /// Distinct from [`evidence`], which says what proved the host *alive*. Both
 /// are evidence; they are evidence for different claims.
 ///
-/// It carries stack features and no address or name, so it is not subject to
-/// redaction the way [`Reader`]'s fields are.
-pub(crate) fn os_evidence(host: &Host) -> Option<String> {
+/// Read through the host's masking, because not every technique renders stack
+/// features here: one that read the system off a reply writes what the reply
+/// said, and a reply can name the machine.
+pub(crate) fn os_evidence(reader: Reader, host: &Host) -> Option<String> {
     host.os()
         .and_then(|os| os.evidence())
-        .map(ToOwned::to_owned)
+        .map(|evidence| reader.masking(host).text(evidence).into_owned())
 }
 
 /// Who made the hardware, from the address it was seen at.
@@ -440,8 +448,10 @@ pub(crate) fn vendor(host: &Host) -> Option<&str> {
 ///
 /// Passive by default, which means every signal in it was already in a reply
 /// the sweep drew for another reason. Absent for most hosts in most scans.
-pub(crate) fn os(host: &Host) -> Option<String> {
-    host.os().map(ToString::to_string)
+/// Masked where a reply's words name the machine.
+pub(crate) fn os(reader: Reader, host: &Host) -> Option<String> {
+    host.os()
+        .map(|os| reader.masking(host).text(&os.to_string()).into_owned())
 }
 
 /// What the round trips came to, for a person.
@@ -1315,10 +1325,16 @@ fn column_widths(shown: &[&Port]) -> (usize, usize) {
 /// four to twelve characters, so a line assembled left to right puts every state
 /// at a different place and the eye has to search each row instead of running
 /// down one.
-pub(crate) fn ports(host: &Host, silence_means_something: bool, showing: Showing) -> Vec<String> {
+pub(crate) fn ports(
+    reader: Reader,
+    host: &Host,
+    silence_means_something: bool,
+    showing: Showing,
+) -> Vec<String> {
     let Some(selection) = select(host, silence_means_something) else {
         return Vec::new();
     };
+    let masking = reader.masking(host);
 
     let (widest_port, widest_state) = column_widths(&selection.shown);
 
@@ -1330,7 +1346,7 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool, showing: Showing
                 "{:<widest_port$}  {:<widest_state$}  {}",
                 format!("{}/{}", port.number(), protocol(port.protocol())),
                 state(port.state()),
-                describe(port).unwrap_or_default()
+                describe(port, &masking).unwrap_or_default()
             );
             // A port with no service would otherwise carry the padding it was
             // never going to fill.
@@ -1378,6 +1394,7 @@ pub(crate) fn ports(host: &Host, silence_means_something: bool, showing: Showing
 /// alignments worth having are the ones *between* blocks, and the port table was
 /// the one child that did not get them. So this takes the listing.
 pub(crate) fn port_listings(
+    reader: Reader,
     hosts: &[&Host],
     silence_means_something: bool,
     showing: Showing,
@@ -1402,10 +1419,12 @@ pub(crate) fn port_listings(
 
     selections
         .into_iter()
-        .map(|selection| {
+        .zip(hosts)
+        .map(|(selection, host)| {
             let Some(selection) = selection else {
                 return PortListing::default();
             };
+            let masking = reader.masking(host);
 
             let rows = selection
                 .shown
@@ -1420,8 +1439,8 @@ pub(crate) fn port_listings(
                             .as_ref()
                             .map(|(name, _)| format!("{name:<widest_service$}")),
                         inferred: named.is_some_and(|(_, inferred)| inferred),
-                        product: product_text(port),
-                        detail: port_detail(port, showing),
+                        product: product_text(port, &masking),
+                        detail: port_detail(port, showing, &masking),
                     }
                 })
                 .collect();
@@ -1539,13 +1558,13 @@ const EXPIRY_HORIZON: Duration = Duration::from_secs(30 * 86_400);
 ///
 /// The reason first: it is what the row's own verdict rests on, and a reader
 /// checking a verdict should not have to read past a certificate to find it.
-fn port_detail(port: &Port, showing: Showing) -> Vec<PortDetail> {
+fn port_detail(port: &Port, showing: Showing, masking: &HostRedaction) -> Vec<PortDetail> {
     let mut detail = Vec::new();
 
     if showing.reasons {
         detail.extend(reason_detail(port));
     }
-    detail.extend(security_detail(port, showing.certificates));
+    detail.extend(security_detail(port, showing.certificates, masking));
 
     detail
 }
@@ -1554,7 +1573,10 @@ fn port_detail(port: &Port, showing: Showing) -> Vec<PortDetail> {
 ///
 /// Empty for every port no handshake or enumeration reached, which is most of
 /// them.
-fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
+///
+/// The subject is a name and is masked as one; the issuer is masked where it
+/// names the machine, as a directory's own authority often does.
+fn security_detail(port: &Port, detailed: bool, masking: &HostRedaction) -> Vec<PortDetail> {
     let Some(security) = port.security() else {
         return Vec::new();
     };
@@ -1608,7 +1630,13 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
         detail.push(PortDetail {
             note: Some(note),
             urgency,
-            ..PortDetail::new("cert", certificate.common_name().to_owned())
+            ..PortDetail::new(
+                "cert",
+                masking
+                    .redaction()
+                    .hostname(certificate.common_name())
+                    .into_owned(),
+            )
         });
 
         // The working behind it, for somebody checking the certificate rather
@@ -1617,7 +1645,10 @@ fn security_detail(port: &Port, detailed: bool) -> Vec<PortDetail> {
         // checking a fingerprint is not also reading the issuer.
         if detailed {
             let fingerprint = certificate.fingerprint_sha256();
-            detail.push(PortDetail::new("issuer", certificate.issuer().to_owned()));
+            detail.push(PortDetail::new(
+                "issuer",
+                masking.text(certificate.issuer()).into_owned(),
+            ));
             detail.push(PortDetail::new(
                 "key",
                 format!(
@@ -1840,16 +1871,17 @@ struct Folded {
 ///
 /// Empty for the ordinary host, which carries no findings at all: nothing here
 /// draws a heading for a host that has nothing wrong with it.
-pub(crate) fn findings(host: &Host, floor: Risk) -> FindingListing {
+pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListing {
+    let masking = reader.masking(host);
     let mut claims: Vec<Claim> = host
         .findings()
-        .map(|finding| claim(None, finding))
+        .map(|finding| claim(None, finding, &masking))
         .collect();
 
     for port in host.ports() {
         let endpoint = (port.number(), protocol(port.protocol()).clone());
         for finding in port.findings() {
-            claims.push(claim(Some(endpoint.clone()), finding));
+            claims.push(claim(Some(endpoint.clone()), finding, &masking));
         }
     }
 
@@ -1947,7 +1979,14 @@ const MAX_CITED_CVES: usize = 3;
 /// and forty-four identifiers wrapped across a row buries the finding they
 /// belong to and every row under it. So the CWE stays on the row and the CVEs
 /// go beneath it, where `evidence` and `remedy` already sit.
-fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Finding) -> Claim {
+///
+/// The title, the excerpt and the advice are the host's words where a
+/// detection drew them from its reply, and are read through `masking`.
+fn claim(
+    port: Option<(u16, String)>,
+    finding: &zond_engine::model::finding::Finding,
+    masking: &HostRedaction,
+) -> Claim {
     let (cve_refs, other_refs): (Vec<&Reference>, Vec<&Reference>) = finding
         .references()
         .partition(|reference| matches!(reference, Reference::Cve(_)));
@@ -1965,17 +2004,19 @@ fn claim(port: Option<(u16, String)>, finding: &zond_engine::model::finding::Fin
     let others: Vec<String> = other_refs.into_iter().map(reference_text).collect();
     let reference = (!others.is_empty()).then(|| others.join("  "));
 
-    let excerpt = finding.excerpt().as_str();
+    let excerpt = masking.excerpt(finding.excerpt().as_str());
 
     Claim {
         port,
         severity: finding.severity(),
         confidence: finding.confidence(),
-        title: finding.title().to_owned(),
+        title: masking.text(finding.title()).into_owned(),
         reference,
         cves,
-        evidence: (!excerpt.trim().is_empty()).then(|| one_line(excerpt)),
-        remediation: finding.remediation().map(ToOwned::to_owned),
+        evidence: (!excerpt.trim().is_empty()).then(|| one_line(&excerpt)),
+        remediation: finding
+            .remediation()
+            .map(|advice| masking.text(advice).into_owned()),
     }
 }
 
@@ -2347,8 +2388,9 @@ fn service_name(port: &Port) -> Option<(String, bool)> {
     Some((service.name().to_owned(), service.is_inferred()))
 }
 
-/// What answered on the port, where fingerprinting worked it out.
-fn product_text(port: &Port) -> Option<String> {
+/// What answered on the port, where fingerprinting worked it out, with the
+/// host's names masked where the reply that named the product named them.
+fn product_text(port: &Port, masking: &HostRedaction) -> Option<String> {
     let service = port.service()?;
     let name = service.name();
     if !named(&name) {
@@ -2397,17 +2439,17 @@ fn product_text(port: &Port) -> Option<String> {
         described.push(')');
     }
 
-    (!described.is_empty()).then_some(described)
+    (!described.is_empty()).then(|| masking.text(&described).into_owned())
 }
 
 /// The two of them joined, for a mode with one column to put them in.
 ///
 /// `minimal` is a tagged line per value and has nowhere to align a second
 /// column, so it takes the sentence the block used to draw.
-fn describe(port: &Port) -> Option<String> {
+fn describe(port: &Port, masking: &HostRedaction) -> Option<String> {
     let (name, _) = service_name(port)?;
 
-    Some(match product_text(port) {
+    Some(match product_text(port, masking) {
         Some(product) => format!("{name} {product}"),
         None => name,
     })
@@ -3182,10 +3224,11 @@ mod tests {
                 .with_discovery(Discovery::new(ScanResponse::TcpSynAck)),
         );
 
-        let quiet = port_listings(&[&host], true, Showing::default());
+        let quiet = port_listings(Reader::default(), &[&host], true, Showing::default());
         assert!(quiet[0].rows[0].detail.is_empty(), "{:?}", quiet[0].rows[0]);
 
         let asked = port_listings(
+            Reader::default(),
             &[&host],
             true,
             Showing {
@@ -3211,7 +3254,7 @@ mod tests {
         let mut high = host(2);
         high.add_port(Port::new(9100, Protocol::Tcp, PortState::Open));
 
-        let listings = port_listings(&[&low, &high], true, Showing::default());
+        let listings = port_listings(Reader::default(), &[&low, &high], true, Showing::default());
 
         assert_eq!(
             listings[0].rows[0].port.chars().count(),
@@ -3235,6 +3278,7 @@ mod tests {
         );
 
         let lines = ports(
+            Reader::default(),
             &host,
             true,
             Showing {
@@ -3263,7 +3307,7 @@ mod tests {
             ),
         );
 
-        let lines = ports(&host, true, Showing::default());
+        let lines = ports(Reader::default(), &host, true, Showing::default());
         assert!(
             lines[0].ends_with("[suites TLSv1.2  unfinished, unanswered]"),
             "{}",
@@ -3825,13 +3869,13 @@ mod tests {
             host.add_port(Port::new(number, Protocol::Tcp, PortState::Filtered));
         }
 
-        let trusted = ports(&host, true, Showing::default());
+        let trusted = ports(Reader::default(), &host, true, Showing::default());
         assert!(
             trusted.iter().any(|line| line.contains("filtered")),
             "a scan that could ask reports what it found: {trusted:?}"
         );
 
-        let outrun = ports(&host, false, Showing::default());
+        let outrun = ports(Reader::default(), &host, false, Showing::default());
         assert!(
             outrun.iter().all(|line| !line.contains("filtered")),
             "and one that could not makes no claim at all: {outrun:?}"
@@ -4122,7 +4166,7 @@ mod tests {
     #[test]
     fn ports_are_listed_open_first_with_the_closed_ones_counted() {
         assert_eq!(
-            ports(&scanned(), true, Showing::default()),
+            ports(Reader::default(), &scanned(), true, Showing::default()),
             vec![
                 // Columns, so the eye runs down the states rather than hunting
                 // each one at whatever offset its port number left it at.
@@ -4149,7 +4193,7 @@ mod tests {
             host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Filtered));
         }
 
-        let lines = ports(&host, true, Showing::default());
+        let lines = ports(Reader::default(), &host, true, Showing::default());
 
         // The open port, twelve filtered, and the rollup.
         assert_eq!(lines.len(), 1 + MAX_LISTED_FILTERED + 1);
@@ -4176,7 +4220,7 @@ mod tests {
         host.add_port(quiet);
         host.add_port(refused);
 
-        let lines = ports(&host, false, Showing::default());
+        let lines = ports(Reader::default(), &host, false, Showing::default());
 
         assert!(
             lines.iter().any(|line| line.starts_with("82/tcp")),
@@ -4198,7 +4242,7 @@ mod tests {
             host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Unasked));
         }
 
-        let lines = ports(&host, true, Showing::default());
+        let lines = ports(Reader::default(), &host, true, Showing::default());
 
         // The open port, six unasked, and the rollup.
         assert_eq!(lines.len(), 1 + MAX_LISTED_UNASKED + 1);
@@ -4221,7 +4265,7 @@ mod tests {
             host.add_port(Port::new(port, Protocol::Tcp, PortState::Unasked));
         }
 
-        let lines = ports(&host, true, Showing::default());
+        let lines = ports(Reader::default(), &host, true, Showing::default());
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines.iter().all(|line| !line.contains("not listed")),
@@ -4239,7 +4283,7 @@ mod tests {
             host.add_port(Port::new(port, Protocol::Tcp, PortState::Filtered));
         }
 
-        let lines = ports(&host, true, Showing::default());
+        let lines = ports(Reader::default(), &host, true, Showing::default());
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines.iter().all(|line| !line.contains("omitted")),
@@ -4255,7 +4299,7 @@ mod tests {
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
 
         assert_eq!(
-            ports(&host, true, Showing::default()),
+            ports(Reader::default(), &host, true, Showing::default()),
             vec!["1 probed, 1 closed"]
         );
     }
@@ -4273,7 +4317,7 @@ mod tests {
             host.add_port(Port::new(number, Protocol::Tcp, PortState::Unasked));
         }
 
-        let lines = ports(&host, true, Showing::default());
+        let lines = ports(Reader::default(), &host, true, Showing::default());
         let counted: Vec<_> = lines
             .iter()
             .filter(|line| line.contains("probed"))
@@ -4290,14 +4334,14 @@ mod tests {
         }
 
         assert_eq!(
-            ports(&host, true, Showing::default()),
+            ports(Reader::default(), &host, true, Showing::default()),
             vec!["2 probed, 2 closed"]
         );
     }
 
     #[test]
     fn a_host_that_was_never_port_scanned_has_no_port_lines() {
-        assert!(ports(&host(1), true, Showing::default()).is_empty());
+        assert!(ports(Reader::default(), &host(1), true, Showing::default()).is_empty());
         assert_eq!(closed_ports(&host(1)), None);
     }
 
@@ -4343,7 +4387,7 @@ mod tests {
         );
 
         assert_eq!(
-            ports(&host, true, Showing::default()),
+            ports(Reader::default(), &host, true, Showing::default()),
             vec!["9999/tcp  open"]
         );
         assert_eq!(packed_ports(&host).as_deref(), Some("9999/tcp/open/-"));

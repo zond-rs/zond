@@ -15,8 +15,8 @@
 use std::io::{self, Write};
 
 use zond_engine::diff::{HostDelta, PortDelta, ScanDiff};
-use zond_engine::export::ExportOptions;
 use zond_engine::export::diff::schema::ChangeDto;
+use zond_engine::export::{ExportOptions, HostRedaction};
 
 use crate::render::diff::change;
 use crate::render::field;
@@ -45,6 +45,7 @@ pub(super) fn write(
 /// arrival or departure, then what moved about it, then its endpoints.
 fn host_records(host: &HostDelta, options: &ExportOptions) -> Vec<[String; FIELDS]> {
     let address = change::identity(host, field::Reader::new(options.redaction));
+    let masking = options.redaction.for_delta(host);
     let confirmed = yes_no(host.presence().is_confirmed());
     let mut records = Vec::new();
 
@@ -71,7 +72,7 @@ fn host_records(host: &HostDelta, options: &ExportOptions) -> Vec<[String; FIELD
     }
 
     for change in host.changes() {
-        for change in ChangeDto::of_host(change, options) {
+        for change in ChangeDto::of_host(change, &masking) {
             records.push(line(
                 change.kind,
                 &confirmed,
@@ -85,14 +86,14 @@ fn host_records(host: &HostDelta, options: &ExportOptions) -> Vec<[String; FIELD
     }
 
     for port in host.ports() {
-        records.extend(port_records(port, &address, options));
+        records.extend(port_records(port, &address, &masking));
     }
 
     records
 }
 
 /// Every `pipe` line one endpoint contributes.
-fn port_records(port: &PortDelta, address: &str, options: &ExportOptions) -> Vec<[String; FIELDS]> {
+fn port_records(port: &PortDelta, address: &str, masking: &HostRedaction) -> Vec<[String; FIELDS]> {
     let endpoint = change::endpoint(port);
     let confirmed = yes_no(port.presence().is_confirmed());
     let mut records = Vec::new();
@@ -150,7 +151,7 @@ fn port_records(port: &PortDelta, address: &str, options: &ExportOptions) -> Vec
     }
 
     for change in port.changes() {
-        for change in ChangeDto::of_port(change, options) {
+        for change in ChangeDto::of_port(change, masking) {
             // The state is already reported above, in the terms a rule wants.
             if change.kind == "port_state" {
                 continue;

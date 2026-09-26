@@ -22,7 +22,7 @@ use std::net::IpAddr;
 
 use zond_engine::Host;
 use zond_engine::diff::{HostDelta, PortDelta};
-use zond_engine::export::ExportOptions;
+use zond_engine::export::HostRedaction;
 use zond_engine::export::diff::schema::ChangeDto;
 
 use crate::render::field::{self, FINGERPRINT_SHOWN, Reader};
@@ -219,7 +219,7 @@ pub(super) fn counted_bulk(ports: &[&PortDelta]) -> Vec<String> {
 }
 
 /// The lines one endpoint contributes to a block.
-pub(super) fn port_lines(port: &PortDelta, options: &ExportOptions, reader: Reader) -> Vec<String> {
+pub(super) fn port_lines(port: &PortDelta, masking: &HostRedaction, reader: Reader) -> Vec<String> {
     let endpoint = endpoint(port);
     let mut lines = Vec::new();
 
@@ -236,7 +236,7 @@ pub(super) fn port_lines(port: &PortDelta, options: &ExportOptions, reader: Read
     }
 
     for change in port.changes() {
-        for change in ChangeDto::of_port(change, options) {
+        for change in ChangeDto::of_port(change, masking) {
             // Already said above, in a word rather than a transition.
             if change.kind == "port_state" && (port.is_opened() || port.is_closed()) {
                 continue;

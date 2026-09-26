@@ -120,7 +120,7 @@ fn record(reader: field::Reader, host: &Host) -> [String; FIELDS] {
         field::evidence(host).unwrap_or_else(field::unknown),
         reader.macs(host).unwrap_or_else(field::unknown),
         reader.hostname(host).unwrap_or_else(field::unknown),
-        field::os(host).unwrap_or_else(field::unknown),
+        field::os(reader, host).unwrap_or_else(field::unknown),
         field::vendor(host).map_or_else(field::unknown, ToOwned::to_owned),
         field::rtt_min_millis(host).unwrap_or_else(field::unknown),
         field::rtt_mean_millis(host).unwrap_or_else(field::unknown),
