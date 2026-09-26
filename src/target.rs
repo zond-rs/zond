@@ -316,8 +316,12 @@ fn swept(addresses: &IpSet) -> String {
 
 /// A scan's probes, for [`ScanTargets::summary`].
 fn scanned(plan: &TargetMap) -> String {
-    let addresses = plan.gross_ips().unwrap_or_default();
-    let ports: usize = plan.units.iter().map(|unit| unit.ports().len()).sum();
+    let addresses = touched_addresses(plan);
+    let ports = plan
+        .units
+        .iter()
+        .fold(PortSet::new(), |ports, unit| ports.union(unit.ports()))
+        .len();
 
     let first = plan
         .units
@@ -334,6 +338,23 @@ fn scanned(plan: &TargetMap) -> String {
         0 | 1 => format!("{first} on {ports}"),
         n => format!("{first} and {} more on {ports}", n - 1),
     }
+}
+
+/// How many addresses a plan touches, each once however many of its units
+/// name it.
+///
+/// The union rather than the sum over the units. Each part of an expression
+/// that names its own ports is a unit of its own, so `192.0.2.1:22` and
+/// `192.0.2.1:80` are two units over one machine, and a count of hosts or of
+/// ports is a count of what the scan touches, which a sum would double. The
+/// probe count is the other question, what the scan sends, and stays the sum:
+/// each unit asks each of its addresses on each of its ports.
+fn touched_addresses(plan: &TargetMap) -> u128 {
+    plan.units
+        .iter()
+        .map(|unit| unit.ips().clone())
+        .collect::<IpSet>()
+        .len()
 }
 
 /// The addresses a part of an expression names, where it names them in
@@ -703,7 +724,7 @@ impl ScanTargets {
     /// anything but an id.
     #[must_use]
     pub(crate) fn resumed(map: TargetMap, remaining: u128, label: String) -> Self {
-        let hosts = map.gross_ips().unwrap_or(u128::MAX);
+        let hosts = touched_addresses(&map);
 
         Self {
             asked: Asked {
@@ -858,7 +879,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     let targets = ScanTargets {
         asked: Asked::from_expressions(expressions, exclusions),
         probes: probed.gross_targets().unwrap_or(u128::MAX),
-        hosts: probed.gross_ips().unwrap_or(u128::MAX),
+        hosts: touched_addresses(&probed),
         excluded: map.gross_ips().unwrap_or(u128::MAX).saturating_sub(ported),
         tied,
         map,
@@ -1340,6 +1361,45 @@ mod tests {
             .expect("well-formed");
         assert_eq!(partly.to_string(), "192.0.2.0/30");
         assert_eq!(partly.summary(), "192.0.2.2 and 1 more");
+    }
+
+    /// **Two parts of a port scan over one address or one port count it
+    /// once.** Each part of an expression naming its own ports is its own
+    /// unit of the plan, so a sum over the units counts an address named
+    /// twice as two hosts and a port asked of two addresses as two ports. The
+    /// header's host count and a record's summary say how many addresses and
+    /// ports the scan touches, which is the union; the probe count is what it
+    /// sends, one per address and port of each part.
+    #[tokio::test]
+    async fn parts_over_one_address_or_one_port_count_it_once() {
+        let scan = resolve_ports(
+            &["192.0.2.1:22", "192.0.2.1:80", "192.0.2.2:22"],
+            &[] as &[&str],
+            &Exclusions::none(),
+            "22".parse().expect("a valid port set"),
+            &PortSet::new(),
+            false,
+        )
+        .await
+        .expect("well-formed");
+
+        assert_eq!(scan.probes(), 3);
+        assert_eq!(scan.hosts(), 2);
+        assert_eq!(scan.summary(), "192.0.2.1 and 1 more on 2 ports");
+
+        let shared = resolve_ports(
+            &["192.0.2.1:22,80", "192.0.2.2:22"],
+            &[] as &[&str],
+            &Exclusions::none(),
+            "22".parse().expect("a valid port set"),
+            &PortSet::new(),
+            false,
+        )
+        .await
+        .expect("well-formed");
+
+        assert_eq!(shared.probes(), 3);
+        assert_eq!(shared.summary(), "192.0.2.1 and 1 more on 2 ports");
     }
 
     /// The derivation a port scan does for itself, since nothing resolved it on
