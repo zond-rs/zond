@@ -171,6 +171,9 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     if let Some(note) = settings::home_note() {
         tracing::info!(verbosity = 1, "{note}");
     }
+    for unread in settings::root_settings() {
+        tracing::warn!("{unread}");
+    }
     for warning in warnings {
         tracing::warn!("{warning}");
     }

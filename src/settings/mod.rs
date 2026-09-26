@@ -589,6 +589,115 @@ fn note_for(
         .then(|| format!("settings read from {} (under sudo)", directory.display()))
 }
 
+/// A line for each of root's own settings files a run under `sudo` passes
+/// over while it sets anything, and root's settings directory given back to
+/// root where an earlier run left it to the invoking user.
+///
+/// Under `sudo` the invoking user's files are read, and root's, in root's own
+/// home, are not. A root user who wrote settings there would otherwise watch
+/// them do nothing with no word of why, so a file that sets anything is named
+/// at the default verbosity; one that sets nothing, as a template written
+/// there and never edited does not, changes nothing by being skipped and is
+/// not mentioned. Nothing is said where both are one directory, as where
+/// `sudo` kept `HOME` or a configuration root.
+///
+/// The directory may be the invoking user's, left so by a run that handed
+/// what it created to them wherever it lay. It is root's home, and a user who
+/// owns a piece of it can put files there, so it and the two files in it are
+/// given back to root where that user owns them.
+#[must_use]
+pub(crate) fn root_settings() -> Vec<String> {
+    let Some(user) = zond_engine::journal::paths::invoking_user() else {
+        return Vec::new();
+    };
+    let absolute = |name| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path: &PathBuf| path.is_absolute())
+    };
+    let Some(directory) = roots_directory(
+        &user,
+        absolute("XDG_CONFIG_HOME").is_some(),
+        absolute("HOME").as_deref(),
+    ) else {
+        return Vec::new();
+    };
+
+    #[cfg(unix)]
+    give_back_to_root(&directory, user.uid);
+
+    [engine_settings::FILE_NAME, FILE_NAME]
+        .into_iter()
+        .map(|name| directory.join(name))
+        .filter(|path| std::fs::read_to_string(path).is_ok_and(|document| sets_anything(&document)))
+        .map(|path| {
+            format!(
+                "{} not read (root's own; sudo reads the user's)",
+                path.display()
+            )
+        })
+        .collect()
+}
+
+/// Root's own settings directory, where it is not the one a run under `sudo`
+/// reads: under `home`, the process's own, when no configuration root was
+/// kept and that home is not the invoking user's.
+fn roots_directory(
+    user: &zond_engine::journal::paths::InvokingUser,
+    configured: bool,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let home = home.filter(|home| !configured && *home != user.home.as_path())?;
+    Some(home.join(".config/zond"))
+}
+
+/// Whether a settings document sets any key.
+///
+/// A table header alone sets nothing, which is what a template with every key
+/// commented out is. A document that does not parse is counted as setting
+/// something: somebody wrote it, and it is theirs to look at.
+fn sets_anything(document: &str) -> bool {
+    fn any_value(table: &toml::Table) -> bool {
+        table.values().any(|value| match value {
+            toml::Value::Table(inner) => any_value(inner),
+            _ => true,
+        })
+    }
+    document
+        .parse::<toml::Table>()
+        .map_or(true, |table| any_value(&table))
+}
+
+/// Gives `directory` and the two settings files in it to root where `uid`
+/// owns them.
+///
+/// The directory first, so its owner can no longer change what is in it
+/// while the files are looked at; each is examined without following a link
+/// and changed with `lchown`, so a link planted at a name changes owner
+/// itself rather than handing root whatever it names.
+#[cfg(unix)]
+fn give_back_to_root(directory: &Path, uid: u32) {
+    use std::os::unix::fs::MetadataExt;
+
+    let owned = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .is_ok_and(|held| held.uid() == uid && (held.is_dir() || held.is_file()))
+    };
+    if !owned(directory) {
+        return;
+    }
+    if std::os::unix::fs::lchown(directory, Some(0), Some(0)).is_err() {
+        return;
+    }
+    tracing::info!(verbosity = 1, "{} given back to root", directory.display());
+    for name in [engine_settings::FILE_NAME, FILE_NAME] {
+        let path = directory.join(name);
+        if owned(&path) {
+            let _ = std::os::unix::fs::lchown(&path, Some(0), Some(0));
+        }
+    }
+}
+
 /// Whether a settings file exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Provisioned {
@@ -1033,6 +1142,41 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Root's own directory is the one under root's home, and only where a
+    /// run under `sudo` reads another: not where `sudo` kept the user's home
+    /// or a configuration root that both would read.
+    #[test]
+    fn roots_own_settings_are_those_under_a_home_that_is_not_the_users() {
+        let erik = zond_engine::journal::paths::InvokingUser {
+            uid: 1000,
+            gid: 1000,
+            home: PathBuf::from("/home/erik"),
+        };
+
+        assert_eq!(
+            roots_directory(&erik, false, Some(Path::new("/root"))),
+            Some(PathBuf::from("/root/.config/zond"))
+        );
+        assert_eq!(
+            roots_directory(&erik, false, Some(Path::new("/home/erik"))),
+            None
+        );
+        assert_eq!(roots_directory(&erik, true, Some(Path::new("/root"))), None);
+        assert_eq!(roots_directory(&erik, false, None), None);
+    }
+
+    /// A file root customised is named, and one that sets nothing is not: the
+    /// templates every run writes are all comment, and naming one on every
+    /// elevated run would train a reader to skip the line that matters.
+    #[test]
+    fn only_a_settings_file_that_sets_something_is_worth_naming() {
+        assert!(!sets_anything(engine_settings::TEMPLATE));
+        assert!(!sets_anything(TEMPLATE));
+        assert!(sets_anything("[defaults]\nno_dns = true\n"));
+        assert!(sets_anything("[profiles.lab]\nports = \"22\"\n"));
+        assert!(sets_anything("this is not toml ="));
     }
 
     /// The line appears only when the settings came from somewhere other
