@@ -1140,7 +1140,7 @@ pub(crate) struct ScanArgs {
     ///
     /// TCP only. `--top-ports-udp` asks for the UDP list, and `-p u:53,u:161`
     /// names particular UDP ports.
-    #[arg(long, value_name = "N", conflicts_with = "ports")]
+    #[arg(long, value_name = "N", value_parser = port_count, conflicts_with = "ports")]
     pub top_ports: Option<usize>,
 
     /// Probe the N UDP ports most likely to be listening.
@@ -1156,7 +1156,7 @@ pub(crate) struct ScanArgs {
     /// yields all of it. The two flags combine: `--top-ports 100
     /// --top-ports-udp 50` probes both lists, and either one on its own probes
     /// only its own transport.
-    #[arg(long, value_name = "N", conflicts_with = "ports")]
+    #[arg(long, value_name = "N", value_parser = port_count, conflicts_with = "ports")]
     pub top_ports_udp: Option<usize>,
 
     /// Do not write down how far this scan gets.
@@ -1456,15 +1456,20 @@ fn parse_zombie_port(text: &str) -> Result<u16, String> {
 /// hint.
 const PORTS_SUGGESTED: usize = 3;
 
-/// Reads `-p` and `--exclude-ports` in the engine's port grammar, answering a service name written
-/// where a number goes with the numbers to write instead.
+/// Reads `-p` and `--exclude-ports` in the engine's port grammar, answering a
+/// service name written where a number goes with the numbers to write instead.
 ///
 /// The grammar has no names, so it can only say that a name is not a number.
 /// Which numbers `ssh` stands for is the signature corpus's to say, since it
 /// names the services the engine identifies, and the corpus sits above the
 /// grammar: so the suggestion is made here, where both are in reach.
+///
+/// A list naming no port is refused in the engine's words. The grammar reads
+/// one as the empty set, which is how an empty set is written back, and a flag
+/// is never typed to mean that: `-p ''` would scan nothing and exit 0 as though
+/// nothing were there, and `--exclude-ports ''` would exclude nothing.
 fn port_set(text: &str) -> Result<PortSet, String> {
-    PortSet::try_from(text).map_err(|error| match &error {
+    let set = PortSet::try_from(text).map_err(|error| match &error {
         PortSetParseError::ServiceName(written) => {
             let name = written
                 .split_once(':')
@@ -1482,7 +1487,21 @@ fn port_set(text: &str) -> Result<PortSet, String> {
             }
         }
         _ => error.to_string(),
-    })
+    })?;
+    if set.is_empty() {
+        return Err(PortSetParseError::NoPorts.to_string());
+    }
+    Ok(set)
+}
+
+/// Reads a count of the likeliest ports to probe, refusing zero, which names
+/// no port for the reason [`port_set`] refuses an empty list.
+fn port_count(text: &str) -> Result<usize, String> {
+    match text.parse::<usize>() {
+        Ok(0) => Err("names no ports (write 100, or 1000 for the default)".to_string()),
+        Ok(count) => Ok(count),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// The ports the signature corpus registers `name` on, most prevalent first,
@@ -2972,6 +2991,38 @@ mod tests {
             config.scan_timeout,
             Some(std::time::Duration::from_secs(600))
         );
+    }
+
+    /// A port list that names no port is refused where it is typed, whichever
+    /// flag carries it, and says what to write instead.
+    ///
+    /// Accepted, `-p ''` or `--top-ports 0` plans a scan of nothing, which runs,
+    /// probes nothing and exits 0 under a summary of zeros that reads as a
+    /// network with nothing on it. An empty `--exclude-ports` excludes nothing,
+    /// so it is the same slip: a variable that expanded to nothing.
+    #[test]
+    fn a_port_list_naming_no_port_is_refused_by_every_flag_that_takes_one() {
+        for args in [
+            &["-p", ""][..],
+            &["-p", ","],
+            &["-p", " , "],
+            &["--top-ports", "0"],
+            &["--top-ports-udp", "0"],
+            &["--exclude-ports", ""],
+            &["--exclude-ports", ","],
+        ] {
+            let line = [&["zond", "s", "192.0.2.1"][..], args].concat();
+            let error = Cli::try_parse_from(&line)
+                .err()
+                .unwrap_or_else(|| panic!("{args:?} was accepted"));
+            assert!(
+                error.to_string().contains("names no ports"),
+                "{args:?}: {error}"
+            );
+        }
+
+        let cli = Cli::try_parse_from(["zond", "s", "192.0.2.1", "--top-ports", "1"]);
+        assert!(cli.is_ok(), "one port is a port list");
     }
 
     /// `--exclude-ports` adds to what the settings file excluded, across
