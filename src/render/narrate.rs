@@ -2109,6 +2109,22 @@ mod tests {
         assert!(!said.contains("coverage incomplete"), "{said}");
     }
 
+    /// A journal that could not be checkpointed probed nothing and dropped no
+    /// answer: every port was still asked. It is no strategy that fell short
+    /// and no coverage lost, and a line saying either sends a reader to
+    /// rescan ground the run covered.
+    #[test]
+    fn a_journal_that_fell_behind_claims_no_coverage_lost() {
+        let behind = zond_engine::report::ScannerFailure::new(
+            ScannerKind::Journal,
+            "checkpoint failed: permission denied",
+        );
+        let said = summarised(&failing(vec![behind]));
+
+        assert!(!said.contains("coverage incomplete"), "{said}");
+        assert!(!said.contains("strateg"), "{said}");
+    }
+
     /// A port the service pass could not reach, as the engine files one.
     fn unfingerprinted(port: u16) -> zond_engine::report::ScannerFailure {
         zond_engine::report::ScannerFailure::new(
