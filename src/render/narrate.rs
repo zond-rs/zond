@@ -644,12 +644,23 @@ impl Narrator {
         let mut strategies = 0_usize;
         let mut fingerprinting = false;
         let mut detections = 0_usize;
+        let mut unnamed = false;
         for failure in report.failures() {
             match failure.scanner() {
                 ScannerKind::Service => fingerprinting = true,
                 ScannerKind::Detection => detections += 1,
+                // Neither costs coverage: a journal behind or names missing
+                // leave every target asked.
+                ScannerKind::Journal => {}
+                ScannerKind::Resolver => unnamed = true,
                 _ => strategies += 1,
             }
+        }
+        if unnamed {
+            self.note("hostnames not looked up (resolver failed)")?;
+        }
+        if strategies == 0 && !fingerprinting && detections == 0 {
+            return Ok(());
         }
 
         let mut unfinished = Vec::new();
@@ -2044,6 +2055,23 @@ mod tests {
             ),
             "{said}"
         );
+    }
+
+    /// A resolver that failed lost names and no ground: every target was
+    /// still asked. Said as what it cost, and not as coverage the run lacks.
+    #[test]
+    fn a_failed_resolver_is_missing_names_rather_than_coverage() {
+        let failed = zond_engine::report::ScannerFailure::new(
+            ScannerKind::Resolver,
+            "not started: no name server configured (no hostnames)",
+        );
+        let said = summarised(&failing(vec![failed]));
+
+        assert!(
+            said.contains("hostnames not looked up (resolver failed)"),
+            "{said}"
+        );
+        assert!(!said.contains("coverage incomplete"), "{said}");
     }
 
     /// A port the service pass could not reach, as the engine files one.
