@@ -247,11 +247,8 @@ fn enforce(root: &std::path::Path, limit: settings::EntryLimit) {
     // that out.
     let Some(cap) = limit.cap() else { return };
 
-    let retention = Retention {
-        completed_for: None,
-        incomplete_for: None,
-        keep_at_most: Some(cap),
-    };
+    let mut retention = Retention::default();
+    retention.keep_at_most = Some(cap);
 
     match store::prune(root, &retention) {
         Ok(pruned) => {

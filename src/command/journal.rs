@@ -221,10 +221,10 @@ fn remove(
 
         match store::remove(&entry.directory) {
             Ok(()) => pruned.removed.push(entry.manifest.id.clone()),
-            Err(error) => pruned.held.push(store::Held {
-                id: entry.manifest.id.clone(),
-                reason: error.to_string(),
-            }),
+            Err(error) => pruned.held.push(store::Held::new(
+                entry.manifest.id.clone(),
+                error.to_string(),
+            )),
         }
     }
 
@@ -322,13 +322,12 @@ fn prune(
         let entries = read()?;
         let selected = retention.expired(&entries, std::time::SystemTime::now());
 
-        store::Pruned {
-            removed: selected
-                .into_iter()
-                .map(|index| entries[index].manifest.id.clone())
-                .collect(),
-            held: Vec::new(),
-        }
+        let mut pruned = store::Pruned::default();
+        pruned.removed = selected
+            .into_iter()
+            .map(|index| entries[index].manifest.id.clone())
+            .collect();
+        pruned
     } else {
         store::prune(&root, retention)?
     };
@@ -356,33 +355,20 @@ fn prune(
 /// whichever of them ran last. Ages are this command's own: nothing prunes by
 /// time unless somebody asks for it here.
 fn retention(all: bool, completed: bool, older_than: Option<Duration>) -> Result<Retention, Error> {
+    let mut retention = Retention::default();
     if all {
-        return Ok(Retention {
-            completed_for: Some(Duration::ZERO),
-            incomplete_for: Some(Duration::ZERO),
-            keep_at_most: None,
-        });
+        retention.completed_for = Some(Duration::ZERO);
+        retention.incomplete_for = Some(Duration::ZERO);
+        return Ok(retention);
     }
 
-    let standing = Retention {
-        keep_at_most: configured_limit()?.cap(),
-        ..Retention::default()
-    };
-
+    retention.keep_at_most = configured_limit()?.cap();
     if completed {
-        return Ok(Retention {
-            completed_for: Some(Duration::ZERO),
-            ..standing
-        });
+        retention.completed_for = Some(Duration::ZERO);
+    } else if let Some(age) = older_than {
+        retention.completed_for = Some(age);
     }
-
-    Ok(match older_than {
-        Some(age) => Retention {
-            completed_for: Some(age),
-            ..standing
-        },
-        None => standing,
-    })
+    Ok(retention)
 }
 
 /// Where the journals are, or why they cannot be found.

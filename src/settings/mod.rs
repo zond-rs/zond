@@ -1149,11 +1149,8 @@ mod tests {
     /// or a configuration root that both would read.
     #[test]
     fn roots_own_settings_are_those_under_a_home_that_is_not_the_users() {
-        let erik = zond_engine::journal::paths::InvokingUser {
-            uid: 1000,
-            gid: 1000,
-            home: PathBuf::from("/home/erik"),
-        };
+        let erik =
+            zond_engine::journal::paths::InvokingUser::new(1000, 1000, PathBuf::from("/home/erik"));
 
         assert_eq!(
             roots_directory(&erik, false, Some(Path::new("/root"))),
@@ -1185,11 +1182,8 @@ mod tests {
     /// differs and nothing is said.
     #[test]
     fn whose_settings_are_read_is_said_only_when_the_homes_differ() {
-        let erik = zond_engine::journal::paths::InvokingUser {
-            uid: 1000,
-            gid: 1000,
-            home: PathBuf::from("/home/erik"),
-        };
+        let erik =
+            zond_engine::journal::paths::InvokingUser::new(1000, 1000, PathBuf::from("/home/erik"));
         let settings = Path::new("/home/erik/.config/zond");
 
         assert_eq!(

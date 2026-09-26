@@ -431,12 +431,12 @@ mod tests {
         manifest.engine_version = "0.12.0".to_string();
         manifest.total_targets = total;
 
-        Entry {
-            directory: std::path::PathBuf::from("/tmp").join(id),
+        Entry::new(
+            std::path::PathBuf::from("/tmp").join(id),
             manifest,
-            checkpoint: settled.map(|watermark| Checkpoint::new(watermark, [])),
+            settled.map(|watermark| Checkpoint::new(watermark, [])),
             lock,
-        }
+        )
     }
 
     fn rendered(f: impl FnOnce(&mut Vec<u8>) -> io::Result<()>) -> String {
@@ -656,10 +656,8 @@ mod tests {
     /// A dry run says what would go, and does not claim it went.
     #[test]
     fn a_dry_run_says_would() {
-        let pruned = Pruned {
-            removed: vec!["01AAA".to_string()],
-            held: Vec::new(),
-        };
+        let mut pruned = Pruned::default();
+        pruned.removed.push("01AAA".to_string());
 
         let text =
             rendered(|out| super::pruned(&pruned, true, Presentation::Minimal, out, Style::bare()));

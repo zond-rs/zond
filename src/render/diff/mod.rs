@@ -740,13 +740,13 @@ mod tests {
         let reassessed = lower(HostChange::Findings {
             appeared: Vec::new(),
             resolved: Vec::new(),
-            reassessed: vec![Reassessment {
-                finding: finding(Severity::Critical),
-                severity: Change {
+            reassessed: vec![Reassessment::new(
+                finding(Severity::Critical),
+                Change {
                     before: Severity::High,
                     after: Severity::Critical,
                 },
-            }],
+            )],
         });
         assert_eq!(
             sentence(&reassessed[0], field::Reader::default()),
