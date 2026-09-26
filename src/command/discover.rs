@@ -20,7 +20,6 @@
 
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::store::Journal;
-use zond_engine::model::ip::set::IpSet;
 use zond_engine::{ZondConfig, discover, discover_with_journal};
 
 use crate::cli::DiscoverArgs;
@@ -146,7 +145,7 @@ async fn started(
         .then(|| {
             command::record(
                 &Plan::discovery(targets.ips(), &config.exclusions, config.segment_sweep),
-                summarise(targets.ips()),
+                targets.summary().to_owned(),
             )
         })
         .flatten();
@@ -182,20 +181,4 @@ fn continued(
         Targets::resumed(addresses, resumed.remaining, described),
         Some(resumed.journal),
     ))
-}
-
-/// How a sweep is described in a listing.
-///
-/// Short enough for a column and specific enough to recognise: where it started
-/// and how much ground it covered. Nothing decides anything from this text.
-fn summarise(addresses: &IpSet) -> String {
-    let first = addresses
-        .iter()
-        .next()
-        .map_or_else(|| String::from("nothing"), |ip| ip.to_string());
-
-    match addresses.len() {
-        0 | 1 => first,
-        n => format!("{first} and {} more", n - 1),
-    }
 }

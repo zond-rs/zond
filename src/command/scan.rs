@@ -188,7 +188,7 @@ async fn started(
         .then(|| {
             command::record(
                 &Plan::port_scan(targets.map(), &config.exclusions, config.tcp_technique),
-                summarise(targets.map()),
+                targets.summary().to_owned(),
             )
         })
         .flatten();
@@ -273,31 +273,6 @@ fn uniform_ports(plan: &TargetMap) -> Option<PortSet> {
     rest.iter()
         .all(|unit| unit.ports() == first.ports())
         .then(|| first.ports().clone())
-}
-
-/// How a plan is described in a listing.
-///
-/// Short enough for a column and specific enough to recognise: what was scanned
-/// and how much of it. Nothing decides anything from this text.
-fn summarise(plan: &TargetMap) -> String {
-    let addresses = plan.gross_ips().unwrap_or_default();
-    let ports: usize = plan.units.iter().map(|unit| unit.ports().len()).sum();
-
-    let first = plan
-        .units
-        .first()
-        .and_then(|unit| unit.ips().iter().next())
-        .map_or_else(|| String::from("nothing"), |ip| ip.to_string());
-
-    let ports = match ports {
-        1 => String::from("1 port"),
-        n => format!("{n} ports"),
-    };
-
-    match addresses {
-        0 | 1 => format!("{first} on {ports}"),
-        n => format!("{first} and {} more on {ports}", n - 1),
-    }
 }
 
 /// The ports to probe: `--ports`, then the two top-ports flags, then the

@@ -60,6 +60,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
 
+use zond_engine::model::ip::range::IpRange;
 use zond_engine::model::parse::ip::{
     IpParseError, Keyword, ResolverFn, ZoneResolverFn, names_keyword,
 };
@@ -182,9 +183,10 @@ struct Asked {
     expressions: Vec<String>,
     segment_sweep: bool,
     exclusions: Exclusions,
-    /// The addresses an expression names on their own that the run withholds,
-    /// which a header line leaves out; see [`withholding`](Self::withholding).
-    withheld: Vec<IpAddr>,
+    /// The parts of the expressions, as written and trimmed, that name no
+    /// address the run covers, which a header line leaves out; see
+    /// [`withholding`](Self::withholding).
+    withheld: Vec<String>,
 }
 
 impl Asked {
@@ -214,35 +216,45 @@ impl Asked {
         }
     }
 
-    /// The same, told which of the addresses named on their own the run
-    /// covers, so a header line leaves out the ones it does not.
+    /// The same, told which addresses the run covers, so a header line leaves
+    /// out a part of an expression that names none of them.
     ///
     /// A header names the ground a run covers, and `across 1 host
     /// (192.0.2.9,192.0.2.30)` with `.30` excluded names a host the run sends
-    /// nothing, the more so where it leads the line. A range or a name stays as
-    /// written, since it stands for more than the address withheld from it and
-    /// the exclusion line beneath says what was.
-    fn withholding(mut self, covered: impl Fn(IpAddr) -> bool) -> Self {
+    /// nothing, the more so where it leads the line; so does a link-local
+    /// range with no interface named, which the scan cannot send to at all.
+    /// A part is left out only where the run covers none of what it names. A
+    /// range the run covers some of stays as written, since the exclusion
+    /// line beneath says what was withheld from it, and so does a name, which
+    /// stands for addresses this cannot see.
+    fn withholding(mut self, covered: &IpSet) -> Self {
         self.withheld = self
             .expressions
             .iter()
             .flat_map(|expression| expression.split(','))
-            .filter_map(named_alone)
-            .filter(|address| !covered(*address))
+            .filter(|part| {
+                named_set(part).is_some_and(|named| {
+                    let mut uncovered = named.clone();
+                    uncovered.subtract(covered);
+                    uncovered.len() == named.len()
+                })
+            })
+            .map(|part| part.trim().to_owned())
             .collect();
         self
     }
 
     /// The expressions as a header shows them: each as written, less any
-    /// address named on its own that the run withholds, and left out where
-    /// that is all it named.
+    /// part the run covers nothing of, and left out where that is all it
+    /// named. Where that would leave nothing, the expressions as written: a
+    /// line naming no ground reads as a run asked about nothing, and the
+    /// count beside it already says the run covers none of it.
     fn shown(&self) -> Vec<String> {
-        self.expressions
+        let withheld = |part: &&str| self.withheld.iter().any(|held| held == part.trim());
+        let shown: Vec<String> = self
+            .expressions
             .iter()
             .filter_map(|expression| {
-                let withheld = |part: &&str| {
-                    named_alone(part).is_some_and(|address| self.withheld.contains(&address))
-                };
                 if !expression.split(',').any(|part| withheld(&part)) {
                     return Some(expression.clone());
                 }
@@ -253,7 +265,12 @@ impl Asked {
                     .collect();
                 (!kept.is_empty()).then(|| kept.join(","))
             })
-            .collect()
+            .collect();
+        if shown.is_empty() {
+            self.expressions.clone()
+        } else {
+            shown
+        }
     }
 
     /// Writes what these targets imply into `cfg`.
@@ -284,13 +301,63 @@ impl Asked {
 /// short line however many targets were named.
 const EXPRESSIONS_SHOWN: usize = 24;
 
-/// The address a part of an expression names on its own, bare or with a
-/// port, or `None` for a range, a network or a name.
-fn named_alone(part: &str) -> Option<IpAddr> {
+/// A sweep's ground, for [`Targets::summary`].
+fn swept(addresses: &IpSet) -> String {
+    let first = addresses
+        .iter()
+        .next()
+        .map_or_else(|| String::from("nothing"), |ip| ip.to_string());
+
+    match addresses.len() {
+        0 | 1 => first,
+        n => format!("{first} and {} more", n - 1),
+    }
+}
+
+/// A scan's probes, for [`ScanTargets::summary`].
+fn scanned(plan: &TargetMap) -> String {
+    let addresses = plan.gross_ips().unwrap_or_default();
+    let ports: usize = plan.units.iter().map(|unit| unit.ports().len()).sum();
+
+    let first = plan
+        .units
+        .first()
+        .and_then(|unit| unit.ips().iter().next())
+        .map_or_else(|| String::from("nothing"), |ip| ip.to_string());
+
+    let ports = match ports {
+        1 => String::from("1 port"),
+        n => format!("{n} ports"),
+    };
+
+    match addresses {
+        0 | 1 => format!("{first} on {ports}"),
+        n => format!("{first} and {} more on {ports}", n - 1),
+    }
+}
+
+/// The addresses a part of an expression names, where it names them in
+/// itself: an address, bare or with a port, a range or a network, or `None`
+/// for a name or a keyword, which stand for addresses only a lookup finds.
+/// An interface named after `%` is left out of the set, as the set's own
+/// membership test leaves it out.
+fn named_set(part: &str) -> Option<IpSet> {
     let part = part.trim();
-    part.parse::<IpAddr>()
+    let range = part
+        .parse::<IpRange>()
         .ok()
-        .or_else(|| part.parse::<std::net::SocketAddr>().ok().map(|at| at.ip()))
+        .or_else(|| {
+            let (bare, _zone) = part.split_once('%')?;
+            bare.parse::<IpRange>().ok()
+        })
+        .or_else(|| {
+            let at = part.parse::<std::net::SocketAddr>().ok()?.ip();
+            at.to_string().parse::<IpRange>().ok()
+        })?;
+    let mut set = IpSet::new();
+    set.insert_range(range);
+    set.canonicalize();
+    Some(set)
 }
 
 impl fmt::Display for Asked {
@@ -323,6 +390,9 @@ pub(crate) struct Targets {
     asked: Asked,
     ips: IpSet,
     remaining: u128,
+    /// The ground the sweep covers, as a listing names it; see
+    /// [`summary`](Self::summary).
+    summary: String,
     /// How many of the addresses left are withheld as another address of a
     /// machine the exclusions name; see [`measured`].
     tied: u128,
@@ -343,15 +413,25 @@ impl Targets {
     pub(crate) fn resumed(ips: IpSet, remaining: u128, label: String) -> Self {
         Self {
             asked: Asked {
-                expressions: vec![label],
+                expressions: vec![label.clone()],
                 segment_sweep: false,
                 exclusions: Exclusions::none(),
                 withheld: Vec::new(),
             },
             ips,
             remaining,
+            summary: label,
             tied: 0,
         }
+    }
+
+    /// The ground this sweep covers, as a listing of recorded jobs names it:
+    /// where it starts and how many addresses it holds, after the exclusions,
+    /// since a record named for an address it never asked describes a sweep
+    /// that was not run. Nothing decides anything from this text.
+    #[must_use]
+    pub(crate) fn summary(&self) -> &str {
+        &self.summary
     }
 
     /// Takes the addresses, for handing to the engine.
@@ -465,9 +545,10 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
     }
 
     Ok(Targets {
-        asked: asked.withholding(|address| walked.contains(&address)),
+        asked: asked.withholding(&walked),
         ips,
         remaining,
+        summary: swept(&walked),
         tied,
     })
 }
@@ -608,6 +689,9 @@ pub(crate) struct ScanTargets {
     /// How many of the addresses left are withheld as another address of a
     /// machine the exclusions name; see [`measured`].
     tied: u128,
+    /// What the scan probes, as a listing names it; see
+    /// [`summary`](Self::summary).
+    summary: String,
 }
 
 impl ScanTargets {
@@ -623,11 +707,12 @@ impl ScanTargets {
 
         Self {
             asked: Asked {
-                expressions: vec![label],
+                expressions: vec![label.clone()],
                 segment_sweep: false,
                 exclusions: Exclusions::none(),
                 withheld: Vec::new(),
             },
+            summary: label,
             probes: remaining,
             hosts,
             // The recorded plan is what the exclusions left of it, so they
@@ -638,6 +723,16 @@ impl ScanTargets {
             // A resumed scan's names come back with its options.
             names: BTreeMap::new(),
         }
+    }
+
+    /// What this scan probes, as a listing of recorded jobs names it: where
+    /// it starts, how many addresses and how many ports, after the
+    /// exclusions, the excluded ports and what the scan withholds rather than
+    /// probes, since a record named for a port it never asked describes a
+    /// scan that was not run. Nothing decides anything from this text.
+    #[must_use]
+    pub(crate) fn summary(&self) -> &str {
+        &self.summary
     }
 
     /// The map to hand the engine.
@@ -768,6 +863,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
         tied,
         map,
         names,
+        summary: scanned(&probed),
     };
 
     if !addressed && !targets.map.is_empty() {
@@ -790,14 +886,18 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
         });
     }
 
-    let covered = |address: IpAddr| {
-        walked
-            .units
-            .iter()
-            .any(|unit| unit.ips().contains(&address))
-    };
+    let mut covered = IpSet::new();
+    for unit in &probed.units {
+        for range in unit.ips().v4() {
+            covered.push_v4_range(*range);
+        }
+        for range in unit.ips().v6() {
+            covered.push_v6_range(*range);
+        }
+    }
+    covered.canonicalize();
     Ok(ScanTargets {
-        asked: targets.asked.withholding(covered),
+        asked: targets.asked.withholding(&covered),
         ..targets
     })
 }
@@ -933,6 +1033,7 @@ mod tests {
                 ips: IpSet::new(),
                 remaining: 0,
                 tied: 0,
+                summary: String::new(),
             };
             let port_scan = ScanTargets {
                 asked,
@@ -942,6 +1043,7 @@ mod tests {
                 hosts: 0,
                 excluded: 0,
                 tied: 0,
+                summary: String::new(),
             };
 
             let mut from_discovery = ZondConfig::default();
@@ -1191,6 +1293,53 @@ mod tests {
             panic!("a run with every address excluded must be refused");
         };
         assert!(refused.to_string().contains("192.0.2.30"), "{refused}");
+    }
+
+    /// **A header and a record's summary name only what the run covers.** A
+    /// range the run can send nothing to, a link-local one naming no
+    /// interface or one the exclusions take whole, is left out of the header
+    /// as an excluded address is, while one it covers part of stays as
+    /// written. A record is summarised by what it probes, less the excluded
+    /// ports and addresses, since the listing that names it is what a reader
+    /// resumes it by.
+    #[tokio::test]
+    async fn a_header_and_a_summary_name_only_what_the_run_covers() {
+        let scan = resolve_ports(
+            &["fe80::1-fe80::2", "192.0.2.1"],
+            &[] as &[&str],
+            &Exclusions::none(),
+            "80".parse().expect("a valid port set"),
+            &PortSet::new(),
+            false,
+        )
+        .await
+        .expect("well-formed");
+        assert_eq!(scan.to_string(), "192.0.2.1");
+        assert_eq!(scan.summary(), "192.0.2.1 on 1 port");
+
+        let ports = resolve_ports(
+            &["192.0.2.1"],
+            &[] as &[&str],
+            &Exclusions::none(),
+            "47300-47303".parse().expect("a valid port set"),
+            &"47301".parse().expect("a valid port set"),
+            false,
+        )
+        .await
+        .expect("well-formed");
+        assert_eq!(ports.summary(), "192.0.2.1 on 3 ports");
+
+        let sweep = offline_excluding(&["192.0.2.64/30", "192.0.2.8/30"], &["192.0.2.8/30"])
+            .await
+            .expect("well-formed");
+        assert_eq!(sweep.to_string(), "192.0.2.64/30");
+        assert_eq!(sweep.summary(), "192.0.2.64 and 3 more");
+
+        let partly = offline_excluding(&["192.0.2.0/30"], &["192.0.2.0/31"])
+            .await
+            .expect("well-formed");
+        assert_eq!(partly.to_string(), "192.0.2.0/30");
+        assert_eq!(partly.summary(), "192.0.2.2 and 1 more");
     }
 
     /// The derivation a port scan does for itself, since nothing resolved it on
