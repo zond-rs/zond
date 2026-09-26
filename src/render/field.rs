@@ -3872,7 +3872,9 @@ mod tests {
     }
 
     /// The names a host gave for itself are masked as its hostname is, the
-    /// domain among them, and a name two protocols both stated is drawn once.
+    /// domain among them, and a name two protocols both stated is drawn once:
+    /// a domain controller's realm is its domain in capitals, and its name
+    /// table repeats the NetBIOS name its NTLM challenge gave.
     #[test]
     fn names_are_masked_and_drawn_once_whichever_protocols_stated_them() {
         use zond_engine::model::host::{HostName, NameSource};
@@ -3882,6 +3884,10 @@ mod tests {
             (NameKind::Host, NameSource::Ntlm, "DC01.corp.example"),
             (NameKind::Host, NameSource::Ldap, "dc01.corp.example"),
             (NameKind::Domain, NameSource::Ldap, "corp.example"),
+            (NameKind::Domain, NameSource::Kerberos, "CORP.EXAMPLE"),
+            (NameKind::NetbiosHost, NameSource::Ntlm, "DC01"),
+            (NameKind::NetbiosHost, NameSource::Netbios, "DC01"),
+            (NameKind::NetbiosDomain, NameSource::Smb, "CORP"),
         ] {
             host.record_name(HostName::new(kind, source, name).expect("a name"));
         }
@@ -3890,7 +3896,9 @@ mod tests {
             Reader::default().names(&host),
             [
                 ("DC01.corp.example".to_owned(), "host"),
+                ("DC01".to_owned(), "NetBIOS host"),
                 ("corp.example".to_owned(), "domain"),
+                ("CORP".to_owned(), "NetBIOS domain"),
             ]
         );
         let masked = format!("{:?}", Reader::new(Redaction::Standard).names(&host));
