@@ -173,6 +173,7 @@ async fn started(
         &args.engine.exclude,
         &config.exclusions,
         ports,
+        &config.excluded_ports,
         !config.no_dns,
     )
     .await?;
@@ -245,6 +246,7 @@ async fn continued(
             &args.engine.exclude,
             &config.exclusions,
             ports,
+            &config.excluded_ports,
             !config.no_dns,
         )
         .await?;

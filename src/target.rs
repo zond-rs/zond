@@ -147,6 +147,18 @@ pub(crate) enum TargetError {
         expression: String,
     },
 
+    /// The excluded ports cover every port the targets would be asked on,
+    /// leaving nothing to send.
+    ///
+    /// Reported rather than run for the reason
+    /// [`EverythingExcluded`](Self::EverythingExcluded) is: a scan that asked
+    /// nothing reads as one that found nothing.
+    #[error("every port {expression} is asked on is excluded (--exclude-ports)")]
+    EveryPortExcluded {
+        /// The target expressions as they were written.
+        expression: String,
+    },
+
     /// The expression is well formed and names more probes than one port scan
     /// will spend. See [`MAX_PROBES`].
     #[error(
@@ -590,12 +602,14 @@ fn host_context() -> TargetContext<'static> {
 ///
 /// `ports` is the *default*. An expression naming its own, as in
 /// `10.0.0.1:8080` or `[2001:db8::1]:443`, keeps them, and everything else gets
-/// these.
+/// these. `excluded_ports` is what the scan will send nothing to, counted out
+/// of the probes here as the engine takes it out of the plan there.
 pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     expressions: &[S],
     exclude: &[E],
     inherited: &Exclusions,
     ports: PortSet,
+    excluded_ports: &PortSet,
     resolve_names: bool,
 ) -> Result<ScanTargets, TargetError> {
     let context = host_context();
@@ -614,6 +628,8 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     // has been forbidden to send.
     let mut walked = map.clone();
     exclusions.withhold_targets(&mut walked);
+    let addressed = !walked.is_empty();
+    walked.withhold_ports(excluded_ports);
 
     // The same question the engine answers for a sweep, asked the same way.
     let targets = ScanTargets {
@@ -624,8 +640,13 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
         names,
     };
 
-    if targets.hosts == 0 && !targets.map.is_empty() {
+    if !addressed && !targets.map.is_empty() {
         return Err(TargetError::EverythingExcluded {
+            expression: targets.to_string(),
+        });
+    }
+    if targets.hosts == 0 && addressed {
+        return Err(TargetError::EveryPortExcluded {
             expression: targets.to_string(),
         });
     }
@@ -880,6 +901,44 @@ mod tests {
         assert!(error.to_string().contains("db.internal"));
     }
 
+    /// Excluded ports are counted out of what a scan will cost, a target's
+    /// own ports among them, and a scan they leave nothing to ask is refused
+    /// rather than run.
+    ///
+    /// A header counting a port the scan will send nothing to overstates the
+    /// run, and a run that asked nothing reads as one that found nothing.
+    #[tokio::test]
+    async fn excluded_ports_are_counted_out_and_excluding_every_one_is_refused() {
+        let excluded: PortSet = "9100-9107".parse().expect("a valid port set");
+
+        let targets = resolve_ports(
+            &["192.0.2.0/30", "198.51.100.7:9100"],
+            &[] as &[&str],
+            &Exclusions::none(),
+            "22,9100".parse().expect("a valid port set"),
+            &excluded,
+            false,
+        )
+        .await
+        .expect("well-formed");
+        assert_eq!(targets.probes(), 4, "four addresses on 22 alone");
+        assert_eq!(targets.hosts(), 4, "the one asked only 9100 is not a host");
+
+        let refused = resolve_ports(
+            &["192.0.2.1"],
+            &[] as &[&str],
+            &Exclusions::none(),
+            "9100,9101".parse().expect("a valid port set"),
+            &excluded,
+            false,
+        )
+        .await;
+        let Err(error @ TargetError::EveryPortExcluded { .. }) = refused else {
+            panic!("a scan with every port excluded must be refused");
+        };
+        assert!(error.to_string().contains("--exclude-ports"), "{error}");
+    }
+
     /// A port scan is counted the same way, in probes rather than addresses.
     #[tokio::test]
     async fn a_port_scan_spends_no_probes_on_an_excluded_address() {
@@ -888,6 +947,7 @@ mod tests {
             &["10.0.0.128/25"],
             &Exclusions::none(),
             "22,80".parse().expect("a valid port set"),
+            &PortSet::new(),
             false,
         )
         .await

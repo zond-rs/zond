@@ -234,6 +234,7 @@ pub(crate) async fn test(
         &[] as &[&str],
         &config.exclusions,
         ports,
+        &config.excluded_ports,
         !config.no_dns,
     )
     .await?;

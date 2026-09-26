@@ -1246,6 +1246,24 @@ pub(crate) struct ScanArgs {
     #[arg(long)]
     pub tls_enum: bool,
 
+    /// Ports to send nothing at all, on any target: `9100-9107`, `u:161`.
+    ///
+    /// Written the way `-p` is, and taken out of it, so no probe reaches them:
+    /// not the scan, not the liveness check before it, and not OS detection
+    /// after it. The report names them. Repeat the flag, or write a list.
+    ///
+    /// A printer's raw-print ports are already sent nothing but the probe
+    /// that finds them open; exclude them to skip that too, and not find the
+    /// printers. Adds to `exclude_ports` in engine.toml.
+    #[arg(
+        long,
+        value_name = "PORTS",
+        value_parser = port_set,
+        action = ArgAction::Append,
+        allow_hyphen_values = true
+    )]
+    pub exclude_ports: Vec<PortSet>,
+
     /// Probe printers' raw-print ports, TCP 9100 to 9107, like any other port.
     ///
     /// A network printer prints whatever arrives on these ports, so by default
@@ -1363,6 +1381,9 @@ impl ScanArgs {
                 .listen_only_ports
                 .retain(|port| !RAW_PRINT_PORTS.contains(port));
         }
+        for ports in &self.exclude_ports {
+            config.excluded_ports = config.excluded_ports.union(ports);
+        }
         if self.characterise {
             config.characterise = true;
         }
@@ -1435,7 +1456,7 @@ fn parse_zombie_port(text: &str) -> Result<u16, String> {
 /// hint.
 const PORTS_SUGGESTED: usize = 3;
 
-/// Reads `-p` in the engine's port grammar, answering a service name written
+/// Reads `-p` and `--exclude-ports` in the engine's port grammar, answering a service name written
 /// where a number goes with the numbers to write instead.
 ///
 /// The grammar has no names, so it can only say that a name is not a number.
@@ -2951,6 +2972,34 @@ mod tests {
             config.scan_timeout,
             Some(std::time::Duration::from_secs(600))
         );
+    }
+
+    /// `--exclude-ports` adds to what the settings file excluded, across
+    /// every time it is given, and takes the `-p` grammar.
+    ///
+    /// Replacing the file's set would send to a port an administrator kept
+    /// out, and a second flag replacing the first would do the same to the
+    /// user's own.
+    #[test]
+    fn excluded_ports_add_to_the_settings_and_to_each_other() {
+        let cli = Cli::try_parse_from([
+            "zond",
+            "s",
+            "192.0.2.1",
+            "--exclude-ports",
+            "9100-9107",
+            "--exclude-ports",
+            "U:161",
+        ])
+        .expect("should parse");
+        let Command::Scan(args) = cli.command else {
+            panic!("a scan");
+        };
+        let mut config = ZondConfig::default();
+        config.excluded_ports = "22".parse().expect("a port");
+        args.apply_to(&mut config);
+
+        assert_eq!(config.excluded_ports.to_string(), "22,9100-9107,u:161");
     }
 
     /// A printer's raw-print ports are sent nothing unless the flag says

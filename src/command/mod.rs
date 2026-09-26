@@ -428,6 +428,7 @@ fn flag_for(option: &'static str) -> &'static str {
         "ip_protocols" => "--ip-protocols",
         "tls_enumeration" => "--tls-enum",
         "listen_only_ports" => "--probe-print-ports",
+        "excluded_ports" => "--exclude-ports",
         "idle_scan" => "--idle-scan",
         "evasion" => "an evasion flag",
         // An option the engine holds a job to that no flag here sets, named by

@@ -93,6 +93,8 @@ sudo zond discover 192.168.0.0/24
 Several at once, comma-separated, and a target may carry its own ports as in
 `10.0.0.1:8080`. `--exclude` takes the same grammar for addresses the run may
 not touch, enforced before the first packet and again at every finding.
+`--exclude-ports` takes the port grammar for ports no probe may reach, the
+liveness check and OS detection included.
 
 `lan` names a network rather than the range it covers, so it also sends the
 ICMPv6 all-nodes echo and reads this host's neighbour table.
@@ -138,8 +140,8 @@ out.
 
 They layer: built-in defaults, `/etc/zond/*.toml`, those two, then the flags. A
 layer speaks only about the keys it mentions, so a flag you did not pass cannot
-cancel a setting you did write. `exclude` accumulates rather than being
-overridden.
+cancel a setting you did write. `exclude` and `exclude_ports` accumulate
+rather than being overridden.
 
 `--presentation` picks how a run is drawn: `fancy` blocks, `minimal` listing, or
 `pipe` records.
