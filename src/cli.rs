@@ -27,6 +27,7 @@ use zond_engine::config::{
 };
 use zond_engine::evasion::EvasionProfile;
 use zond_engine::model::mac::MacAddr;
+use zond_engine::model::port::PortSetParseError;
 use zond_engine::model::technique::{SctpScanTechnique, TcpScanTechnique};
 use zond_engine::{PortSet, SendMode, ZondConfig};
 
@@ -1082,12 +1083,15 @@ pub(crate) struct ScanArgs {
     #[arg(value_name = "TARGET", required_unless_present = "resume", num_args = 1..)]
     pub targets: Vec<String>,
 
-    /// Which ports to probe: `22,80,443`, `1-1024`, `u:53` for UDP, `s:2905` for
-    /// SCTP.
+    /// Which ports to probe: `22,80,443`, `1-1024`, `u:53,161` for UDP,
+    /// `s:2905` for SCTP.
+    ///
+    /// A qualifier holds until the next one, as in nmap, and `t:` switches back
+    /// to TCP: `-p u:53,161,t:22`.
     ///
     /// A range may leave off either end. `-p-` is every port there is, `-p-1024`
     /// is everything up to 1024, and `-p9000-` is everything from it. The forms
-    /// compose with the rest: `-p 22,u:-,s:2905,9000-`.
+    /// compose with the rest: `-p 22,9000-,u:-,s:2905`.
     ///
     /// Defaults to `default_ports` in the settings file, and to the thousand
     /// ports most likely to be listening when that says nothing either.
@@ -1096,13 +1100,14 @@ pub(crate) struct ScanArgs {
         long,
         value_name = "PORTS",
         conflicts_with_all = ["top_ports", "top_ports_udp"],
+        value_parser = port_set,
         // `-p-` is the spelling everybody arrives with, and without this clap
         // reads the `-` as the start of another flag and refuses it.
         //
         // It costs one thing, and only on a typo: `-p` with its value left off
         // now swallows whatever follows instead of reporting a missing value.
         // What that produces is still an error naming the swallowed token,
-        // "malformed port specification: '--service-detection'", which says what
+        // "'--service-detection' is not a port or a range", which says what
         // happened plainly enough. The alternative is not supporting the
         // spelling at all.
         allow_hyphen_values = true
@@ -1421,6 +1426,68 @@ fn parse_zombie_addr(text: &str) -> Result<std::net::IpAddr, String> {
 fn parse_zombie_port(text: &str) -> Result<u16, String> {
     text.parse::<u16>()
         .map_err(|_| format!("'{text}' is not a port (0 to 65535)"))
+}
+
+/// The most port numbers a refusal suggests for a service name.
+///
+/// `http` is registered on dozens; the first few by prevalence are what a
+/// person writing the name almost always means, and more would stop being a
+/// hint.
+const PORTS_SUGGESTED: usize = 3;
+
+/// Reads `-p` in the engine's port grammar, answering a service name written
+/// where a number goes with the numbers to write instead.
+///
+/// The grammar has no names, so it can only say that a name is not a number.
+/// Which numbers `ssh` stands for is the signature corpus's to say, since it
+/// names the services the engine identifies, and the corpus sits above the
+/// grammar: so the suggestion is made here, where both are in reach.
+fn port_set(text: &str) -> Result<PortSet, String> {
+    PortSet::try_from(text).map_err(|error| match &error {
+        PortSetParseError::ServiceName(written) => {
+            let name = written
+                .split_once(':')
+                .map_or(written.as_str(), |(_, name)| name);
+            let qualifier = &written[..written.len() - name.len()];
+            let ports = ports_named(name);
+            if ports.is_empty() {
+                error.to_string()
+            } else {
+                let ports: Vec<String> = ports.iter().map(u16::to_string).collect();
+                format!(
+                    "'{written}' is not a port number (write {qualifier}{} for {name})",
+                    ports.join(",")
+                )
+            }
+        }
+        _ => error.to_string(),
+    })
+}
+
+/// The ports the signature corpus registers `name` on, most prevalent first,
+/// at most [`PORTS_SUGGESTED`] of them.
+fn ports_named(name: &str) -> Vec<u16> {
+    let corpus = zond_engine::fingerprint::SignatureDb::global();
+    let ranked = zond_engine::model::port::catalog::top_tcp(usize::MAX);
+    let mut ports: Vec<u16> = corpus
+        .indexed_ports()
+        .filter(|&port| {
+            corpus
+                .service_name(port)
+                .is_some_and(|registered| registered.eq_ignore_ascii_case(name))
+        })
+        .collect();
+    ports.sort_by_key(|port| {
+        (
+            ranked
+                .iter()
+                .position(|ranked| ranked == port)
+                .unwrap_or(usize::MAX),
+            *port,
+        )
+    });
+    ports.truncate(PORTS_SUGGESTED);
+    ports
 }
 
 /// Reads a comma-separated list of IP protocol numbers into a set.
@@ -2318,6 +2385,31 @@ impl OutputArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A service name where a port goes is answered with the numbers to
+    /// write, behind the qualifier it was written with, so the hint can be
+    /// pasted where the name was. A name the corpus does not know keeps the
+    /// grammar's own refusal.
+    #[test]
+    fn a_service_name_for_a_port_is_answered_with_its_numbers() {
+        let ssh = port_set("ssh").expect_err("a name");
+        assert!(
+            ssh.starts_with("'ssh' is not a port number (write 22"),
+            "{ssh}"
+        );
+        assert!(ssh.ends_with(" for ssh)"), "{ssh}");
+
+        let snmp = port_set("22,U:snmp").expect_err("a name");
+        assert!(snmp.contains("(write U:161"), "{snmp}");
+
+        let unknown = port_set("zz-nothing").expect_err("a name");
+        assert!(
+            unknown.contains("is a name, not a port number"),
+            "{unknown}"
+        );
+
+        assert!(port_set("22,u:53").is_ok());
+    }
     use clap::CommandFactory;
 
     /// A clap derive can produce a definition that only panics at runtime: a
