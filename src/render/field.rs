@@ -2599,19 +2599,30 @@ fn ranges(ranges: &[zond_engine::model::ip::range::IpRange]) -> IpSet {
     set
 }
 
-/// How many addresses this host had no route to.
+/// How many addresses this host had no route to, and apart from them how
+/// many its own routing table refuses.
 ///
 /// Counted across every phase and de-duplicated, since the liveness phase and
-/// the port scan can each meet the same unreachable address.
-pub(crate) fn unroutable(report: &ScanReport) -> u128 {
-    let mut seen: Vec<IpAddr> = report
-        .phases()
-        .iter()
-        .flat_map(|phase| phase.unroutable().iter().copied())
-        .collect();
-    seen.sort_unstable();
-    seen.dedup();
-    seen.len() as u128
+/// the port scan can each meet the same unreachable address. An address any
+/// phase names as refused by a route is counted there and not among the
+/// first, which are the ones nothing on this machine refused.
+pub(crate) fn unroutable_and_refused(report: &ScanReport) -> (u128, u128) {
+    let gathered = |of: fn(&zond_engine::report::ScanPhase) -> &[IpAddr]| {
+        let mut seen: Vec<IpAddr> = report
+            .phases()
+            .iter()
+            .flat_map(|phase| of(phase).iter().copied())
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    };
+    let refused = gathered(zond_engine::report::ScanPhase::refused_by_route);
+    let unroutable = gathered(zond_engine::report::ScanPhase::unroutable)
+        .into_iter()
+        .filter(|address| refused.binary_search(address).is_err())
+        .count();
+    (unroutable as u128, refused.len() as u128)
 }
 
 /// The open TCP ports a phase only listened on and sent nothing, as their
@@ -3689,6 +3700,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),

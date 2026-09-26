@@ -873,6 +873,7 @@ mod tests {
             failures: Vec::new(),
             refusals,
             unroutable,
+            refused_by_route: Vec::new(),
             timed_out,
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),

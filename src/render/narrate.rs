@@ -436,6 +436,44 @@ impl Narrator {
         Ok(())
     }
 
+    /// Says which addresses went unscanned for want of a way to them: the
+    /// ones this host's own routing table refuses, and the rest.
+    fn unreached(&mut self, report: &ScanReport) -> io::Result<()> {
+        // The result most likely to be read as a broken tool rather than an
+        // answer: nothing scanned, and no reason given for it.
+        //
+        // Two reasons an address goes unscanned, and they are said separately
+        // because the advice differs. A host that was asked and stayed silent
+        // may well be up behind a firewall, and `--assume-up` reaches it. A host
+        // this one could not reach was never asked, and nothing about scanning
+        // on trust changes that. Offering it there is advice that cannot work,
+        // sent to somebody already wondering why their target is missing.
+        //
+        // "Could not be reached" rather than "had no route", because the engine
+        // files two things here: an address with no route to it, and one on the
+        // local segment that never answered its address resolution. The second
+        // has a route, and a reader told otherwise goes looking at a routing
+        // table for a host that is simply not there.
+        //
+        // Except the ones this host's own routing table refuses, said apart
+        // because the remedy is here rather than on the path: a route somebody
+        // added, which every program on the machine honours.
+        let (unroutable, refused) = field::unroutable_and_refused(report);
+        if refused > 0 {
+            self.note(&format!(
+                "{refused} {} refused by a route here, not scanned",
+                plural(refused, "address"),
+            ))?;
+        }
+        if unroutable > 0 {
+            self.note(&format!(
+                "{unroutable} {} unreachable, not scanned",
+                plural(unroutable, "address"),
+            ))?;
+        }
+        Ok(())
+    }
+
     /// What qualifies the count below it: the ground the run did not
     /// cover, the tier it was not asked to run, and the strategies that
     /// did not finish.
@@ -529,28 +567,7 @@ impl Narrator {
             }
         }
 
-        // The result most likely to be read as a broken tool rather than an
-        // answer: nothing scanned, and no reason given for it.
-        //
-        // Two reasons an address goes unscanned, and they are said separately
-        // because the advice differs. A host that was asked and stayed silent
-        // may well be up behind a firewall, and `--assume-up` reaches it. A host
-        // this one could not reach was never asked, and nothing about scanning
-        // on trust changes that. Offering it there is advice that cannot work,
-        // sent to somebody already wondering why their target is missing.
-        //
-        // "Could not be reached" rather than "had no route", because the engine
-        // files two things here: an address with no route to it, and one on the
-        // local segment that never answered its address resolution. The second
-        // has a route, and a reader told otherwise goes looking at a routing
-        // table for a host that is simply not there.
-        let unroutable = field::unroutable(report);
-        if unroutable > 0 {
-            self.note(&format!(
-                "{unroutable} {} unreachable, not scanned",
-                plural(unroutable, "address"),
-            ))?;
-        }
+        self.unreached(report)?;
 
         // Beside the silent ones and apart from them, because the remedy
         // differs: an address nobody reached a verdict on is not down, and
@@ -1160,6 +1177,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
@@ -1211,6 +1229,7 @@ mod tests {
             failures: phase.failures().to_vec(),
             refusals,
             unroutable: phase.unroutable().to_vec(),
+            refused_by_route: phase.refused_by_route().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
@@ -1316,6 +1335,19 @@ mod tests {
         refusals: Vec<zond_engine::report::Refusal>,
         unroutable: Vec<std::net::IpAddr>,
     ) -> ScanReport {
+        port_scanned_behind(privilege, hosts, covered, refusals, unroutable, Vec::new())
+    }
+
+    /// The same, the addresses among `unroutable` that `refused_by_route`
+    /// names refused by this host's routing table.
+    fn port_scanned_behind(
+        privilege: Privilege,
+        hosts: Vec<zond_engine::Host>,
+        covered: &str,
+        refusals: Vec<zond_engine::report::Refusal>,
+        unroutable: Vec<std::net::IpAddr>,
+        refused_by_route: Vec<std::net::IpAddr>,
+    ) -> ScanReport {
         use std::time::Duration;
         use zond_engine::ZondConfig;
         use zond_engine::model::exclusion::Exclusions;
@@ -1335,6 +1367,7 @@ mod tests {
             failures: Vec::new(),
             refusals,
             unroutable,
+            refused_by_route,
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
@@ -1474,6 +1507,7 @@ mod tests {
             failures: phase.failures().to_vec(),
             refusals: phase.refusals().to_vec(),
             unroutable: phase.unroutable().to_vec(),
+            refused_by_route: phase.refused_by_route().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
@@ -1536,6 +1570,7 @@ mod tests {
                 failures: phase.failures().to_vec(),
                 refusals: phase.refusals().to_vec(),
                 unroutable: phase.unroutable().to_vec(),
+                refused_by_route: phase.refused_by_route().to_vec(),
                 timed_out: phase.timed_out().to_vec(),
                 icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
                 reached_by_connect: phase.reached_by_connect().to_vec(),
@@ -1604,6 +1639,38 @@ mod tests {
         assert!(!said.contains("no route"), "{said}");
     }
 
+    /// An address this host's own routing table refuses is said to be, apart
+    /// from the addresses nothing reached, since the remedy is a route on this
+    /// machine rather than anything on the path; and it is not counted among
+    /// the unreachable a second time.
+    #[test]
+    fn an_address_a_route_refuses_is_said_to_be_refused_by_it() {
+        let refused: std::net::IpAddr = "192.0.2.1".parse().expect("a literal address");
+        let dead: std::net::IpAddr = "192.0.2.2".parse().expect("a literal address");
+        let report = port_scanned_behind(
+            Privilege::Raw,
+            vec![host_holding(
+                1..=2,
+                zond_engine::Protocol::Tcp,
+                zond_engine::PortState::Unasked,
+            )],
+            "192.0.2.1-192.0.2.2",
+            Vec::new(),
+            vec![refused, dead],
+            vec![refused],
+        );
+        let said = summarised(&report);
+
+        assert!(
+            said.contains("1 address refused by a route here, not scanned"),
+            "{said}"
+        );
+        assert!(
+            said.contains("1 address unreachable, not scanned"),
+            "{said}"
+        );
+    }
+
     /// A scan that stopped during discovery says how many addresses it never
     /// reached a verdict on and that a resume asks them, and does not count
     /// them among those that answered no liveness probe.
@@ -1651,6 +1718,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
@@ -1719,6 +1787,7 @@ mod tests {
                 failures: Vec::new(),
                 refusals: Vec::new(),
                 unroutable: Vec::new(),
+                refused_by_route: Vec::new(),
                 timed_out: Vec::new(),
                 icmp_rate_limited: Vec::new(),
                 reached_by_connect: Vec::new(),
@@ -2149,6 +2218,7 @@ mod tests {
             failures,
             refusals: phase.refusals().to_vec(),
             unroutable: phase.unroutable().to_vec(),
+            refused_by_route: phase.refused_by_route().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
             reached_by_connect: phase.reached_by_connect().to_vec(),
@@ -2188,6 +2258,7 @@ mod tests {
             failures: Vec::new(),
             refusals: Vec::new(),
             unroutable: Vec::new(),
+            refused_by_route: Vec::new(),
             timed_out: Vec::new(),
             icmp_rate_limited: Vec::new(),
             reached_by_connect: Vec::new(),
@@ -2232,6 +2303,7 @@ mod tests {
             failures: phase.failures().to_vec(),
             refusals: phase.refusals().to_vec(),
             unroutable: phase.unroutable().to_vec(),
+            refused_by_route: phase.refused_by_route().to_vec(),
             timed_out: phase.timed_out().to_vec(),
             icmp_rate_limited: vec!["192.0.2.1".parse().expect("an address")],
             reached_by_connect: phase.reached_by_connect().to_vec(),
