@@ -635,146 +635,25 @@ pub(crate) fn provision_all() -> Provisioning {
 
 /// Creates a settings file at `path` if there is not one already.
 ///
-/// Never overwrites. `create_new` fails atomically, so two racing processes
-/// cannot both decide the file was missing, and an existing file is never read,
-/// reformatted or extended.
-///
-/// On Unix the directory is `0700` and the file `0600`, because a settings file
-/// records which networks somebody scans. Anything created under `sudo` is
-/// handed to the user who invoked it; see [`hand_to_invoker`].
+/// The engine's own provisioning, with this crate's template where the file
+/// is `cli.toml`: never overwrites, `0700` for the directory and `0600` for
+/// the file on Unix, because a settings file records which networks somebody
+/// scans. Under `sudo`, what it creates inside the invoking user's home, and
+/// whatever an earlier elevated run left to root on the way, is given to that
+/// user, by the same rule the journal is given by, so the settings files and
+/// the journal cannot end up with different owners.
 pub(crate) fn provision(path: &Path, template: &str) -> Result<Provisioned, SettingsError> {
-    provision_with(path, template, hand_to_invoker)
-}
-
-fn provision_with(
-    path: &Path,
-    template: &str,
-    mut hand_to_invoker: impl FnMut(&Path),
-) -> Result<Provisioned, SettingsError> {
-    // Handed over as soon as they exist rather than once the file does, so
-    // a file that then cannot be written still leaves nothing of root's in the
-    // user's home.
-    if let Some(parent) = path.parent() {
-        for directory in create_directory(parent)? {
-            hand_to_invoker(&directory);
+    match engine_settings::provision_document(path, template) {
+        Ok(engine_settings::Provisioned::Created) => Ok(Provisioned::Created),
+        Ok(_) => Ok(Provisioned::Existed),
+        Err(engine_settings::SettingsError::Io { path, source }) => {
+            Err(SettingsError::Uncreatable { path, source })
         }
-    }
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-
-    match options.open(path) {
-        Ok(mut file) => {
-            use std::io::Write;
-            file.write_all(template.as_bytes())
-                .map_err(|source| SettingsError::Uncreatable {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-
-            hand_to_invoker(path);
-
-            Ok(Provisioned::Created)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(Provisioned::Existed),
-        Err(source) => Err(SettingsError::Uncreatable {
+        Err(other) => Err(SettingsError::Uncreatable {
             path: path.to_path_buf(),
-            source,
+            source: std::io::Error::other(other.to_string()),
         }),
     }
-}
-
-/// Creates a directory and whatever is missing above it, restrictively on
-/// Unix, and returns the directories it made, outermost first.
-///
-/// One at a time rather than with `create_dir_all`, because only what this run
-/// made is its to hand over: a `~/.config` that was already there belongs to
-/// whoever made it, and one this run made on the way is the user's as much as
-/// the settings file is.
-fn create_directory(path: &Path) -> Result<Vec<PathBuf>, SettingsError> {
-    let uncreatable = |source| SettingsError::Uncreatable {
-        path: path.to_path_buf(),
-        source,
-    };
-
-    let mut missing: Vec<&Path> = Vec::new();
-    for ancestor in path.ancestors() {
-        if ancestor.as_os_str().is_empty() {
-            break;
-        }
-        match std::fs::symlink_metadata(ancestor) {
-            Ok(_) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(ancestor),
-            Err(e) => return Err(uncreatable(e)),
-        }
-    }
-
-    let mut created = Vec::new();
-    for directory in missing.into_iter().rev() {
-        let mut builder = std::fs::DirBuilder::new();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-
-        match builder.create(directory) {
-            Ok(()) => created.push(directory.to_path_buf()),
-            // Another process made it first, so it is not this run's to give.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(uncreatable(e)),
-        }
-    }
-
-    Ok(created)
-}
-
-/// Gives something just created to the user who invoked `sudo`, when it lies
-/// inside that user's home.
-///
-/// Without this, a first run under `sudo` leaves `0600` `root`-owned files in a
-/// directory the user is meant to edit, and every later unprivileged run fails
-/// to read them.
-///
-/// Who invoked the run is the engine's answer, the one its journal is given
-/// to, so the settings and the journal cannot be handed to two different
-/// people. Nothing outside that user's home is handed over, whatever this
-/// crate was asked to create. Failure is ignored.
-#[cfg(unix)]
-fn hand_to_invoker(path: &Path) {
-    let invoking = zond_engine::journal::paths::invoking_user();
-
-    if let Some((uid, gid)) = owner_for(invoking.as_ref(), path) {
-        // `lchown`: a link where something was just created is not followed
-        // to whatever it names.
-        let _ = std::os::unix::fs::lchown(path, Some(uid), Some(gid));
-    }
-}
-
-/// No `sudo`, and no ownership to hand over.
-#[cfg(not(unix))]
-fn hand_to_invoker(_path: &Path) {}
-
-/// Who `path` is handed to: the invoking user, when there is one and the path
-/// lies strictly inside their home, spelled without `..`.
-#[cfg(unix)]
-fn owner_for(
-    invoking: Option<&zond_engine::journal::paths::InvokingUser>,
-    path: &Path,
-) -> Option<(u32, u32)> {
-    let user = invoking?;
-    let climbs = path
-        .components()
-        .any(|part| part == std::path::Component::ParentDir);
-
-    (!climbs && path != user.home && path.starts_with(&user.home)).then_some((user.uid, user.gid))
 }
 
 // ╔════════════════════════════════════════════╗
@@ -1129,65 +1008,31 @@ mod tests {
         assert_ne!(ours.file_name(), theirs.file_name());
     }
 
-    /// A first run under `sudo` hands the user everything it made on the way
-    /// to their settings file, not only the last directory. With no
-    /// `~/.config` yet, one left to root is a directory no other program of
-    /// theirs can keep its configuration in.
+    /// A settings file is written once, with the template it was given, and
+    /// never again: a second run finds it and leaves what the user wrote.
     #[test]
-    fn provisioning_hands_over_every_directory_it_made() {
+    fn provisioning_writes_the_template_once() {
         let home = std::env::temp_dir().join(format!("zond-cli-provision-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).expect("a scratch home");
         let path = home.join(".config/zond").join(FILE_NAME);
 
-        let mut handed = Vec::new();
-        let outcome = provision_with(&path, TEMPLATE, |made| handed.push(made.to_path_buf()))
-            .expect("provisions");
-
-        assert_eq!(outcome, Provisioned::Created);
         assert_eq!(
-            handed,
-            [
-                home.join(".config"),
-                home.join(".config/zond"),
-                path.clone()
-            ],
-            "something created for the settings file was left to root"
+            provision(&path, TEMPLATE).expect("provisions"),
+            Provisioned::Created
         );
+        assert_eq!(std::fs::read_to_string(&path).expect("reads"), TEMPLATE);
 
-        // A second run made nothing, and hands nothing over.
-        handed.clear();
-        let outcome = provision_with(&path, TEMPLATE, |made| handed.push(made.to_path_buf()))
-            .expect("provisions");
-        assert_eq!(outcome, Provisioned::Existed);
-        assert_eq!(handed, Vec::<PathBuf>::new());
+        std::fs::write(&path, "[display]\n").expect("the user edits it");
+        assert_eq!(
+            provision(&path, TEMPLATE).expect("provisions"),
+            Provisioned::Existed
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("reads"),
+            "[display]\n"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
-    }
-
-    /// Only what lies inside the invoking user's home is handed to them: a
-    /// host-wide file stays root's, and so does a path that climbs out.
-    #[cfg(unix)]
-    #[test]
-    fn only_what_lies_inside_the_invoking_users_home_is_handed_over() {
-        let erik = zond_engine::journal::paths::InvokingUser {
-            uid: 1000,
-            gid: 1000,
-            home: PathBuf::from("/home/erik"),
-        };
-
-        assert_eq!(
-            owner_for(Some(&erik), Path::new("/home/erik/.config/zond")),
-            Some((1000, 1000))
-        );
-        for outside in ["/etc/zond", "/home/erik", "/home/erik/../root/.config"] {
-            assert_eq!(
-                owner_for(Some(&erik), Path::new(outside)),
-                None,
-                "{outside}"
-            );
-        }
-        assert_eq!(owner_for(None, Path::new("/home/erik/.config")), None);
     }
 
     /// The line appears only when the settings came from somewhere other
