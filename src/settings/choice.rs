@@ -396,7 +396,7 @@ mod tests {
         let refused = Risk::from_str("severe").expect_err("not a grade");
         let message = refused.to_string();
 
-        for grade in Severity::ALL {
+        for &grade in Severity::ALL {
             assert!(
                 message.contains(wire::severity_name(grade)),
                 "{message} does not name {}",

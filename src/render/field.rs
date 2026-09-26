@@ -523,7 +523,8 @@ pub(crate) fn rtt_variation(host: &Host) -> Option<String> {
 /// written here would silently drop a role added there.
 fn ordered(host: &Host) -> impl Iterator<Item = NetworkRole> + '_ {
     NetworkRole::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|role| host.network_roles().contains(role))
 }
 
@@ -1646,7 +1647,8 @@ fn unfinished_walks(port: &Port) -> Vec<PortDetail> {
     let unfinished = security.support().unfinished();
 
     Interruption::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter_map(|cause| {
             let versions: Vec<&str> = unfinished
                 .iter()
@@ -3403,13 +3405,14 @@ mod tests {
     #[test]
     fn roles_are_listed_in_the_engines_order_and_not_the_sets() {
         let mut scanned = host(1);
-        for role in NetworkRole::ALL.into_iter().rev() {
+        for role in NetworkRole::ALL.iter().copied().rev() {
             scanned.add_network_role(role);
         }
 
         let listed = packed_roles(&scanned).expect("every role");
         let expected: Vec<&str> = NetworkRole::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .map(zond_engine::record::wire::network_role_name)
             .collect();
 
@@ -3440,7 +3443,7 @@ mod tests {
     /// A role is one token too, for the same reason a protocol is.
     #[test]
     fn no_role_carries_a_space() {
-        for role in NetworkRole::ALL {
+        for &role in NetworkRole::ALL {
             assert!(
                 !role.label().contains(' '),
                 "'{}' would break the list it is drawn into",
@@ -3462,7 +3465,7 @@ mod tests {
     /// and `Router` is neither.
     #[test]
     fn the_two_spellings_of_a_role_are_one_word() {
-        for role in NetworkRole::ALL {
+        for &role in NetworkRole::ALL {
             let spoken = role.label();
             let written = zond_engine::record::wire::network_role_name(role);
 

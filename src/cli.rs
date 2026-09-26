@@ -2696,7 +2696,7 @@ mod tests {
 
         // The same steps `--detection` names in words, so the two spellings of
         // one dial cannot drift apart.
-        for (step, class) in DetectionClass::ALL.into_iter().enumerate() {
+        for (step, class) in DetectionClass::ALL.iter().copied().enumerate() {
             let numbered = format!("-d={}", step + 1);
             assert_eq!(
                 ceiling(&["zond", "s", &numbered, "192.0.2.1"]),
