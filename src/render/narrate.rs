@@ -622,26 +622,29 @@ impl Narrator {
     /// The engine files two different things as work that did not complete,
     /// and they are counted apart because only one of them costs the scan
     /// ground. A strategy that fell short left hosts or ports without a
-    /// verdict, whether something on this machine or this network broke or a
-    /// pinned source port was still busy. The passes over ports already found
-    /// ran and could not finish every port: fingerprinting that could not
-    /// reach a port leaves its state standing and only what answers on it
-    /// unnamed, and a detection is almost always one its own declared budget
-    /// stopped against a target that cost more than it allowed. The engine has
-    /// already said which port or detection and why, a line each as it
-    /// happened, so this counts them rather than repeating them. Counted as
-    /// strategies that fell short, they would send a reader looking for a
-    /// fault where the passes ran and the targets cost more than they could
-    /// spend.
+    /// verdict. The passes over ports already found ran and could not finish
+    /// every port: fingerprinting that could not reach a port leaves its state
+    /// standing and only what answers on it unnamed, and a detection is almost
+    /// always one its own declared budget stopped against a target that cost
+    /// more than it allowed. The engine has already said which port or
+    /// detection and why, a line each as it happened, so this counts them
+    /// rather than repeating them.
+    ///
+    /// A strategy is said to have failed only where something broke. One the
+    /// engine marks cut short reached a limit, a file limit or a pinned source
+    /// port still in use, and is said to have fallen short: told it failed, a
+    /// reader looks for a fault where there is a limit to raise or wait out.
     ///
     /// Fingerprinting is said without a count, since the engine files a group
     /// of ports that fell short for one reason as one entry, and a count of
     /// entries is not a count of anything a reader knows.
     ///
-    /// Said as a note when unfinished passes are all there is, since no
-    /// ground was lost, and as a warning when a strategy fell short.
+    /// Said as a warning when a strategy failed, and as a note otherwise:
+    /// ground a limit cost and passes left unfinished are both worth knowing
+    /// about, and neither is the run going wrong.
     fn shortfall(&mut self, report: &ScanReport) -> io::Result<()> {
-        let mut strategies = 0_usize;
+        let mut failed = 0_usize;
+        let mut fell_short = 0_usize;
         let mut fingerprinting = false;
         let mut detections = 0_usize;
         let mut unnamed = false;
@@ -653,13 +656,14 @@ impl Narrator {
                 // leave every target asked.
                 ScannerKind::Journal => {}
                 ScannerKind::Resolver => unnamed = true,
-                _ => strategies += 1,
+                _ if failure.is_cut_short() => fell_short += 1,
+                _ => failed += 1,
             }
         }
         if unnamed {
             self.note("hostnames not looked up (resolver failed)")?;
         }
-        if strategies == 0 && !fingerprinting && detections == 0 {
+        if failed == 0 && fell_short == 0 && !fingerprinting && detections == 0 {
             return Ok(());
         }
 
@@ -674,25 +678,27 @@ impl Narrator {
             ));
         }
 
+        // Written out rather than passed through `plural`, which knows the
+        // four words a scan counts and not this one. Named once, on the first
+        // count: `1 strategy failed, 2 fell short`.
+        let strategies = |count: usize| if count == 1 { "strategy" } else { "strategies" };
         let mut said = Vec::new();
-        if strategies > 0 {
-            // Written out rather than passed through `plural`, which knows the
-            // four words a scan counts and not this one.
-            said.push(format!(
-                "{strategies} {} fell short",
-                if strategies == 1 {
-                    "strategy"
-                } else {
-                    "strategies"
-                }
-            ));
+        if failed > 0 {
+            said.push(format!("{failed} {} failed", strategies(failed)));
+        }
+        if fell_short > 0 {
+            said.push(if failed > 0 {
+                format!("{fell_short} fell short")
+            } else {
+                format!("{fell_short} {} fell short", strategies(fell_short))
+            });
         }
         if !unfinished.is_empty() {
             said.push(format!("{} did not finish", unfinished.join(" and ")));
         }
         let line = format!("{}; coverage incomplete", said.join(", "));
 
-        if strategies == 0 {
+        if failed == 0 {
             self.note(&line)
         } else {
             self.warn(&line)
@@ -2021,7 +2027,7 @@ mod tests {
 
     /// A detection its budget cut short, as the engine files one.
     fn cut_short(port: u16) -> zond_engine::report::ScannerFailure {
-        zond_engine::report::ScannerFailure::new(
+        zond_engine::report::ScannerFailure::cut_short(
             ScannerKind::Detection,
             format!("backup-files on 192.0.2.1:{port} cut short: 3000 ms budget (3/6 answered)"),
         )
@@ -2041,18 +2047,47 @@ mod tests {
         assert!(!said.contains("strateg"), "{said}");
     }
 
-    /// A strategy that fell short is still counted, as a warning, beside the
+    /// A strategy that failed is still counted, as a warning, beside the
     /// detections that did not finish.
     #[test]
-    fn a_strategy_that_fell_short_is_counted_apart_from_detections_that_did_not_finish() {
+    fn a_strategy_that_failed_is_counted_apart_from_detections_that_did_not_finish() {
         let broken =
             zond_engine::report::ScannerFailure::new(ScannerKind::Local, "raw socket unavailable");
         let said = summarised(&failing(vec![broken, cut_short(443)]));
 
         assert!(
             said.contains(
-                "\u{d7} 1 strategy fell short, 1 detection did not finish; coverage incomplete"
+                "\u{d7} 1 strategy failed, 1 detection did not finish; coverage incomplete"
             ),
+            "{said}"
+        );
+    }
+
+    /// A strategy a limit cut short, a pinned source port still in use or the
+    /// file limit, lost ground and broke nothing. Said as a note that it fell
+    /// short, since told it failed a reader looks for a fault where there is
+    /// a limit to wait out or raise, and beside a strategy that did fail it
+    /// is counted apart.
+    #[test]
+    fn a_strategy_a_limit_cut_short_fell_short_rather_than_failed() {
+        let held = || {
+            zond_engine::report::ScannerFailure::cut_short(
+                ScannerKind::Connect,
+                "1 port left unasked: source port 40003 held elsewhere",
+            )
+        };
+        let said = summarised(&failing(vec![held()]));
+        assert!(
+            said.contains("\u{2501} 1 strategy fell short; coverage incomplete"),
+            "{said}"
+        );
+        assert!(!said.contains("failed"), "{said}");
+
+        let broken =
+            zond_engine::report::ScannerFailure::new(ScannerKind::Local, "raw socket unavailable");
+        let said = summarised(&failing(vec![broken, held(), held()]));
+        assert!(
+            said.contains("\u{d7} 1 strategy failed, 2 fell short; coverage incomplete"),
             "{said}"
         );
     }
