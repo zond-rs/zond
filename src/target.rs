@@ -60,7 +60,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
 
-use zond_engine::model::parse::ip::{Keyword, ResolverFn, ZoneResolverFn, names_keyword};
+use zond_engine::model::parse::ip::{
+    IpParseError, Keyword, ResolverFn, ZoneResolverFn, names_keyword,
+};
 use zond_engine::model::parse::target::{TargetContext, TargetParseError};
 use zond_engine::resolve;
 use zond_engine::system::interface;
@@ -97,6 +99,22 @@ pub(crate) enum TargetError {
     NameNeedsDns {
         /// The expression as it was written.
         expression: String,
+    },
+
+    /// A link-local target named an interface this machine does not have.
+    ///
+    /// Restated with the interfaces it could have named, which the engine's
+    /// error cannot carry: the lookup it asks answers one name and lists none.
+    #[error("'{expression}': no interface named {name} ({})", try_instead(.candidates))]
+    UnknownInterface {
+        /// The expression as it was written.
+        expression: String,
+        /// The interface it named.
+        name: String,
+        /// The interfaces that are up, reach a segment with neighbours on it
+        /// and hold a link-local IPv6 address, which is what a scoped target
+        /// is sent out of.
+        candidates: Vec<String>,
     },
 
     /// The expression is well formed and names more IPv4 addresses than one run
@@ -337,7 +355,7 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
 
     let discovery = resolve::for_discovery(expressions, resolver.as_ref())
         .await
-        .map_err(name_needs_dns)?;
+        .map_err(restate)?;
     let exclusions = inherit(inherited, exclude, resolver.as_ref()).await?;
 
     // The engine worked out whether a network was named; this does not ask the
@@ -398,16 +416,48 @@ async fn inherit<E: AsRef<str>>(
     exclusions.extend(
         &resolve::for_exclusion(exclude, resolver)
             .await
-            .map_err(name_needs_dns)?,
+            .map_err(restate)?,
     );
     Ok(exclusions)
 }
 
-/// Restates the engine's "no host lookup was supplied" as the flag that caused
-/// it, which is the sentence a user can act on.
-fn name_needs_dns(error: TargetParseError) -> TargetError {
+/// The hint closing a message about an interface that does not exist: the
+/// ones that do and would serve, or that none does.
+pub(crate) fn try_instead(candidates: &[String]) -> String {
+    if candidates.is_empty() {
+        "none here would serve".to_owned()
+    } else {
+        format!("try {}", candidates.join(", "))
+    }
+}
+
+/// Restates what the engine can only say in its own terms as what the user
+/// can act on: "no host lookup was supplied" as the flag that caused it, and
+/// an unknown interface with the ones this machine has.
+fn restate(error: TargetParseError) -> TargetError {
     match error {
         TargetParseError::NoHostLookup(expression) => TargetError::NameNeedsDns { expression },
+        TargetParseError::Address {
+            expression,
+            source: IpParseError::UnknownInterface(name),
+        } => {
+            let candidates = interface::interfaces()
+                .into_iter()
+                .filter(|link| {
+                    link.is_up()
+                        && link.is_broadcast()
+                        && link.addresses().iter().any(|held| {
+                            matches!(held.address(), IpAddr::V6(v6) if v6.is_unicast_link_local())
+                        })
+                })
+                .map(|link| link.name().to_owned())
+                .collect();
+            TargetError::UnknownInterface {
+                expression,
+                name,
+                candidates,
+            }
+        }
         other => TargetError::Parse(other),
     }
 }
@@ -553,7 +603,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
 
     let planned = resolve::for_port_scan(expressions, ports, &context, resolver.as_ref())
         .await
-        .map_err(name_needs_dns)?;
+        .map_err(restate)?;
     let names = planned.names().clone();
     let map = planned.into_map();
 
@@ -879,6 +929,32 @@ mod tests {
 
         Asked::new(&["10.0.0.1"], false, Exclusions::none()).apply_to(&mut config);
         assert!(!config.segment_sweep);
+    }
+
+    /// An interface name that matches nothing is a typo, and the correction
+    /// is on this machine: the message names what it could have been rather
+    /// than leaving its author to go and look.
+    #[tokio::test]
+    async fn an_unknown_interface_is_answered_with_the_ones_that_would_serve() {
+        let error = offline(&["fe80::1%zz-no-such-link"])
+            .await
+            .expect_err("no such interface");
+
+        assert!(
+            matches!(&error, TargetError::UnknownInterface { name, .. } if name == "zz-no-such-link"),
+            "{error:?}"
+        );
+        let said = error.to_string();
+        assert!(
+            said.starts_with("'fe80::1%zz-no-such-link': no interface named zz-no-such-link ("),
+            "{said}"
+        );
+
+        assert_eq!(
+            try_instead(&["eth0".to_owned(), "eth1".to_owned()]),
+            "try eth0, eth1"
+        );
+        assert_eq!(try_instead(&[]), "none here would serve");
     }
 
     /// What is quoted back is what was typed, not what it expanded to.

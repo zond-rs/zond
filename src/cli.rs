@@ -2187,17 +2187,40 @@ fn unpinned_family(
 /// The addresses `--send-interface` forces a scan's probes to leave from: the
 /// named interface's own, one per family, skipping the loopback and link-local
 /// ones no routed target can be reached from. Empty when the name matches no
-/// interface or the interface holds nothing usable, which the caller reports.
+/// interface or the interface holds nothing usable, which is said in a line
+/// naming the interfaces that would serve.
 fn source_addresses_of(name: &str) -> Vec<std::net::IpAddr> {
-    use std::net::IpAddr;
-
-    let Some(link) = zond_engine::system::interface::interfaces()
-        .into_iter()
+    let links = zond_engine::system::interface::interfaces();
+    let sources = links
+        .iter()
         .find(|link| link.name() == name)
-    else {
-        tracing::warn!("no interface named {name}; --send-interface ignored");
-        return Vec::new();
-    };
+        .map(sendable_from)
+        .unwrap_or_default();
+
+    if sources.is_empty() {
+        let reason = if links.iter().any(|link| link.name() == name) {
+            "no routable address"
+        } else {
+            "no such interface"
+        };
+        let candidates: Vec<String> = links
+            .iter()
+            .filter(|link| link.is_up() && !sendable_from(link).is_empty())
+            .map(|link| link.name().to_owned())
+            .collect();
+        tracing::warn!(
+            "--send-interface {name} ignored: {reason} ({})",
+            crate::target::try_instead(&candidates)
+        );
+    }
+    sources
+}
+
+/// The addresses a probe can be sent from on `link`, one per family: the
+/// first of each that is neither loopback nor link-local, since no routed
+/// target can be reached from those.
+fn sendable_from(link: &zond_engine::system::interface::Link) -> Vec<std::net::IpAddr> {
+    use std::net::IpAddr;
 
     let mut v4 = None;
     let mut v6 = None;
@@ -2214,12 +2237,7 @@ fn source_addresses_of(name: &str) -> Vec<std::net::IpAddr> {
             _ => {}
         }
     }
-
-    let sources: Vec<IpAddr> = v4.into_iter().chain(v6).collect();
-    if sources.is_empty() {
-        tracing::warn!("no usable address on {name}; --send-interface ignored");
-    }
-    sources
+    v4.into_iter().chain(v6).collect()
 }
 
 /// How much a run says about itself while it happens.
