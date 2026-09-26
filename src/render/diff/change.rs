@@ -369,8 +369,8 @@ pub(super) fn label(kind: &'static str) -> &'static str {
         // finding carries its severity and title on both sides of the arrow.
         "hostname" | "os" | "finding_reassessed" => "",
         "vendor" => "vendor",
-        "address_gained" | "mac_gained" => "gained",
-        "address_lost" | "mac_lost" => "lost",
+        "address_gained" | "mac_gained" | "name_gained" => "gained",
+        "address_lost" | "mac_lost" | "name_lost" => "lost",
         "role_gained" => "role gained",
         "role_lost" => "role lost",
         "service_identified" => "now running",

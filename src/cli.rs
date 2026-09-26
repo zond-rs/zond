@@ -1698,7 +1698,8 @@ pub(crate) struct EngineArgs {
     #[arg(short = 'n', long)]
     pub no_dns: bool,
 
-    /// Mask hostnames, hardware addresses and IPv6 host parts in the output.
+    /// Mask host and domain names, hardware addresses and IPv6 host parts in
+    /// the output.
     ///
     /// For results going somewhere that needs the shape of a network without
     /// knowing which device is which: a client, an auditor, a screenshot in an

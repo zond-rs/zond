@@ -28,6 +28,7 @@ use zond_engine::model::confidence::Confidence;
 use zond_engine::model::finding::{Reference, Severity};
 use zond_engine::model::host::EvidenceSource;
 use zond_engine::model::host::Filtering;
+use zond_engine::model::host::NameKind;
 use zond_engine::model::host::NetworkRole;
 use zond_engine::model::host::protocol::{IpProtocolState, ip_protocol_name};
 use zond_engine::model::host::status::{StatusProtocol, StatusReason};
@@ -204,6 +205,29 @@ impl Reader {
     pub(crate) fn hostname(self, host: &Host) -> Option<String> {
         host.hostname()
             .map(|name| self.redaction.hostname(name).into_owned())
+    }
+
+    /// The names the host gave for itself, each masked if the policy says so,
+    /// beside what it names, the machine's before its domain's.
+    ///
+    /// One entry per name and kind, whichever protocols stated it: a domain
+    /// controller gives its DNS name over NTLM and over LDAP alike, and a
+    /// console line saying it twice says nothing the first did not. Compared
+    /// without regard to case, since DNS is, and the two protocols do not
+    /// agree on it. Which protocol said what is in the exported report.
+    pub(crate) fn names(self, host: &Host) -> Vec<(String, &'static str)> {
+        let mut seen: Vec<(NameKind, String)> = Vec::new();
+        let mut names = Vec::new();
+        for name in host.names() {
+            let key = (name.kind(), name.name().to_lowercase());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            let shown = printable(&self.redaction.hostname(name.name())).into_owned();
+            names.push((shown, name.kind().label()));
+        }
+        names
     }
 
     /// Every hardware address the host was seen at, most recent first.
@@ -3836,6 +3860,32 @@ mod tests {
         let masked = Reader::new(Redaction::Standard);
         assert_ne!(masked.hostname(&host).as_deref(), Some("router.example"));
         assert_ne!(masked.macs(&host).as_deref(), Some("00:00:5e:00:53:01"));
+    }
+
+    /// The names a host gave for itself are masked as its hostname is, the
+    /// domain among them, and a name two protocols both stated is drawn once.
+    #[test]
+    fn names_are_masked_and_drawn_once_whichever_protocols_stated_them() {
+        use zond_engine::model::host::{HostName, NameSource};
+
+        let mut host = host(1);
+        for (kind, source, name) in [
+            (NameKind::Host, NameSource::Ntlm, "DC01.corp.example"),
+            (NameKind::Host, NameSource::Ldap, "dc01.corp.example"),
+            (NameKind::Domain, NameSource::Ldap, "corp.example"),
+        ] {
+            host.record_name(HostName::new(kind, source, name).expect("a name"));
+        }
+
+        assert_eq!(
+            Reader::default().names(&host),
+            [
+                ("DC01.corp.example".to_owned(), "host"),
+                ("corp.example".to_owned(), "domain"),
+            ]
+        );
+        let masked = format!("{:?}", Reader::new(Redaction::Standard).names(&host));
+        assert!(!masked.contains("corp"), "{masked}");
     }
 
     /// A zone names an interface on *this* machine, so it survives masking.

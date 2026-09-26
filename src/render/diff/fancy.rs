@@ -206,7 +206,7 @@ fn paint_change(style: Style, line: &str) -> String {
 
 /// Which child a host-level change belongs under.
 ///
-/// The scan's own words for the same facts, `system`, `hardware` and
+/// The scan's own words for the same facts, `system`, `hardware`, `names` and
 /// `addresses`, so a comparison and a scan of one host name its parts alike.
 ///
 /// Spelled out rather than abbreviated, which is what separates this register
@@ -220,6 +220,7 @@ fn child_for(kind: &str) -> &'static str {
         "status" => "status",
         "vendor" | "mac_gained" | "mac_lost" => "hardware",
         "address_gained" | "address_lost" => "addresses",
+        "name_gained" | "name_lost" => "names",
         "role_gained" | "role_lost" => "roles",
         _ => "also",
     }

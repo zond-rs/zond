@@ -180,6 +180,17 @@ fn write_host(
         tag(out, "mac", &line)?;
     }
 
+    // What the machine calls itself, beside the hardware for the reason
+    // `fancy` gives.
+    let names: Vec<String> = reader
+        .names(host)
+        .into_iter()
+        .map(|(name, kind)| format!("{name} ({kind})"))
+        .collect();
+    if !names.is_empty() {
+        tag(out, "names", &names.join(", "))?;
+    }
+
     // `read` sits directly under `os` because it is that line's working: the
     // shape of each reply the verdict was drawn from, and what a series of them
     // turned out to be. Only under detail, because a person using the finding
@@ -374,6 +385,25 @@ mod tests {
 
     /// The abbreviated register spells a role the way a record does, so a
     /// `minimal` capture and a `pipe` record can be grepped with one pattern.
+    #[test]
+    fn a_name_the_host_gave_for_itself_is_tagged_with_what_it_names() {
+        use zond_engine::model::host::{HostName, NameKind, NameSource};
+
+        let mut controller = host(1);
+        for (kind, name) in [
+            (NameKind::NetbiosHost, "DC01"),
+            (NameKind::Domain, "corp.example"),
+        ] {
+            controller.record_name(HostName::new(kind, NameSource::Ntlm, name).expect("a name"));
+        }
+
+        let text = block(&controller);
+        assert!(
+            text.contains("names: DC01 (NetBIOS host), corp.example (domain)"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn a_role_is_tagged_in_the_terse_register() {
         use zond_engine::model::host::NetworkRole;

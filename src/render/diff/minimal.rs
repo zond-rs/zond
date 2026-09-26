@@ -161,6 +161,7 @@ fn tag_for(kind: &str) -> &'static str {
         "status" => "state",
         "vendor" | "mac_gained" | "mac_lost" => "mac",
         "address_gained" | "address_lost" => "addr",
+        "name_gained" | "name_lost" => "names",
         _ => "also",
     }
 }

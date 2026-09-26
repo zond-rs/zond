@@ -282,6 +282,29 @@ fn children(
         children.push(Child::one("hardware", line));
     }
 
+    // What the machine calls itself, and the domain it says it belongs to,
+    // under the hardware because both say which box this is. Apart from the
+    // name in the header, which is what name resolution answered: this is the
+    // machine's own account, and a domain is not a name for the address. The
+    // kind is faint, since it qualifies the name rather than competing with it,
+    // and in a column of its own, so a reader runs down the names alone.
+    let stated = reader.names(host);
+    let width = stated
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let names: Vec<String> = stated
+        .into_iter()
+        .map(|(name, kind)| {
+            let pad = " ".repeat(width - name.chars().count() + 2);
+            format!("{}{pad}{}", style.plain(&name), style.faint(kind))
+        })
+        .collect();
+    if !names.is_empty() {
+        children.push(Child::many("names", names));
+    }
+
     // Directly under the hardware, because the two answer the same question from
     // different sides: what this box is, and what it does. A role is also the
     // one finding here the engine can make without probing, since a router
