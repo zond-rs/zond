@@ -153,6 +153,7 @@ fn continued(id: &str, take_over: bool) -> Result<(Vec<Zone>, Option<Journal>), 
     let named: Vec<String> = links.iter().map(|link| link.name().to_owned()).collect();
     let links = resolve::for_listening(&named)?;
 
+    resumed.announce();
     Ok((links, Some(resumed.journal)))
 }
 

@@ -1151,6 +1151,34 @@ fn ports_named_with_resume_must_be_the_ports_on_record() {
     assert_eq!(status(&same), 0, "{}", stderr(&same));
 }
 
+/// A resume refused says why and nothing else. A line saying the job is
+/// continuing, above the refusal, reads as a resume that began and then
+/// failed, when the job was never touched.
+#[test]
+fn a_refused_resume_says_only_why() {
+    let home = config_home("journal-resume-refused-alone");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-n", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    let id = recorded_ids(&home)
+        .into_iter()
+        .next()
+        .expect("a listed scan");
+
+    let refused = zond_in(&home, &["s", "--resume", &id, "-n", "-p", "2"]);
+    assert_eq!(status(&refused), 2, "{}", stderr(&refused));
+    assert!(
+        stderr(&refused).contains("--ports differs from the record"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(
+        !stderr(&refused).contains("continuing"),
+        "{}",
+        stderr(&refused)
+    );
+}
+
 /// Targets named alongside `--resume` are checked, and refused when they
 /// describe something else.
 #[test]

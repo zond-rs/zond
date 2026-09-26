@@ -92,7 +92,7 @@ pub(crate) async fn run(
 
     let ips = targets.into_ips();
     // Taken before the journal is handed over, and only for a record this run
-    // claimed: a resumed one was announced as it was reopened.
+    // claimed: a resumed one was announced once its checks passed.
     let fresh = journal
         .as_ref()
         .filter(|_| args.resume.is_none())
@@ -176,6 +176,7 @@ fn continued(
     // the segment beyond its addresses is part of what is being continued.
     config.segment_sweep = resumed.journal.manifest().sweep;
 
+    resumed.announce();
     Ok((
         Targets::resumed(addresses, resumed.remaining, resumed.id),
         Some(resumed.journal),

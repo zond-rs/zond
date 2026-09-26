@@ -133,7 +133,7 @@ pub(crate) async fn run(
         .transpose()?;
 
     // Taken before the journal is handed over, and only for a record this run
-    // claimed: a resumed one was announced as it was reopened.
+    // claimed: a resumed one was announced once its checks passed.
     let fresh = journal
         .as_ref()
         .filter(|_| args.resume.is_none())
@@ -256,6 +256,7 @@ async fn continued(
         )?;
     }
 
+    resumed.announce();
     Ok((
         ScanTargets::resumed(plan, resumed.remaining, resumed.id),
         Some(resumed.journal),

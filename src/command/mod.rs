@@ -295,6 +295,21 @@ pub(crate) struct Resumed {
     pub(crate) plan: Plan,
     /// How much of that plan no earlier sitting settled.
     pub(crate) remaining: u128,
+    /// How far the earlier sittings got, in the terms the record's phase
+    /// has; see [`continuation`].
+    progress: String,
+}
+
+impl Resumed {
+    /// Says which record this sitting continues and how far it had got.
+    ///
+    /// Said once every check on the resume has passed, by the command that
+    /// makes them, and not as the record is reopened: a line saying the job
+    /// is continuing, followed by a refusal to continue it, reads as a resume
+    /// that started and then failed rather than as one that never began.
+    pub(crate) fn announce(&self) {
+        tracing::info!("continuing {} ({})", self.id, self.progress);
+    }
 }
 
 /// Reopens the record `id` names, ready to be continued.
@@ -343,16 +358,14 @@ pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result
 
     let total = journal.manifest().total_targets;
     let settled = u128::from(checkpoint.settled_count());
-    tracing::info!(
-        "continuing {id} ({})",
-        continuation(&plan, &journal, settled, total, counted)
-    );
+    let progress = continuation(&plan, &journal, settled, total, counted);
 
     Ok(Resumed {
         id,
         journal,
         plan,
         remaining: total.saturating_sub(settled),
+        progress,
     })
 }
 
