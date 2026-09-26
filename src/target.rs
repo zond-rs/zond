@@ -92,11 +92,7 @@ pub(crate) enum TargetError {
     /// Separate from the parse errors so the message can name what is
     /// responsible. The engine says only that the host is unknown, which is
     /// what DNS might have said too, and not why it was never asked.
-    #[error(
-        "'{expression}' is not in the hosts file, and this run may not send DNS, \
-         because of --no-dns or `no_dns` in engine.toml. Give its address or \
-         list it in the hosts file instead, or allow DNS."
-    )]
+    #[error("'{expression}' is not in the hosts file (no DNS: --no-dns, engine.toml)")]
     NameNeedsDns {
         /// The expression as it was written.
         expression: String,
@@ -154,7 +150,7 @@ pub(crate) enum TargetError {
     /// Reported rather than run for the reason
     /// [`EverythingExcluded`](Self::EverythingExcluded) is: a scan that asked
     /// nothing reads as one that found nothing.
-    #[error("every port {expression} is asked on is excluded (--exclude-ports)")]
+    #[error("every port {expression} is asked on is excluded (--exclude-ports, engine.toml)")]
     EveryPortExcluded {
         /// The target expressions as they were written.
         expression: String,
@@ -186,6 +182,9 @@ struct Asked {
     expressions: Vec<String>,
     segment_sweep: bool,
     exclusions: Exclusions,
+    /// The addresses an expression names on their own that the run withholds,
+    /// which a header line leaves out; see [`withholding`](Self::withholding).
+    withheld: Vec<IpAddr>,
 }
 
 impl Asked {
@@ -211,7 +210,50 @@ impl Asked {
                 .collect(),
             segment_sweep,
             exclusions,
+            withheld: Vec::new(),
         }
+    }
+
+    /// The same, told which of the addresses named on their own the run
+    /// covers, so a header line leaves out the ones it does not.
+    ///
+    /// A header names the ground a run covers, and `across 1 host
+    /// (192.0.2.9,192.0.2.30)` with `.30` excluded names a host the run sends
+    /// nothing, the more so where it leads the line. A range or a name stays as
+    /// written, since it stands for more than the address withheld from it and
+    /// the exclusion line beneath says what was.
+    fn withholding(mut self, covered: impl Fn(IpAddr) -> bool) -> Self {
+        self.withheld = self
+            .expressions
+            .iter()
+            .flat_map(|expression| expression.split(','))
+            .filter_map(named_alone)
+            .filter(|address| !covered(*address))
+            .collect();
+        self
+    }
+
+    /// The expressions as a header shows them: each as written, less any
+    /// address named on its own that the run withholds, and left out where
+    /// that is all it named.
+    fn shown(&self) -> Vec<String> {
+        self.expressions
+            .iter()
+            .filter_map(|expression| {
+                let withheld = |part: &&str| {
+                    named_alone(part).is_some_and(|address| self.withheld.contains(&address))
+                };
+                if !expression.split(',').any(|part| withheld(&part)) {
+                    return Some(expression.clone());
+                }
+                let kept: Vec<&str> = expression
+                    .split(',')
+                    .filter(|part| !withheld(part))
+                    .map(str::trim)
+                    .collect();
+                (!kept.is_empty()).then(|| kept.join(","))
+            })
+            .collect()
     }
 
     /// Writes what these targets imply into `cfg`.
@@ -242,17 +284,28 @@ impl Asked {
 /// short line however many targets were named.
 const EXPRESSIONS_SHOWN: usize = 24;
 
+/// The address a part of an expression names on its own, bare or with a
+/// port, or `None` for a range, a network or a name.
+fn named_alone(part: &str) -> Option<IpAddr> {
+    let part = part.trim();
+    part.parse::<IpAddr>()
+        .ok()
+        .or_else(|| part.parse::<std::net::SocketAddr>().ok().map(|at| at.ip()))
+}
+
 impl fmt::Display for Asked {
     /// The expressions as they were written, which is what the user recognises.
     /// The set they expanded to can be millions of addresses and is never what a
     /// header line should print. Capped at [`EXPRESSIONS_SHOWN`], the rest
-    /// counted.
+    /// counted. An address the run withholds is left out; see
+    /// [`withholding`](Self::withholding).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let shown = self.shown();
         let mut written = 0;
-        for (index, expression) in self.expressions.iter().enumerate() {
+        for (index, expression) in shown.iter().enumerate() {
             if index > 0 {
                 if written + 2 + expression.len() > EXPRESSIONS_SHOWN {
-                    return write!(f, ", +{} more", self.expressions.len() - index);
+                    return write!(f, ", +{} more", shown.len() - index);
                 }
                 f.write_str(", ")?;
                 written += 2;
@@ -293,6 +346,7 @@ impl Targets {
                 expressions: vec![label],
                 segment_sweep: false,
                 exclusions: Exclusions::none(),
+                withheld: Vec::new(),
             },
             ips,
             remaining,
@@ -411,7 +465,7 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
     }
 
     Ok(Targets {
-        asked,
+        asked: asked.withholding(|address| walked.contains(&address)),
         ips,
         remaining,
         tied,
@@ -567,6 +621,7 @@ impl ScanTargets {
                 expressions: vec![label],
                 segment_sweep: false,
                 exclusions: Exclusions::none(),
+                withheld: Vec::new(),
             },
             probes: remaining,
             hosts,
@@ -723,7 +778,16 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
         });
     }
 
-    Ok(targets)
+    let covered = |address: IpAddr| {
+        walked
+            .units
+            .iter()
+            .any(|unit| unit.ips().contains(&address))
+    };
+    Ok(ScanTargets {
+        asked: targets.asked.withholding(covered),
+        ..targets
+    })
 }
 
 // ╔════════════════════════════════════════════╗
@@ -1017,7 +1081,10 @@ mod tests {
         let Err(error @ TargetError::EveryPortExcluded { .. }) = refused else {
             panic!("a scan with every port excluded must be refused");
         };
+        // Named by both places a port is excluded from, since either may be
+        // the one that did it: the flag adds to the settings file.
         assert!(error.to_string().contains("--exclude-ports"), "{error}");
+        assert!(error.to_string().contains("engine.toml"), "{error}");
     }
 
     /// A port scan is counted the same way, in probes rather than addresses.
@@ -1042,6 +1109,47 @@ mod tests {
             256,
             "the engine is given what was named"
         );
+    }
+
+    /// A header names the ground a run covers, so an address named on its own
+    /// that the exclusions withhold is left out of it, from a list of them as
+    /// from the expressions; a range it falls in stays as written, since the
+    /// exclusion line beneath says what was taken out of it. The expressions
+    /// as written are what a refusal quotes, since that is what the user
+    /// checks they typed.
+    #[tokio::test]
+    async fn a_header_leaves_out_an_address_the_run_withholds() {
+        let sweep = offline_excluding(&["192.0.2.9,192.0.2.30", "192.0.2.64/30"], &["192.0.2.30"])
+            .await
+            .expect("well-formed");
+        assert_eq!(sweep.to_string(), "192.0.2.9, 192.0.2.64/30");
+
+        let led = offline_excluding(&["192.0.2.30", "192.0.2.9"], &["192.0.2.30"])
+            .await
+            .expect("well-formed");
+        assert_eq!(led.to_string(), "192.0.2.9");
+
+        let range = offline_excluding(&["192.0.2.0/30"], &["192.0.2.1"])
+            .await
+            .expect("well-formed");
+        assert_eq!(range.to_string(), "192.0.2.0/30");
+
+        let scan = resolve_ports(
+            &["192.0.2.9", "192.0.2.30:22"],
+            &["192.0.2.30"],
+            &Exclusions::none(),
+            "22".parse().expect("a valid port set"),
+            &PortSet::new(),
+            false,
+        )
+        .await
+        .expect("well-formed");
+        assert_eq!(scan.to_string(), "192.0.2.9");
+
+        let Err(refused) = offline_excluding(&["192.0.2.30"], &["192.0.2.30"]).await else {
+            panic!("a run with every address excluded must be refused");
+        };
+        assert!(refused.to_string().contains("192.0.2.30"), "{refused}");
     }
 
     /// The derivation a port scan does for itself, since nothing resolved it on
@@ -1130,6 +1238,12 @@ mod tests {
         assert!(message.contains("one.one.one.one"), "got {message:?}");
         assert!(message.contains("--no-dns"), "got {message:?}");
         assert!(message.contains("engine.toml"), "got {message:?}");
+        // A console line: the fact and its reason, and no more.
+        assert!(
+            message.len() <= "one.one.one.one".len() + 64,
+            "{} characters: {message:?}",
+            message.len()
+        );
     }
 
     /// A name the hosts file lists is resolved under no-DNS, since reading the

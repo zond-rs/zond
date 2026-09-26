@@ -675,9 +675,17 @@ fn sets_anything(document: &str) -> bool {
 /// while the files are looked at; each is examined without following a link
 /// and changed with `lchown`, so a link planted at a name changes owner
 /// itself rather than handing root whatever it names.
+///
+/// The directory is taken by the path it resolves to, which is the one the
+/// change lands on and the one the line saying so names: `.config` may be a
+/// link, and a line naming the path as spelled points its reader somewhere
+/// nothing changed.
 #[cfg(unix)]
 fn give_back_to_root(directory: &Path, uid: u32) {
     use std::os::unix::fs::MetadataExt;
+
+    let directory = resolved(directory);
+    let directory = directory.as_path();
 
     let owned = |path: &Path| {
         std::fs::symlink_metadata(path)
@@ -696,6 +704,16 @@ fn give_back_to_root(directory: &Path, uid: u32) {
             let _ = std::os::unix::fs::lchown(&path, Some(0), Some(0));
         }
     }
+}
+
+/// `path` with every link in the directories above it followed, and a link
+/// at its last component left as it is, which is what `lchown` changes; as
+/// spelled where the directories above it do not resolve.
+fn resolved(path: &Path) -> PathBuf {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return path.to_path_buf();
+    };
+    std::fs::canonicalize(parent).map_or_else(|_| path.to_path_buf(), |parent| parent.join(name))
 }
 
 /// Whether a settings file exists.
@@ -1142,6 +1160,24 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The directory given back to root is named as the path the change
+    /// lands on: a `.config` that is a link is followed, and a line naming
+    /// the link sends its reader to a directory whose owner did not change.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_behind_a_linked_config_is_named_where_it_is() {
+        let home = std::env::temp_dir().join(format!("zond-cli-resolved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("dotfiles/zond")).expect("creates");
+        std::os::unix::fs::symlink(home.join("dotfiles"), home.join(".config")).expect("links");
+
+        let named = resolved(&home.join(".config/zond"));
+        let real = std::fs::canonicalize(home.join("dotfiles")).expect("resolves");
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(named, real.join("zond"));
     }
 
     /// Root's own directory is the one under root's home, and only where a
