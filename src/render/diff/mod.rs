@@ -559,6 +559,7 @@ mod tests {
                 liveness_skipped: None,
                 silent: Vec::new(),
                 stopped: None,
+                passes_cut: Vec::new(),
                 unreached: 0,
                 unheard_probes: 0,
                 probes: Vec::new(),

@@ -457,6 +457,8 @@ impl Narrator {
             })?;
         }
 
+        self.passes_cut(report)?;
+
         // Ground the engine declined before sending anything, in its own words.
         // First, because it is what explains a count of nothing above it, and
         // at every verbosity, because it is the whole reason such a run exits
@@ -611,6 +613,28 @@ impl Narrator {
         }
 
         Ok(())
+    }
+
+    /// The line naming the passes over the findings a stop left, whichever
+    /// stop it was.
+    ///
+    /// The ports can read complete while none was identified and no detection
+    /// ran, and a reader has to know it was the stop and not the ports.
+    fn passes_cut(&mut self, report: &ScanReport) -> io::Result<()> {
+        let passes: Vec<String> = report
+            .passes_cut()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let Some((last, rest)) = passes.split_last() else {
+            return Ok(());
+        };
+        let listed = if rest.is_empty() {
+            last.clone()
+        } else {
+            format!("{} and {last}", rest.join(", "))
+        };
+        self.note(&format!("{listed} not finished (stopped)"))
     }
 
     /// The line naming hosts that rationed their ICMP errors.
@@ -1118,6 +1142,7 @@ mod tests {
             liveness_skipped: None,
             silent: Vec::new(),
             stopped: None,
+            passes_cut: Vec::new(),
             unreached: 0,
             unheard_probes: 0,
             probes: Vec::new(),
@@ -1167,6 +1192,7 @@ mod tests {
             liveness_skipped: phase.liveness_skipped(),
             silent: phase.silent().to_vec(),
             stopped: phase.stopped(),
+            passes_cut: phase.passes_cut().to_vec(),
             unreached: phase.unreached(),
             unheard_probes: phase.unheard_probes(),
             probes: vec![attempts],
@@ -1289,6 +1315,7 @@ mod tests {
             liveness_skipped: None,
             silent: Vec::new(),
             stopped: None,
+            passes_cut: Vec::new(),
             unreached: 0,
             unheard_probes: 0,
             probes: Vec::new(),
@@ -1426,6 +1453,7 @@ mod tests {
             liveness_skipped: phase.liveness_skipped(),
             silent: phase.silent().to_vec(),
             stopped: Some(StopReason::TimedOut),
+            passes_cut: Vec::new(),
             unreached: 6_600,
             unheard_probes: phase.unheard_probes(),
             probes: phase.probe_stats().to_vec(),
@@ -1535,6 +1563,7 @@ mod tests {
             liveness_skipped: None,
             silent: Vec::new(),
             stopped: None,
+            passes_cut: Vec::new(),
             unreached: 0,
             unheard_probes: 0,
             probes: Vec::new(),
@@ -1601,6 +1630,7 @@ mod tests {
                 liveness_skipped: None,
                 silent: Vec::new(),
                 stopped: Some(zond_engine::report::StopReason::TimedOut),
+                passes_cut: Vec::new(),
                 unreached: 0,
                 unheard_probes: 0,
                 probes: Vec::new(),
@@ -2029,6 +2059,7 @@ mod tests {
             liveness_skipped: phase.liveness_skipped(),
             silent: phase.silent().to_vec(),
             stopped: phase.stopped(),
+            passes_cut: phase.passes_cut().to_vec(),
             unreached: phase.unreached(),
             unheard_probes: phase.unheard_probes(),
             probes: phase.probe_stats().to_vec(),
@@ -2036,6 +2067,51 @@ mod tests {
         });
         let hosts: Vec<_> = report.hosts().cloned().collect();
         ScanReport::recorded("test", vec![rebuilt], hosts)
+    }
+
+    /// The passes a stop left are named in one short line. The ports above
+    /// read complete, since every one was asked, while none was identified
+    /// and no detection ran, and a reader told only that the scan stopped
+    /// takes the missing services for ports that had none to name.
+    #[test]
+    fn the_passes_a_stop_left_are_named_in_one_line() {
+        use zond_engine::report::{Pass, PhaseParts, ScanPhase, StopReason};
+
+        let report = scoped(vec![host(1)], "192.0.2.0/24");
+        let phase = &report.phases()[0];
+        let rebuilt = ScanPhase::from_parts(PhaseParts {
+            attachments: phase.attachments().to_vec(),
+            kind: phase.kind(),
+            started_at: phase.started_at(),
+            elapsed: phase.elapsed(),
+            privilege: phase.privilege(),
+            targets: phase.targets().clone(),
+            settings: phase.settings().clone(),
+            failures: Vec::new(),
+            refusals: Vec::new(),
+            unroutable: Vec::new(),
+            timed_out: Vec::new(),
+            icmp_rate_limited: Vec::new(),
+            reached_by_connect: Vec::new(),
+            undecided: Vec::new(),
+            liveness_skipped: None,
+            silent: Vec::new(),
+            stopped: Some(StopReason::TimedOut),
+            passes_cut: vec![Pass::Detections, Pass::Services, Pass::Tls],
+            unreached: 0,
+            unheard_probes: 0,
+            probes: Vec::new(),
+            origin: None,
+        });
+        let hosts: Vec<_> = report.hosts().cloned().collect();
+        let said = summarised(&ScanReport::recorded("test", vec![rebuilt], hosts));
+
+        assert!(
+            said.contains(
+                "\u{2501} service detection, detections and TLS enumeration not finished (stopped)\n"
+            ),
+            "{said}"
+        );
     }
 
     /// A host that rationed its ICMP errors is said in one short line, so its
@@ -2064,6 +2140,7 @@ mod tests {
             liveness_skipped: phase.liveness_skipped(),
             silent: phase.silent().to_vec(),
             stopped: phase.stopped(),
+            passes_cut: phase.passes_cut().to_vec(),
             unreached: phase.unreached(),
             unheard_probes: phase.unheard_probes(),
             probes: phase.probe_stats().to_vec(),
