@@ -86,15 +86,16 @@ pub(crate) enum TargetError {
     #[error("{0}")]
     Parse(#[from] TargetParseError),
 
-    /// The expression is a hostname, and this run was told to send no DNS.
+    /// The expression is a hostname the hosts file does not list, and this run
+    /// was told to send no DNS.
     ///
     /// Separate from the parse errors so the message can name what is
-    /// responsible. The engine says only that no host lookup was supplied, which
-    /// is not what the person did.
+    /// responsible. The engine says only that the host is unknown, which is
+    /// what DNS might have said too, and not why it was never asked.
     #[error(
-        "'{expression}' is a hostname, and this run may not send DNS, because of \
-         --no-dns or `no_dns` in engine.toml. Give its address instead, or allow \
-         DNS."
+        "'{expression}' is not in the hosts file, and this run may not send DNS, \
+         because of --no-dns or `no_dns` in engine.toml. Give its address or \
+         list it in the hosts file instead, or allow DNS."
     )]
     NameNeedsDns {
         /// The expression as it was written.
@@ -350,25 +351,24 @@ impl fmt::Display for Targets {
 /// Resolves target expressions against this host.
 ///
 /// `resolve_names` is the DNS policy: with it, a hostname is looked up and
-/// becomes the addresses it stands for; without it, a hostname is refused rather
-/// than quietly dropped, because a scan that covers less than its input said it
-/// covers is a wrong answer that looks like a right one.
+/// becomes the addresses it stands for; without it, a hostname is looked up in
+/// the hosts file alone, which sends nothing, and one the file does not list is
+/// refused rather than quietly dropped, because a scan that covers less than
+/// its input said it covers is a wrong answer that looks like a right one.
 pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
     expressions: &[S],
     exclude: &[E],
     inherited: &Exclusions,
     resolve_names: bool,
 ) -> Result<Targets, TargetError> {
-    // Resolving with one reads the host's resolver configuration and asks its
-    // servers, which a run forbidden from sending DNS should not touch at all.
     // Shared by both halves of the grammar: a name to keep out costs the same
     // query as a name to scan.
-    let resolver = resolve_names.then(Resolver::from_system);
+    let resolver = resolver_for(resolve_names);
 
-    let discovery = resolve::for_discovery(expressions, resolver.as_ref())
+    let discovery = resolve::for_discovery(expressions, Some(&resolver))
         .await
-        .map_err(restate)?;
-    let exclusions = inherit(inherited, exclude, resolver.as_ref()).await?;
+        .map_err(|e| restate(e, resolve_names))?;
+    let exclusions = inherit(inherited, exclude, &resolver, resolve_names).await?;
 
     // The engine worked out whether a network was named; this does not ask the
     // question a second time and risk a second answer.
@@ -422,15 +422,30 @@ pub(crate) async fn resolve<S: AsRef<str>, E: AsRef<str>>(
 async fn inherit<E: AsRef<str>>(
     inherited: &Exclusions,
     exclude: &[E],
-    resolver: Option<&Resolver>,
+    resolver: &Resolver,
+    resolve_names: bool,
 ) -> Result<Exclusions, TargetError> {
     let mut exclusions = inherited.clone();
     exclusions.extend(
-        &resolve::for_exclusion(exclude, resolver)
+        &resolve::for_exclusion(exclude, Some(resolver))
             .await
-            .map_err(restate)?,
+            .map_err(|e| restate(e, resolve_names))?,
     );
     Ok(exclusions)
+}
+
+/// The resolver the DNS policy allows: the host's own, or, for a run that
+/// may send no DNS, one reading the hosts file alone.
+///
+/// The hosts file sends nothing, and it is where a lab box reached over a
+/// VPN has its name, so a run avoiding a leak can still name the box it came
+/// for; the resolver configuration is then never read and no server asked.
+fn resolver_for(resolve_names: bool) -> Resolver {
+    if resolve_names {
+        Resolver::from_system()
+    } else {
+        Resolver::hosts_file_only()
+    }
 }
 
 /// The hint closing a message about an interface that does not exist: the
@@ -446,9 +461,12 @@ pub(crate) fn try_instead(candidates: &[String]) -> String {
 /// Restates what the engine can only say in its own terms as what the user
 /// can act on: "no host lookup was supplied" as the flag that caused it, and
 /// an unknown interface with the ones this machine has.
-fn restate(error: TargetParseError) -> TargetError {
+fn restate(error: TargetParseError, resolve_names: bool) -> TargetError {
     match error {
         TargetParseError::NoHostLookup(expression) => TargetError::NameNeedsDns { expression },
+        TargetParseError::UnknownHost(expression) if !resolve_names => {
+            TargetError::NameNeedsDns { expression }
+        }
         TargetParseError::Address {
             expression,
             source: IpParseError::UnknownInterface(name),
@@ -613,15 +631,15 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
     resolve_names: bool,
 ) -> Result<ScanTargets, TargetError> {
     let context = host_context();
-    let resolver = resolve_names.then(Resolver::from_system);
+    let resolver = resolver_for(resolve_names);
 
-    let planned = resolve::for_port_scan(expressions, ports, &context, resolver.as_ref())
+    let planned = resolve::for_port_scan(expressions, ports, &context, Some(&resolver))
         .await
-        .map_err(restate)?;
+        .map_err(|e| restate(e, resolve_names))?;
     let names = planned.names().clone();
     let map = planned.into_map();
 
-    let exclusions = inherit(inherited, exclude, resolver.as_ref()).await?;
+    let exclusions = inherit(inherited, exclude, &resolver, resolve_names).await?;
 
     // Measured on a copy and discarded, exactly as the sweep does it: a probe
     // count is what the run will cost, and a run does not pay for a target it
@@ -1049,6 +1067,22 @@ mod tests {
         assert!(message.contains("one.one.one.one"), "got {message:?}");
         assert!(message.contains("--no-dns"), "got {message:?}");
         assert!(message.contains("engine.toml"), "got {message:?}");
+    }
+
+    /// A name the hosts file lists is resolved under no-DNS, since reading the
+    /// file sends nothing: a VPN lab's boxes are named there, and the user who
+    /// forbade DNS to keep the lab's names off a resolver still has to reach
+    /// them. `localhost` is listed in every Unix hosts file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hostname_the_hosts_file_lists_is_resolved_under_no_dns() {
+        let targets = offline(&["localhost"])
+            .await
+            .expect("a name the hosts file lists needs no DNS");
+        assert!(
+            targets.ips.contains(&IpAddr::from([127, 0, 0, 1])),
+            "localhost did not resolve to loopback"
+        );
     }
 
     /// The limit is exactly a `/12`, not one address short of it.

@@ -234,13 +234,14 @@ fn an_unwalkable_ipv6_range_is_refused_by_the_engine_and_reported_partial() {
 }
 
 /// Resolving a target name is DNS traffic before the scan has started, so a run
-/// forbidden from sending any has to refuse the name rather than drop it.
+/// forbidden from sending any has to refuse a name its hosts file does not
+/// list rather than drop it.
 ///
-/// `localhost` is answered on this machine, so a refusal that stopped working
-/// fails the test without putting a query on the network.
+/// A name under `.invalid` is answered on this machine (RFC 6761), so a refusal
+/// that stopped working fails the test without putting a query on the network.
 #[test]
 fn a_hostname_is_refused_when_dns_is_forbidden() {
-    let run = zond("no-dns", &["-q", "d", "-n", "localhost"]);
+    let run = zond("no-dns", &["-q", "d", "-n", "no-such-host.invalid"]);
     assert_eq!(status(&run), 2, "{}", stderr(&run));
     assert!(stderr(&run).contains("--no-dns"), "{}", stderr(&run));
 }
@@ -473,8 +474,9 @@ fn the_engines_settings_file_is_honoured() {
     .expect("a writable file");
 
     // No `-n` on this command line. If the file is being read, the hostname is
-    // refused anyway; if it is not, the name resolves and loopback is swept.
-    let run = zond_in(&directory, &["-q", "d", "localhost"]);
+    // refused for the flag the file stands in for; if it is not, the name goes
+    // to a resolver, which refuses it for itself without naming the file.
+    let run = zond_in(&directory, &["-q", "d", "no-such-host.invalid"]);
 
     assert_eq!(status(&run), 2, "{}", stderr(&run));
     assert!(stderr(&run).contains("engine.toml"), "{}", stderr(&run));

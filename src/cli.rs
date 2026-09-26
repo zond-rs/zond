@@ -1562,7 +1562,7 @@ Target forms:
   2001:db8::1        one IPv6 address
   2001:db8::/120     an IPv6 prefix
   fe80::1%en0        a link-local address, on a named interface
-  one.one.one.one    a hostname, resolved before the scan (unless --no-dns)
+  one.one.one.one    a hostname (with --no-dns, from the hosts file alone)
   lan                this host's own segment
 
 --exclude takes the same forms, and nothing named there is probed or reported.
@@ -1693,7 +1693,8 @@ pub(crate) struct EngineArgs {
     /// Discovered hosts are normally resolved to names in the background. A
     /// lookup goes to a resolver somebody operates, so on an engagement it can
     /// be the thing that announces the scan. A hostname written as a target is
-    /// refused rather than dropped.
+    /// read from the hosts file, which sends nothing, and refused rather than
+    /// dropped when the file does not list it.
     #[arg(short = 'n', long)]
     pub no_dns: bool,
 
