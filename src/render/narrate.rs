@@ -168,15 +168,21 @@ impl Narrator {
         self.announced = matches!(phase, Phase::Discovery { .. } | Phase::PortScan { .. });
 
         let (line, excluded) = match phase {
+            // What this sitting will do, which for a resumed job is what its
+            // earlier sittings left. Where they left nothing, `discovering 0
+            // addresses` reads as a job with no ground rather than one whose
+            // ground is covered, so it is said as nothing left.
             Phase::Discovery { targets, .. } => {
                 let count = targets.len();
-                (
+                let line = if count == 0 {
+                    format!("no addresses left to discover ({targets})")
+                } else {
                     format!(
                         "discovering {count} {} ({targets})",
                         plural(count, "address")
-                    ),
-                    withheld(targets.exclusions(), targets.excluded()),
-                )
+                    )
+                };
+                (line, withheld(targets.exclusions(), targets.excluded()))
             }
             // No exclusion line, and no count of ground: a watch covers no
             // address. Where it is standing and how long it means to stand
@@ -196,14 +202,19 @@ impl Narrator {
             Phase::PortScan { targets, .. } => {
                 let hosts = targets.hosts();
                 let probes = targets.probes();
-                (
+                let line = if probes == 0 {
+                    format!(
+                        "no probes left for {hosts} {} ({targets})",
+                        plural(hosts, "host"),
+                    )
+                } else {
                     format!(
                         "scanning {probes} {} across {hosts} {} ({targets})",
                         plural(probes, "probe"),
                         plural(hosts, "host"),
-                    ),
-                    withheld(targets.exclusions(), targets.excluded()),
-                )
+                    )
+                };
+                (line, withheld(targets.exclusions(), targets.excluded()))
             }
             // No exclusion line: what a record holds is what the scan covered,
             // and whatever it was kept out of was kept out at the time.
@@ -1864,6 +1875,48 @@ mod tests {
 
         assert!(!said.contains("raw sockets"), "{said}");
         assert!(said.contains("1 host up"), "{said}");
+    }
+
+    /// A resumed job its earlier sittings finished says there is nothing left
+    /// for this one, beside the record's plan as the journal lists it. `0
+    /// probes` reads as a job with no ground rather than one whose ground is
+    /// covered, and the record's id, which the line above names, in the place
+    /// a fresh run names its targets reads as a host called that.
+    #[test]
+    fn a_resumed_job_with_nothing_left_says_so_beside_its_plan() {
+        use crate::target::ScanTargets;
+        use zond_engine::PortSet;
+        use zond_engine::model::target::{TargetMap, TargetSet};
+
+        let mut plan = TargetMap::new();
+        plan.add_unit(TargetSet::new(
+            "192.0.2.1"
+                .parse::<zond_engine::IpSet>()
+                .expect("an address"),
+            "22,80".parse::<PortSet>().expect("ports"),
+        ));
+        let targets = ScanTargets::resumed(plan, 0, "192.0.2.1 on 2 ports".to_owned());
+
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::default(),
+            Style::bare(),
+        );
+        narrator
+            .started(
+                Phase::PortScan {
+                    targets: &targets,
+                    resumable: true,
+                },
+                Redaction::None,
+            )
+            .expect("a capture never fails");
+
+        assert_eq!(
+            capture.text().trim_end(),
+            "\u{2022} no probes left for 1 host (192.0.2.1 on 2 ports)"
+        );
     }
 
     /// A connect scan that probed TCP ports says how it probed them, and what

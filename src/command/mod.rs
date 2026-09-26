@@ -310,6 +310,13 @@ impl Resumed {
     pub(crate) fn announce(&self) {
         tracing::info!("continuing {} ({})", self.id, self.progress);
     }
+
+    /// The record's plan as `zond journal` lists it, which is how the reader
+    /// who found this id there knows it: what a fresh run's header names by
+    /// the targets typed.
+    pub(crate) fn described(&self) -> String {
+        self.journal.manifest().summary.clone()
+    }
 }
 
 /// Reopens the record `id` names, ready to be continued.

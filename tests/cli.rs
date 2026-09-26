@@ -1179,6 +1179,34 @@ fn a_refused_resume_says_only_why() {
     );
 }
 
+/// A resumed job says which record it continues, and its header says what
+/// this sitting will do beside the plan as the journal lists it, rather than
+/// with the record's id where a fresh run names the targets typed.
+#[test]
+fn a_resumed_job_names_the_record_apart_from_what_it_scans() {
+    let home = config_home("journal-resume-header");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-n", "-p", "1,2"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    let id = recorded_ids(&home)
+        .into_iter()
+        .next()
+        .expect("a listed scan");
+
+    let resumed = zond_in(&home, &["s", "--resume", &id, "-n"]);
+    assert_eq!(status(&resumed), 0, "{}", stderr(&resumed));
+    let said = stderr(&resumed);
+    assert!(
+        said.contains(&format!("continuing {id} (2/2 targets settled)")),
+        "{said}"
+    );
+    assert!(
+        said.contains("no probes left for 1 host (::1 on 2 ports)"),
+        "{said}"
+    );
+    assert_eq!(said.matches(id.as_str()).count(), 1, "{said}");
+}
+
 /// Targets named alongside `--resume` are checked, and refused when they
 /// describe something else.
 #[test]

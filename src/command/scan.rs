@@ -257,8 +257,9 @@ async fn continued(
     }
 
     resumed.announce();
+    let described = resumed.described();
     Ok((
-        ScanTargets::resumed(plan, resumed.remaining, resumed.id),
+        ScanTargets::resumed(plan, resumed.remaining, described),
         Some(resumed.journal),
     ))
 }

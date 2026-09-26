@@ -177,8 +177,9 @@ fn continued(
     config.segment_sweep = resumed.journal.manifest().sweep;
 
     resumed.announce();
+    let described = resumed.described();
     Ok((
-        Targets::resumed(addresses, resumed.remaining, resumed.id),
+        Targets::resumed(addresses, resumed.remaining, described),
         Some(resumed.journal),
     ))
 }
