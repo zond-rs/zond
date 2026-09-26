@@ -3772,11 +3772,11 @@ mod tests {
             segments_off_target: 0,
             replies_without_rtt: 0,
             hosts_found: u64::try_from(targets - unanswered).expect("a small fixture"),
-            answered_on: [0; ATTEMPTS_COUNTED],
+            answered_on: vec![0; ATTEMPTS_COUNTED],
             answered_unattributed: 0,
             first_reply: None,
             last_reply: None,
-            found_at: [0; BUCKET_BOUNDS_MS.len() + 1],
+            found_at: vec![0; BUCKET_BOUNDS_MS.len() + 1],
             capture: None,
         });
 
