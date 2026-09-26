@@ -1990,7 +1990,8 @@ const MAX_CITED_CVES: usize = 3;
 /// go beneath it, where `evidence` and `remedy` already sit.
 ///
 /// The title, the excerpt and the advice are the host's words where a
-/// detection drew them from its reply, and are read through `masking`.
+/// detection drew them from its reply, and are read through `masking`, as is
+/// a link, which a document another tool wrote can carry anything in.
 fn claim(
     port: Option<(u16, String)>,
     finding: &zond_engine::model::finding::Finding,
@@ -2003,14 +2004,17 @@ fn claim(
     let mut cited: Vec<String> = cve_refs
         .iter()
         .take(MAX_CITED_CVES)
-        .map(|reference| reference_text(reference))
+        .map(|reference| reference_text(reference, masking))
         .collect();
     if cve_refs.len() > MAX_CITED_CVES {
         cited.push(format!("+{}", cve_refs.len() - MAX_CITED_CVES));
     }
     let cves = (!cited.is_empty()).then(|| cited.join("  "));
 
-    let others: Vec<String> = other_refs.into_iter().map(reference_text).collect();
+    let others: Vec<String> = other_refs
+        .into_iter()
+        .map(|reference| reference_text(reference, masking))
+        .collect();
     let reference = (!others.is_empty()).then(|| others.join("  "));
 
     let excerpt = masking.excerpt(finding.excerpt().as_str());
@@ -2143,15 +2147,16 @@ fn width(value: &str) -> usize {
 
 /// A reference as the short identifier a reader recognises.
 ///
-/// A CVE and a CWE are their own names; a URL is shown as written, and escaped
-/// like any other value a document carried when it reaches a presentation. The
-/// bare number a `Cwe` carries is spelled back into `CWE-79`, since the number
+/// A CVE and a CWE are their own names; a URL is shown as written, with the
+/// host's names masked as the exported report masks them, and escaped like any
+/// other value a document carried when it reaches a presentation. The bare
+/// number a `Cwe` carries is spelled back into `CWE-79`, since the number
 /// alone is not the identifier.
-fn reference_text(reference: &Reference) -> String {
+fn reference_text(reference: &Reference, masking: &HostRedaction) -> String {
     match reference {
         Reference::Cve(id) => id.clone(),
         Reference::Cwe(number) => format!("CWE-{number}"),
-        Reference::Url(url) => url.clone(),
+        Reference::Url(url) => masking.text(url).into_owned(),
         // A reference kind a newer engine carries and this build has no spelling
         // for. Named the way the wire names it rather than dropped, so a finding
         // never loses a citation to a build that is merely behind.
@@ -4004,6 +4009,53 @@ mod tests {
         assert!(
             !masked.contains("dc01") && !masked.contains("corp"),
             "a name survived redaction: {masked}"
+        );
+    }
+
+    /// **A finding's advisory link is masked where it names the host.** A
+    /// link is free text a document another tool wrote can carry anything in,
+    /// and the exported report masks the host's names in it, so a redacted
+    /// run printing it whole would hand back the name its report withholds.
+    #[test]
+    fn a_finding_s_link_is_masked_where_it_names_the_host() {
+        use zond_engine::model::finding::{DetectionClass, DetectionId, Finding, Version};
+        use zond_engine::model::host::{HostName, NameSource};
+
+        let mut host = host(1);
+        host.record_name(
+            HostName::new(NameKind::Host, NameSource::Ldap, "dc01.corp.example").expect("a name"),
+        );
+        let mut port = Port::new(22, Protocol::Tcp, PortState::Open);
+        port.add_finding(
+            Finding::new(
+                DetectionId::new("cve-correlation", Version::new(1, 0, 0), "0123abcd")
+                    .expect("a valid id"),
+                "OpenSSH carries known vulnerabilities",
+                Severity::High,
+                Confidence::Certain,
+                DetectionClass::Passive,
+            )
+            .expect("a valid finding")
+            .with_reference(Reference::url(
+                "https://advisories.example/dc01.corp.example",
+            )),
+        );
+        host.add_port(port);
+
+        let printed = |reader: Reader| {
+            findings(reader, &host, Risk::default())
+                .rows
+                .iter()
+                .filter_map(|row| row.reference.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        assert!(printed(Reader::default()).contains("dc01.corp.example"));
+        let masked = printed(Reader::new(Redaction::Standard));
+        assert!(
+            masked.contains("advisories.example/") && !masked.contains("dc01"),
+            "{masked}"
         );
     }
 
