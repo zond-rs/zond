@@ -565,6 +565,12 @@ async fn drive(
         }
     }
 
+    // Let go of the live store before the report is written out. The report
+    // holds its own copy of every host, and a full-range scan's hosts are
+    // hundreds of megabytes: held through the export and the render, they
+    // would be held twice for nothing. The engine hands its hosts to the
+    // report without a copy where nothing else still holds the store.
+    drop(hosts);
     let mut report = task.join().await?;
 
     // Before rendering and before export, so the terminal, the JSON and the
