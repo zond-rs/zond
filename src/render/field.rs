@@ -154,11 +154,17 @@ impl Reader {
     ///
     /// A dual-stack machine answering at three addresses is one device, and
     /// [`Host`] is shaped around never reporting it as three.
+    ///
+    /// Joined as each is read rather than gathered first, so a host answering
+    /// at millions of addresses costs the one line it is drawn as and not a
+    /// string per address beside it.
     pub(crate) fn addresses(self, host: &Host) -> String {
-        std::iter::once(self.primary(host))
-            .chain(self.others(host))
-            .collect::<Vec<_>>()
-            .join(",")
+        let mut joined = self.primary(host);
+        for other in self.others(host) {
+            joined.push(',');
+            joined.push_str(&other);
+        }
+        joined
     }
 
     /// The address to lead with.
@@ -166,18 +172,26 @@ impl Reader {
         self.address(host, host.primary_ip())
     }
 
-    /// The addresses other than the primary, one per entry.
+    /// The addresses other than the primary, one per entry, read off the host
+    /// as they are asked for.
     ///
     /// A list rather than a joined string: a host answering at four addresses
     /// gets four lines, and a line per address is what stops the longest of them
-    /// running off the right edge.
+    /// running off the right edge. Read lazily, because the host already holds
+    /// every address and a renderer writes each line as it gets it. Gathered
+    /// into strings first, a report of one host at four million addresses
+    /// would cost several times its own size to print.
     ///
     /// **A link-local address the host derived from its own hardware address is
     /// left out**, because the block printed that hardware address two lines
     /// above it and this is the same six octets in another notation. Not a
     /// judgement about relevance but an equality test, and one [`mask`] already
     /// relies on being real. `all` keeps it, which is what `-v` asks for.
-    pub(crate) fn other_addresses(self, host: &Host, all: bool) -> Vec<String> {
+    pub(crate) fn other_addresses(
+        self,
+        host: &Host,
+        all: bool,
+    ) -> impl Iterator<Item = String> + '_ {
         let hardware: Vec<[u8; 6]> = if all {
             Vec::new()
         } else {
@@ -193,12 +207,11 @@ impl Reader {
         };
 
         non_primary(host)
-            .filter(|ip| match ip {
+            .filter(move |ip| match ip {
                 IpAddr::V6(v6) => !hardware.iter().any(|mac| restates(*mac, *v6)),
                 IpAddr::V4(_) => true,
             })
-            .map(|ip| self.address(host, ip))
-            .collect()
+            .map(move |ip| self.address(host, ip))
     }
 
     /// The host's name, if a lookup found one.
@@ -2500,11 +2513,12 @@ pub(crate) fn skipped_as_down(report: &ScanReport) -> u128 {
     for range in report.undecided() {
         accounted.insert_range(range);
     }
-    for host in report.hosts().filter(|host| host.is_alive()) {
-        for address in host.ips() {
-            accounted.insert(*address);
-        }
-    }
+    turned_away.canonicalize();
+    listed_within(
+        &mut accounted,
+        report.hosts().filter(|host| host.is_alive()),
+        &turned_away,
+    );
     accounted.canonicalize();
 
     turned_away.subtract(&accounted);
@@ -2536,11 +2550,7 @@ pub(crate) fn silent(report: &ScanReport) -> u128 {
         .collect();
     let mut silent = ranges(&named);
     let mut listed = IpSet::new();
-    for host in report.hosts() {
-        for address in host.ips() {
-            listed.insert(*address);
-        }
-    }
+    listed_within(&mut listed, report.hosts(), &silent);
     listed.canonicalize();
     silent.subtract(&listed);
     silent.len()
@@ -2562,12 +2572,13 @@ pub(crate) fn silent(report: &ScanReport) -> u128 {
 /// addresses were given differing sets cannot say what any one of them was
 /// asked, and adds nothing rather than a guess.
 pub(crate) fn silent_probes(report: &ScanReport) -> u128 {
+    let named: Vec<zond_engine::model::ip::range::IpRange> = report
+        .phases()
+        .iter()
+        .flat_map(|phase| phase.silent().iter().copied())
+        .collect();
     let mut listed = IpSet::new();
-    for host in report.hosts() {
-        for address in host.ips() {
-            listed.insert(*address);
-        }
-    }
+    listed_within(&mut listed, report.hosts(), &ranges(&named));
     listed.canonicalize();
 
     report
@@ -2587,6 +2598,25 @@ pub(crate) fn silent_probes(report: &ScanReport) -> u128 {
             silent.len() * ports.len() as u128
         })
         .sum()
+}
+
+/// Adds to `into` the addresses `hosts` are listed at that fall inside
+/// `within`.
+///
+/// Those are the only ones that can change what subtracting the host list
+/// from `within` leaves, and a host list is as long as its document is large:
+/// a set of every address on it is a second copy of the largest thing in the
+/// report, held for a subtraction the addresses outside `within` take no part
+/// in. `within` is asked once per address, so a caller hands it merged.
+fn listed_within<'r>(into: &mut IpSet, hosts: impl Iterator<Item = &'r Host>, within: &IpSet) {
+    if within.is_empty() {
+        return;
+    }
+    for address in hosts.flat_map(Host::ips) {
+        if within.contains(address) {
+            into.insert(*address);
+        }
+    }
 }
 
 /// `ranges` as one merged set.
@@ -3930,8 +3960,10 @@ mod tests {
 
         assert_eq!(Reader::default().addresses(&host), "192.0.2.1,2001:db8::1");
         assert_eq!(
-            Reader::default().other_addresses(&host, false),
-            vec!["2001:db8::1".to_owned()]
+            Reader::default()
+                .other_addresses(&host, false)
+                .collect::<Vec<_>>(),
+            ["2001:db8::1"]
         );
     }
 
@@ -3940,7 +3972,8 @@ mod tests {
         assert!(
             Reader::default()
                 .other_addresses(&host(1), false)
-                .is_empty()
+                .next()
+                .is_none()
         );
     }
 
@@ -3953,7 +3986,7 @@ mod tests {
         host.add_ip(IpAddr::V6(v6("fe80::ca52:61ff:fec7:594")));
         host.add_ip(IpAddr::V6(v6("2a02:908:8c1:b880::1")));
 
-        let shown = Reader::default().other_addresses(&host, false);
+        let shown: Vec<String> = Reader::default().other_addresses(&host, false).collect();
         assert!(
             shown.iter().all(|address| !address.starts_with("fe80::")),
             "the hardware address was printed twice: {shown:?}"
@@ -3963,7 +3996,7 @@ mod tests {
             "a global address is a finding of its own: {shown:?}"
         );
 
-        assert_eq!(Reader::default().other_addresses(&host, true).len(), 2);
+        assert_eq!(Reader::default().other_addresses(&host, true).count(), 2);
     }
 
     // ── Evidence ─────────────────────────────────────────────────────────────
@@ -4452,6 +4485,32 @@ mod tests {
         ]);
 
         assert_eq!(skipped_as_down(&report), 2, "192.0.2.0 and 192.0.2.2");
+    }
+
+    /// A host a merged document heard at an address a scan found silent is on
+    /// the page rather than missing from it, so neither the silent count nor
+    /// the probes the silent were asked include it; one heard anywhere else
+    /// changes neither. Only the host addresses inside the silent ranges are
+    /// consulted, and this pins that consulting only those drops none that
+    /// count.
+    #[test]
+    fn a_host_heard_where_a_scan_found_silence_is_not_counted_silent() {
+        let mut report =
+            crate::render::test_support::standing_in("192.0.2.0/29", &["192.0.2.2-192.0.2.7"]);
+        assert_eq!((silent(&report), silent_probes(&report)), (6, 12));
+
+        let elsewhere = Host::new(IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1)));
+        report.merge(ScanReport::recorded(
+            "0.18.0",
+            Vec::new(),
+            vec![crate::render::test_support::host(3), elsewhere],
+        ));
+
+        assert_eq!(
+            (silent(&report), silent_probes(&report)),
+            (5, 10),
+            "192.0.2.3 was heard, on two ports"
+        );
     }
 
     /// **A sweep's silence is not a scan's.** Folded in beside a scan, a

@@ -56,12 +56,12 @@ fn host(at: usize, identity: &str, name: Option<&str>) -> Header {
 }
 
 /// A fact, as a caller builds one.
-fn fact(label: &'static str, value: &str) -> Child {
+fn fact(label: &'static str, value: &str) -> Child<'static> {
     Child::one(label, bare().plain(value))
 }
 
 /// A fact that is a list.
-fn facts(label: &'static str, values: &[&str]) -> Child {
+fn facts(label: &'static str, values: &[&str]) -> Child<'static> {
     Child::many(
         label,
         values.iter().map(|value| bare().plain(value)).collect(),
@@ -450,6 +450,45 @@ fn a_continuation_carries_no_label_and_keeps_the_column() {
         lines[1].find("2001:db8::1"),
         lines[2].find("fe80::1%en0"),
         "the continuation did not keep the value column: {text}"
+    );
+}
+
+/// A list drawn as it is written reads exactly as the same list held, and is
+/// not read until it is written.
+///
+/// Drawn is how a list too long to hold is shown, a host's addresses where
+/// there can be millions of them, so it has to be indistinguishable on the
+/// page from a held one; and a drawn list read while the blocks are built or
+/// the columns measured would be a list held after all, which is the cost
+/// drawing it exists to avoid.
+#[test]
+fn a_drawn_list_reads_as_a_held_one_and_is_read_only_when_written() {
+    let addresses = ["2001:db8::1", "fe80::1%en0", "198.51.100.7"];
+    let held = Block {
+        header: Header::numbered(1, "192.0.2.1".to_owned()),
+        children: vec![facts("also", &addresses), fact("roles", "router")],
+    };
+
+    let reads = std::cell::Cell::new(0);
+    let blocks = [Block {
+        header: Header::numbered(1, "192.0.2.1".to_owned()),
+        children: vec![
+            Child::drawn("also", || {
+                reads.set(reads.get() + 1);
+                addresses.iter().map(|address| bare().plain(address))
+            }),
+            fact("roles", "router"),
+        ],
+    }];
+    let columns = Columns::of(&blocks, WIDTH);
+    assert_eq!(reads.get(), 0, "read before it was written");
+
+    let mut out = Vec::new();
+    write(&mut out, bare(), &columns, &blocks[0]).expect("a vector cannot fail");
+    assert_eq!(reads.get(), 1);
+    assert_eq!(
+        String::from_utf8(out).expect("the renderer writes text"),
+        drawn(&held)
     );
 }
 

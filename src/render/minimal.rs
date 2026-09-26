@@ -220,17 +220,17 @@ fn write_host(
     // list comma-joined into one value runs off the screen. A path is a list for
     // the same reason, and goes above the ports because it is about how this
     // host was reached rather than what was found on it.
-    tagged_list(out, "also", &reader.other_addresses(host, true))?;
-    tagged_list(out, "path", &field::path(reader, host))?;
+    tagged_list(out, "also", reader.other_addresses(host, true))?;
+    tagged_list(out, "path", field::path(reader, host))?;
     tagged_list(
         out,
         "port",
-        &field::ports(host, silence_means_something, showing),
+        field::ports(host, silence_means_something, showing),
     )?;
     // Which IP protocols the host's stack takes delivery of, from
     // `--ip-protocols`: what the host speaks, one line each, apart from the
     // ports because it is not about what listens.
-    tagged_list(out, "ip", &field::ip_protocols(host))?;
+    tagged_list(out, "ip", field::ip_protocols(host))?;
 
     // After the ports, because a finding is a conclusion drawn from them: a
     // known vulnerability the service matches, or a detection that fired. One
@@ -239,7 +239,7 @@ fn write_host(
     // The terse mode says what and how bad and how sure, and leaves the
     // remediation to the modes that hang detail: a person acting on a fix is not
     // reading it out of a tagged block.
-    tagged_list(out, "risk", &risk_lines(host, showing))?;
+    tagged_list(out, "risk", risk_lines(host, showing))?;
 
     Ok(())
 }
@@ -300,8 +300,16 @@ fn tag(out: &mut dyn Write, name: &str, value: &str) -> io::Result<()> {
 }
 
 /// A line per value, tagged once and then aligned under itself.
-fn tagged_list(out: &mut dyn Write, name: &str, values: &[String]) -> io::Result<()> {
-    for (index, value) in values.iter().enumerate() {
+///
+/// Written as the values arrive, so a list read lazily off the host is never
+/// held whole.
+fn tagged_list(
+    out: &mut dyn Write,
+    name: &str,
+    values: impl IntoIterator<Item = impl AsRef<str>>,
+) -> io::Result<()> {
+    for (index, value) in values.into_iter().enumerate() {
+        let value = value.as_ref();
         if index == 0 {
             tag(out, name, value)?;
         } else {

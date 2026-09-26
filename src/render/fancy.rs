@@ -257,14 +257,14 @@ fn verdict(style: Style, host: &Host) -> Option<String> {
 ///
 /// `ports` last, and not by accident: it is the longest, and the longest value
 /// is the one whose continuation lines are cheapest at the bottom of a block.
-fn children(
+fn children<'a>(
     style: Style,
     reader: field::Reader,
-    host: &Host,
+    host: &'a Host,
     listing: &field::PortListing,
     verbosity: Verbosity,
     showing: field::Showing,
-) -> Vec<Child> {
+) -> Vec<Child<'a>> {
     let mut children = Vec::new();
 
     // The vendor was read out of the hardware address, so it is shown against
@@ -366,12 +366,16 @@ fn children(
     // a link-local the host derived from the hardware address two lines up is
     // that address written again, and `-v` keeps it. See
     // `Reader::other_addresses`.
-    let others = reader.other_addresses(host, verbosity.explains());
-    if !others.is_empty() {
-        children.push(Child::many(
-            "also",
-            others.iter().map(|address| style.plain(address)).collect(),
-        ));
+    //
+    // Drawn as the block is written rather than gathered here, since a host
+    // can answer at more addresses than it is worth holding a line for each.
+    let all = verbosity.explains();
+    if reader.other_addresses(host, all).next().is_some() {
+        children.push(Child::drawn("also", move || {
+            reader
+                .other_addresses(host, all)
+                .map(move |address| style.plain(&address))
+        }));
     }
 
     // Above the ports because it is about how this host was reached rather than
@@ -444,7 +448,7 @@ fn findings(
     listing: &field::FindingListing,
     verbosity: Verbosity,
     showing: field::Showing,
-) -> Child {
+) -> Child<'static> {
     let mut rows = Vec::new();
     let views = &listing.rows;
 
@@ -534,7 +538,7 @@ fn findings(
 ///
 /// A child like any other, which is the whole point: the table is what this
 /// value happens to be, not a section of its own.
-fn ports(style: Style, listing: &field::PortListing) -> Child {
+fn ports(style: Style, listing: &field::PortListing) -> Child<'static> {
     let mut rows = Vec::new();
 
     // The renderer's own notes, about what this table covers and what it decided

@@ -129,7 +129,12 @@ fn record(reader: field::Reader, host: &Host) -> [String; FIELDS] {
         field::closed_ports(host).unwrap_or_else(field::unknown),
         field::packed_roles(host).unwrap_or_else(field::unknown),
     ]
-    .map(|value| field::printable(&value).into_owned())
+    .map(|value| match field::printable(&value) {
+        std::borrow::Cow::Owned(escaped) => escaped,
+        // The value itself, rather than a copy of it: a host's address field
+        // is as long as its address list, which can be most of the document.
+        std::borrow::Cow::Borrowed(_) => value,
+    })
 }
 
 impl Renderer for PipeRenderer {
@@ -148,8 +153,15 @@ impl Renderer for PipeRenderer {
 
     fn finished(&mut self, report: &ScanReport) -> io::Result<()> {
         for host in field::sorted_hosts(report) {
-            let fields = record(self.reader, host);
-            writeln!(self.records, "{}", fields.join(&SEPARATOR.to_string()))?;
+            // Field by field rather than joined first, which would hold the
+            // record twice over.
+            for (index, field) in record(self.reader, host).iter().enumerate() {
+                if index > 0 {
+                    write!(self.records, "{SEPARATOR}")?;
+                }
+                self.records.write_all(field.as_bytes())?;
+            }
+            writeln!(self.records)?;
         }
 
         self.records.flush()?;

@@ -231,12 +231,11 @@ impl Header {
 }
 
 /// A labelled fact.
-#[derive(Debug, Clone)]
-pub(crate) struct Child {
+pub(crate) struct Child<'a> {
     /// What the value is, in the label column.
     pub label: &'static str,
     /// The value, one entry per line.
-    pub rows: Vec<Row>,
+    rows: Rows<'a>,
     /// How far into this child's value its details' own values begin.
     ///
     /// Zero unless the caller says otherwise, which is right for a value that is
@@ -249,21 +248,65 @@ pub(crate) struct Child {
     pub details_at: usize,
 }
 
-impl Child {
+/// The lines of a child's value, held or drawn as they are written.
+///
+/// Nothing measured across a listing comes from a value's own lines: the
+/// columns are set by the headers, the labels and the details, and a value is
+/// the one thing on a line that nothing is placed after. So a value needs to
+/// exist only while its line is written, and a list that can be read off the
+/// record again need never be held whole. That is the difference between a
+/// listing costing what it prints and costing a copy of every line of it at
+/// once: a host answering at four million addresses is four million lines, and
+/// held as strings beside the record they were read from, they cost several
+/// times what the record itself does.
+enum Rows<'a> {
+    /// Built in advance, each with whatever detail hangs off it.
+    Held(Vec<Row>),
+    /// Produced line by line as the block is written, with no detail, since
+    /// detail is measured across the listing before anything is drawn.
+    ///
+    /// A function rather than an iterator, so that writing borrows the block
+    /// rather than consuming it, as it does a held value. One handed each line
+    /// rather than one returning them, so that a child is covariant in what it
+    /// borrows: a child of owned text then passes for one borrowing anything,
+    /// and sits in a list beside children that borrow the host.
+    Drawn(Box<Draw<'a>>),
+}
+
+/// What draws a [`Rows::Drawn`] value: it hands each of the value's lines to
+/// the function it is given, and stops at the first error that function
+/// returns.
+type Draw<'a> = dyn Fn(&mut dyn FnMut(&str) -> io::Result<()>) -> io::Result<()> + 'a;
+
+impl<'a> Child<'a> {
     /// A fact that fits on one line.
     pub(crate) fn one(label: &'static str, text: String) -> Self {
-        Self {
-            label,
-            rows: vec![Row::plain(text)],
-            details_at: 0,
-        }
+        Self::rows(label, vec![Row::plain(text)])
     }
 
     /// A fact that is a list.
     pub(crate) fn many(label: &'static str, texts: Vec<String>) -> Self {
+        Self::rows(label, texts.into_iter().map(Row::plain).collect())
+    }
+
+    /// A fact that is a list too long to hold, drawn a line at a time as it is
+    /// written; see [`Rows`].
+    ///
+    /// `lines` is called each time the block is written and yields the value's
+    /// lines, already painted. A caller hands it something that reads them off
+    /// what it already holds.
+    pub(crate) fn drawn<I>(label: &'static str, lines: impl Fn() -> I + 'a) -> Self
+    where
+        I: Iterator<Item = String>,
+    {
         Self {
             label,
-            rows: texts.into_iter().map(Row::plain).collect(),
+            rows: Rows::Drawn(Box::new(move |each| {
+                for line in lines() {
+                    each(&line)?;
+                }
+                Ok(())
+            })),
             details_at: 0,
         }
     }
@@ -272,7 +315,7 @@ impl Child {
     pub(crate) fn rows(label: &'static str, rows: Vec<Row>) -> Self {
         Self {
             label,
-            rows,
+            rows: Rows::Held(rows),
             details_at: 0,
         }
     }
@@ -284,6 +327,15 @@ impl Child {
             details_at: column,
             ..self
         }
+    }
+
+    /// The detail hanging off this child's rows, which only a held value has.
+    fn details(&self) -> impl Iterator<Item = &Detail> {
+        let held: &[Row] = match &self.rows {
+            Rows::Held(rows) => rows,
+            Rows::Drawn(_) => &[],
+        };
+        held.iter().flat_map(|row| row.detail.iter())
     }
 }
 
@@ -352,12 +404,11 @@ impl Detail {
 }
 
 /// One record, ready to draw.
-#[derive(Debug, Clone)]
-pub(crate) struct Block {
+pub(crate) struct Block<'a> {
     /// The line it opens with.
     pub header: Header,
     /// The facts under it, in the order they are drawn.
-    pub children: Vec<Child>,
+    pub children: Vec<Child<'a>>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -406,7 +457,7 @@ struct Detailing {
 impl Columns {
     /// The columns this listing draws in, on a terminal `width` columns across.
     #[must_use]
-    pub(crate) fn of(blocks: &[Block], width: usize) -> Self {
+    pub(crate) fn of(blocks: &[Block<'_>], width: usize) -> Self {
         let widest = |counts: &mut dyn Iterator<Item = usize>| counts.max().unwrap_or(0);
 
         // A listing where nothing is numbered reserves no room for numbering,
@@ -464,7 +515,7 @@ impl Columns {
                 continue;
             };
 
-            for detail in child.rows.iter().flat_map(|row| row.detail.iter()) {
+            for detail in child.details() {
                 entry.label = entry.label.max(detail.label.chars().count());
                 if detail.note.is_some() {
                     entry.value = entry.value.max(detail.value.chars().count());
@@ -506,7 +557,7 @@ impl Columns {
     ///
     /// Where the child said, unless that is too far left to fit the labels that
     /// hang there, in which case [`DETAIL_INDENT`] past the widest of them.
-    fn detail_value_column(&self, child: &Child) -> usize {
+    fn detail_value_column(&self, child: &Child<'_>) -> usize {
         let floor = DETAIL_INDENT + self.detailing(child.label).label + GAP;
         self.value_column() + child.details_at.max(floor)
     }
@@ -597,36 +648,58 @@ pub(crate) fn write(
     out: &mut dyn Write,
     style: Style,
     columns: &Columns,
-    block: &Block,
+    block: &Block<'_>,
 ) -> io::Result<()> {
     writeln!(out, "{}", header(style, columns, &block.header))?;
 
     for child in &block.children {
-        for (index, row) in child.rows.iter().enumerate() {
-            let mut line = Line::new();
-            line.indent_to(columns.label_column);
-
-            // Only the first row of a value carries the label; the rest are the
-            // same fact continued, and a label repeated down a list is a label
-            // that has stopped meaning anything.
-            if index == 0 {
-                let label = child.label;
-                line.push(&style.faint(label), label.chars().count());
-            }
-
-            line.indent_to(columns.value_column());
-            line.end_with(&row.text);
-            writeln!(out, "{}", line.finish())?;
-
-            for detail in &row.detail {
-                for line in hanging(style, columns, child, detail) {
-                    writeln!(out, "{line}")?;
+        match &child.rows {
+            Rows::Held(rows) => {
+                for (index, row) in rows.iter().enumerate() {
+                    value_line(out, style, columns, child.label, index, &row.text)?;
+                    for detail in &row.detail {
+                        for line in hanging(style, columns, child, detail) {
+                            writeln!(out, "{line}")?;
+                        }
+                    }
                 }
+            }
+            Rows::Drawn(draw) => {
+                let mut index = 0;
+                draw(&mut |text| {
+                    value_line(out, style, columns, child.label, index, text)?;
+                    index += 1;
+                    Ok(())
+                })?;
             }
         }
     }
 
     Ok(())
+}
+
+/// One line of a child's value, the `index`th, in the value column.
+fn value_line(
+    out: &mut dyn Write,
+    style: Style,
+    columns: &Columns,
+    label: &'static str,
+    index: usize,
+    text: &str,
+) -> io::Result<()> {
+    let mut line = Line::new();
+    line.indent_to(columns.label_column);
+
+    // Only the first row of a value carries the label; the rest are the same
+    // fact continued, and a label repeated down a list is a label that has
+    // stopped meaning anything.
+    if index == 0 {
+        line.push(&style.faint(label), label.chars().count());
+    }
+
+    line.indent_to(columns.value_column());
+    line.end_with(text);
+    writeln!(out, "{}", line.finish())
 }
 
 /// Writes every block of a listing, separated by a blank line.
@@ -637,7 +710,7 @@ pub(crate) fn write(
 pub(crate) fn write_all(
     out: &mut dyn Write,
     style: Style,
-    blocks: &[Block],
+    blocks: &[Block<'_>],
     width: usize,
     mut before_each: impl FnMut(&mut dyn Write, usize) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -698,7 +771,7 @@ fn header(style: Style, columns: &Columns, header: &Header) -> String {
 /// A value too wide for the terminal folds and continues in its own column.
 /// Nothing here is ever cut: a detail is something a run asked to be shown, and
 /// an ellipsis is the presentation deciding it knew better.
-fn hanging(style: Style, columns: &Columns, child: &Child, detail: &Detail) -> Vec<String> {
+fn hanging(style: Style, columns: &Columns, child: &Child<'_>, detail: &Detail) -> Vec<String> {
     let value_column = columns.detail_value_column(child);
     let room = columns
         .width

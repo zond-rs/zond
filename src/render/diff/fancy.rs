@@ -102,7 +102,7 @@ fn happened(style: Style, host: &HostDelta) -> String {
 }
 
 /// What moved, as children of the host it moved on.
-fn changes(host: &HostDelta, options: &ExportOptions, style: Style) -> Vec<Child> {
+fn changes(host: &HostDelta, options: &ExportOptions, style: Style) -> Vec<Child<'static>> {
     let reader = field::Reader::new(options.redaction);
     let mut children = Vec::new();
 
