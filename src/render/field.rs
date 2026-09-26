@@ -365,6 +365,7 @@ fn protocol_name(protocol: &StatusProtocol) -> String {
         StatusProtocol::IcmpEcho => "icmp_echo".to_owned(),
         StatusProtocol::IcmpUnreachable => "icmp_unreachable".to_owned(),
         StatusProtocol::TcpSyn => "tcp_syn".to_owned(),
+        StatusProtocol::TcpConnect => "tcp_connect".to_owned(),
         StatusProtocol::Tcp => "tcp".to_owned(),
         StatusProtocol::Dhcp => "dhcp".to_owned(),
         StatusProtocol::Udp => "udp".to_owned(),
@@ -724,6 +725,7 @@ fn spoken(protocol: &StatusProtocol) -> String {
         StatusProtocol::IcmpEcho => "ICMP_echo".to_owned(),
         StatusProtocol::IcmpUnreachable => "ICMP_unreachable".to_owned(),
         StatusProtocol::TcpSyn => "TCP_SYN".to_owned(),
+        StatusProtocol::TcpConnect => "TCP_connect".to_owned(),
         StatusProtocol::Tcp => "TCP".to_owned(),
         StatusProtocol::Dhcp => "DHCP".to_owned(),
         StatusProtocol::Udp => "UDP".to_owned(),
@@ -3313,6 +3315,7 @@ mod tests {
             StatusProtocol::IcmpEcho,
             StatusProtocol::IcmpUnreachable,
             StatusProtocol::TcpSyn,
+            StatusProtocol::TcpConnect,
             StatusProtocol::Tcp,
             StatusProtocol::Dhcp,
             StatusProtocol::Udp,
@@ -3336,6 +3339,7 @@ mod tests {
         );
         assert_eq!(spoken(&StatusProtocol::IcmpEcho), "ICMP_echo");
         assert_eq!(spoken(&StatusProtocol::TcpSyn), "TCP_SYN");
+        assert_eq!(spoken(&StatusProtocol::TcpConnect), "TCP_connect");
     }
 
     /// The banner is read once by a person; a record is compared by a machine.
@@ -4261,6 +4265,7 @@ mod tests {
         assert_eq!(protocol_name(&StatusProtocol::Arp), "arp");
         assert_eq!(protocol_name(&StatusProtocol::IcmpEcho), "icmp_echo");
         assert_eq!(protocol_name(&StatusProtocol::TcpSyn), "tcp_syn");
+        assert_eq!(protocol_name(&StatusProtocol::TcpConnect), "tcp_connect");
     }
 
     #[test]
