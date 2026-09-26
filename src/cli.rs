@@ -1688,13 +1688,14 @@ pub(crate) struct EngineArgs {
     #[arg(long, value_name = "TARGET", action = ArgAction::Append)]
     pub exclude: Vec<String>,
 
-    /// Send no DNS traffic, and report hosts by address alone.
+    /// Send no DNS traffic, and name hosts from the hosts file alone.
     ///
     /// Discovered hosts are normally resolved to names in the background. A
     /// lookup goes to a resolver somebody operates, so on an engagement it can
-    /// be the thing that announces the scan. A hostname written as a target is
-    /// read from the hosts file, which sends nothing, and refused rather than
-    /// dropped when the file does not list it.
+    /// be the thing that announces the scan. The hosts file sends nothing, so
+    /// it is still read: a host the scan finds is named from it, and a
+    /// hostname written as a target is resolved from it, and refused rather
+    /// than dropped when the file does not list it.
     #[arg(short = 'n', long)]
     pub no_dns: bool,
 
