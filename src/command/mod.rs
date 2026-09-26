@@ -35,6 +35,7 @@ use zond_engine::export::Redaction;
 use zond_engine::import::report::{ReportFormat, ReportOptions};
 
 use crate::export::ReportFile;
+use zond_engine::journal::format::JournalError;
 use zond_engine::journal::lock::{LockRefused, LockState};
 use zond_engine::journal::manifest::Plan;
 use zond_engine::journal::paths;
@@ -324,10 +325,14 @@ impl Resumed {
 /// watch counts in nothing at all and is announced differently; see
 /// [`continuation`].
 ///
-/// The directory is looked for here rather than left to
-/// [`Journal::reopen`](zond_engine::journal::store::Journal::reopen), because a
-/// missing one means somebody named a record this machine does not have, and
-/// that deserves a message saying how many there are to look through.
+/// A record with no manifest where [`Journal::reopen`] looks for one is a
+/// record this machine does not have, and is told as one, with how many there
+/// are to look through, rather than as a file that could not be read. It is
+/// asked of the reopen rather than of the directory beforehand, because the
+/// reopen reaches the record as every journal file is reached, where a look
+/// by path would follow a link the reopen refuses.
+///
+/// [`Journal::reopen`]: zond_engine::journal::store::Journal::reopen
 ///
 /// `take_over` continues a record whose lock names a live process that has
 /// stopped checkpointing, which is refused otherwise; see
@@ -336,14 +341,6 @@ pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result
     let id = journal::newest_if_latest(id)?;
 
     let directory = paths::scan(&id).ok_or(Error::NoJournalDirectory)?;
-    if !directory.is_dir() {
-        return Err(Error::NoSuchJournal {
-            id,
-            known: paths::root()
-                .and_then(|root| store::list(&root).ok())
-                .map_or(0, |entries| entries.len()),
-        });
-    }
 
     let opened = if take_over {
         Journal::take_over(&directory, Privilege::current())
@@ -355,6 +352,16 @@ pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result
             Error::StaleLock {
                 pid,
                 silent: last_beat.as_secs(),
+            }
+        }
+        OpenError::Journal(JournalError::Io(missing))
+            if missing.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Error::NoSuchJournal {
+                id: id.clone(),
+                known: paths::root()
+                    .and_then(|root| store::list(&root).ok())
+                    .map_or(0, |entries| entries.len()),
             }
         }
         other => Error::JournalOpen(other),

@@ -36,7 +36,7 @@ use zond_engine::config::{DetectionEnvelope, ServiceDetection};
 use zond_engine::detect::Detections;
 use zond_engine::detect::bundle::Bundle;
 use zond_engine::detect::compute::replay_run;
-use zond_engine::journal::{paths, store};
+use zond_engine::journal::store;
 use zond_engine::model::finding::{DetectionClass, Finding, Severity};
 use zond_engine::signature::{Domain, Signature, Signing, SigningKey};
 use zond_engine::{PortSet, scan};
@@ -551,26 +551,25 @@ fn severity_tag(style: Style, severity: Severity) -> String {
 }
 
 /// The journal directory to replay and a label naming it for the summary: a path
-/// if one was named, else the record the id resolves to. `latest` is the newest
-/// record, and the label is the id it resolved to rather than the word `latest`,
-/// so the summary says which scan was actually read.
+/// if one was named, else the record the id names as `zond journal` lists
+/// them, by its whole id, `latest`, or a prefix naming only one. The label is
+/// the id the record holds rather than what was typed, so the summary says
+/// which scan was actually read.
+///
+/// A record is found in the listing rather than by looking for its directory,
+/// because the listing reaches each record as every journal file is reached
+/// and says why one it passes over cannot be read, where a look by path would
+/// follow a link the listing refuses. A path named outright is the caller's
+/// own choice of where to read, and is read where it leads.
 fn journal_directory(scan: &str) -> Result<(PathBuf, String), Error> {
     let path = Path::new(scan);
     if path.is_dir() {
         return Ok((path.to_path_buf(), scan.to_string()));
     }
 
-    let id = crate::command::journal::newest_if_latest(scan)?;
-    let directory = paths::scan(&id).ok_or(Error::NoJournalDirectory)?;
-    if !directory.is_dir() {
-        return Err(Error::NoSuchJournal {
-            id,
-            known: paths::root()
-                .and_then(|root| store::list(&root).ok())
-                .map_or(0, |entries| entries.len()),
-        });
-    }
-    Ok((directory, id))
+    let entries = crate::command::journal::read()?;
+    let entry = crate::command::journal::find(&entries, scan)?;
+    Ok((entry.directory.clone(), entry.manifest.id.clone()))
 }
 
 /// Reads one `--detections` path into `sources`, keyed by file name.

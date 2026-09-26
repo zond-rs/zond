@@ -1117,6 +1117,37 @@ fn a_flag_that_changes_what_a_record_asks_is_refused_on_resume() {
     assert_eq!(status(&slower), 0, "{}", stderr(&slower));
 }
 
+/// A record that cannot be read is named where a listing passes over it,
+/// with why, rather than left out in silence.
+///
+/// A link planted where a record's manifest should be is refused, never
+/// followed, and a listing that then said nothing of the record would read
+/// as one without it: `zond journal` as a machine with one scan fewer, and
+/// `zond read` of the record as an id nobody ever recorded.
+#[cfg(unix)]
+#[test]
+fn a_record_that_cannot_be_read_is_named_where_a_listing_passes_over_it() {
+    let home = config_home("journal-unreadable-named");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-n", "-p", "1"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    let id = recorded_ids(&home)
+        .into_iter()
+        .next()
+        .expect("a listed scan");
+    let manifest = home.join("zond/journals").join(&id).join("manifest.json");
+    std::fs::remove_file(&manifest).expect("removes the manifest");
+    std::os::unix::fs::symlink("/dev/null", &manifest).expect("plants a link");
+
+    for args in [&["journal"][..], &["read", &id]] {
+        let said = stderr(&zond_in(&home, args));
+        assert!(
+            said.contains(&id) && said.contains("is a link"),
+            "{args:?} passed over the record without naming it: {said}"
+        );
+    }
+}
+
 /// Ports named alongside `--resume` without targets are held to the ports on
 /// record: the same ports continue the scan, and any others are refused and
 /// named rather than ignored, since the sitting asks what the record planned
