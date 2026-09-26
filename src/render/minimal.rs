@@ -173,7 +173,7 @@ fn write_host(
 
     // The vendor was read from the hardware address, so it is shown against it.
     if let Some(macs) = reader.macs(host) {
-        let line = match field::vendor(host) {
+        let line = match field::vendor(reader, host) {
             Some(vendor) => format!("{macs} ({vendor})"),
             None => macs,
         };

@@ -121,11 +121,11 @@ fn record(reader: field::Reader, host: &Host) -> [String; FIELDS] {
         reader.macs(host).unwrap_or_else(field::unknown),
         reader.hostname(host).unwrap_or_else(field::unknown),
         field::os(reader, host).unwrap_or_else(field::unknown),
-        field::vendor(host).map_or_else(field::unknown, ToOwned::to_owned),
+        field::vendor(reader, host).unwrap_or_else(field::unknown),
         field::rtt_min_millis(host).unwrap_or_else(field::unknown),
         field::rtt_mean_millis(host).unwrap_or_else(field::unknown),
         field::rtt_max_millis(host).unwrap_or_else(field::unknown),
-        field::packed_ports(host).unwrap_or_else(field::unknown),
+        field::packed_ports(reader, host).unwrap_or_else(field::unknown),
         field::closed_ports(host).unwrap_or_else(field::unknown),
         field::packed_roles(host).unwrap_or_else(field::unknown),
     ]

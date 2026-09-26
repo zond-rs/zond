@@ -271,11 +271,11 @@ fn children<'a>(
     // it, and faintly, because it qualifies that address rather than competing
     // with it. Spelled the way a person says it: see `field::spoken_vendor`.
     if let Some(macs) = reader.macs(host) {
-        let line = match field::vendor(host) {
+        let line = match field::vendor(reader, host) {
             Some(vendor) => format!(
                 "{}  {}",
                 style.plain(&macs),
-                style.faint(field::spoken_vendor(vendor))
+                style.faint(field::spoken_vendor(&vendor))
             ),
             None => style.plain(&macs),
         };

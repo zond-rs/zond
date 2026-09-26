@@ -439,9 +439,11 @@ pub(crate) fn os_evidence(reader: Reader, host: &Host) -> Option<String> {
         .map(|evidence| reader.masking(host).text(evidence).into_owned())
 }
 
-/// Who made the hardware, from the address it was seen at.
-pub(crate) fn vendor(host: &Host) -> Option<&str> {
+/// Who made the hardware, from the address it was seen at, or as a
+/// service's reply named it, masked where that reply named the machine too.
+pub(crate) fn vendor(reader: Reader, host: &Host) -> Option<String> {
     host.vendor()
+        .map(|vendor| reader.masking(host).text(vendor).into_owned())
 }
 
 /// What the host appears to be running.
@@ -709,10 +711,11 @@ pub(crate) fn answered_in_detail(reader: Reader, host: &Host) -> Vec<String> {
         return answered(host).into_iter().collect();
     }
 
+    let masking = reader.masking(host);
     let mut lines: Vec<String> = host
         .reasons()
         .iter()
-        .map(|reason| detailed_reason(reader, reason))
+        .map(|reason| detailed_reason(reader, &masking, reason))
         .collect();
 
     // Sorted for the reason [`answered`] sorts: the engine holds these in a
@@ -723,12 +726,16 @@ pub(crate) fn answered_in_detail(reader: Reader, host: &Host) -> Vec<String> {
 }
 
 /// One piece of evidence: the protocol, what was seen, and who sent it.
-fn detailed_reason(reader: Reader, reason: &StatusReason) -> String {
+///
+/// What was seen is free text, and a record read from another tool's document
+/// carries that document's words, so it goes through `masking` as a reply's
+/// text does.
+fn detailed_reason(reader: Reader, masking: &HostRedaction, reason: &StatusReason) -> String {
     let mut line = spoken(&reason.protocol);
 
     if let Some(details) = reason.details.as_deref() {
         line.push_str("  ");
-        line.push_str(details);
+        line.push_str(&masking.text(details));
     }
 
     // `via`, not `from`: the address did not send the finding, it sent an error
@@ -1404,33 +1411,35 @@ pub(crate) fn port_listings(
         .map(|host| select(host, silence_means_something))
         .collect();
 
+    // Measured as printed, masked, since a mask is not the length of the name.
+    let maskings: Vec<HostRedaction> = hosts.iter().map(|host| reader.masking(host)).collect();
     let (mut widest_port, mut widest_state, mut widest_service) = (0, 0, 0);
-    for port in selections
-        .iter()
-        .flatten()
-        .flat_map(|selection| selection.shown.iter())
-    {
-        widest_port = widest_port.max(endpoint(port).chars().count());
-        widest_state = widest_state.max(state(port.state()).chars().count());
-        if let Some((name, _)) = service_name(port) {
-            widest_service = widest_service.max(name.chars().count());
+    for (selection, masking) in selections.iter().zip(&maskings) {
+        for port in selection
+            .iter()
+            .flat_map(|selection| selection.shown.iter())
+        {
+            widest_port = widest_port.max(endpoint(port).chars().count());
+            widest_state = widest_state.max(state(port.state()).chars().count());
+            if let Some((name, _)) = service_name(port, masking) {
+                widest_service = widest_service.max(name.chars().count());
+            }
         }
     }
 
     selections
         .into_iter()
-        .zip(hosts)
-        .map(|(selection, host)| {
+        .zip(maskings)
+        .map(|(selection, masking)| {
             let Some(selection) = selection else {
                 return PortListing::default();
             };
-            let masking = reader.masking(host);
 
             let rows = selection
                 .shown
                 .iter()
                 .map(|port| {
-                    let named = service_name(port);
+                    let named = service_name(port, &masking);
                     PortRow {
                         port: format!("{:<widest_port$}", endpoint(port)),
                         state: format!("{:<widest_state$}", state(port.state())),
@@ -2249,12 +2258,13 @@ pub(crate) fn plural(count: u128, word: &str) -> String {
 ///
 /// `22/tcp/open/ssh`, comma-joined, so a record stays one line and one host.
 /// Closed ports are counted in a field of their own instead.
-pub(crate) fn packed_ports(host: &Host) -> Option<String> {
+pub(crate) fn packed_ports(reader: Reader, host: &Host) -> Option<String> {
     let mut ports: Vec<&Port> = host.ports().filter(|port| notable(port.state())).collect();
     if ports.is_empty() {
         return None;
     }
     ports.sort_by_key(|port| (port.protocol(), port.number()));
+    let masking = reader.masking(host);
 
     Some(
         ports
@@ -2265,7 +2275,10 @@ pub(crate) fn packed_ports(host: &Host) -> Option<String> {
                     port.number(),
                     protocol(port.protocol()),
                     state(port.state()),
-                    port.service_name().filter(named).unwrap_or(UNKNOWN)
+                    port.service_name()
+                        .filter(named)
+                        .map_or(std::borrow::Cow::Borrowed(UNKNOWN), |name| masking
+                            .text(name))
                 )
             })
             .collect::<Vec<_>>()
@@ -2379,13 +2392,19 @@ const EXTRAINFO_WIDTH: usize = 24;
 /// from the port number or a probe established it. This crate had never asked,
 /// so a guess and a fingerprint were painted alike, which is the presentation
 /// claiming more than the engine did.
-fn service_name(port: &Port) -> Option<(String, bool)> {
+///
+/// Read through `masking`, because a port nothing identified is named by the
+/// start of what it said, and that is the host's words.
+fn service_name(port: &Port, masking: &HostRedaction) -> Option<(String, bool)> {
     let service = port.service()?;
     if !named(&service.name()) {
         return None;
     }
 
-    Some((service.name().to_owned(), service.is_inferred()))
+    Some((
+        masking.text(service.name()).into_owned(),
+        service.is_inferred(),
+    ))
 }
 
 /// What answered on the port, where fingerprinting worked it out, with the
@@ -2447,7 +2466,7 @@ fn product_text(port: &Port, masking: &HostRedaction) -> Option<String> {
 /// `minimal` is a tagged line per value and has nowhere to align a second
 /// column, so it takes the sentence the block used to draw.
 fn describe(port: &Port, masking: &HostRedaction) -> Option<String> {
-    let (name, _) = service_name(port)?;
+    let (name, _) = service_name(port, masking)?;
 
     Some(match product_text(port, masking) {
         Some(product) => format!("{name} {product}"),
@@ -3945,6 +3964,49 @@ mod tests {
         assert_ne!(masked.macs(&host).as_deref(), Some("00:00:5e:00:53:01"));
     }
 
+    /// **A port named by its banner, and the details of the evidence a host
+    /// is up, are masked where they name the host.** A port nothing identified
+    /// and no number names is labelled with the start of what it said, and a
+    /// record read back from another tool's document carries that document's
+    /// words as details: both are the host's text, and a redacted run that
+    /// masked the name in the header and printed it in the port table would
+    /// have masked nothing.
+    #[test]
+    fn a_banner_label_and_a_reason_s_details_are_masked_where_they_name_the_host() {
+        use zond_engine::model::host::{HostName, NameSource, StatusProtocol};
+
+        let mut host = host(1);
+        host.record_name(
+            HostName::new(NameKind::Host, NameSource::Ldap, "dc01.corp.example").expect("a name"),
+        );
+        host.add_port(
+            Port::new(40390, Protocol::Tcp, PortState::Open)
+                .with_service(Service::new("banner: zq7 node dc01.corp.example ok", 0)),
+        );
+        host.add_reason(StatusReason::new(
+            StatusProtocol::TcpSyn,
+            "syn-ack from dc01.corp.example",
+        ));
+
+        let printed = |reader: Reader| {
+            let listing = port_listings(reader, &[&host], true, Showing::default());
+            [
+                listing[0].rows[0].service.clone().unwrap_or_default(),
+                packed_ports(reader, &host).unwrap_or_default(),
+                answered_in_detail(reader, &host).join("\n"),
+            ]
+            .join("\n")
+        };
+
+        let plain = printed(Reader::default());
+        assert!(plain.matches("dc01.corp.example").count() == 3, "{plain}");
+        let masked = printed(Reader::new(Redaction::Standard));
+        assert!(
+            !masked.contains("dc01") && !masked.contains("corp"),
+            "a name survived redaction: {masked}"
+        );
+    }
+
     /// The names a host gave for itself are masked as its hostname is, the
     /// domain among them, and a name two protocols both stated is drawn once:
     /// a domain controller's realm is its domain in capitals, and its name
@@ -4369,7 +4431,7 @@ mod tests {
     #[test]
     fn packed_ports_carry_number_protocol_state_and_service() {
         assert_eq!(
-            packed_ports(&scanned()).as_deref(),
+            packed_ports(Reader::default(), &scanned()).as_deref(),
             Some("21/tcp/filtered/-,22/tcp/open/ssh,443/tcp/open/-,53/udp/open/-"),
             "grouped by protocol, then by number, which is a different order from the listing"
         );
@@ -4390,7 +4452,10 @@ mod tests {
             ports(Reader::default(), &host, true, Showing::default()),
             vec!["9999/tcp  open"]
         );
-        assert_eq!(packed_ports(&host).as_deref(), Some("9999/tcp/open/-"));
+        assert_eq!(
+            packed_ports(Reader::default(), &host).as_deref(),
+            Some("9999/tcp/open/-")
+        );
     }
 
     // ── Spellings ────────────────────────────────────────────────────────────
