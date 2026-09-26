@@ -202,14 +202,21 @@ impl Narrator {
                     None,
                 )
             }
+            // A first sitting with nothing to probe had every target refused,
+            // as a link-local range naming no interface is: the scan names
+            // each refusal at its end, and this says only that there are
+            // some, since a resume's `nothing left` would send a reader
+            // looking for a sitting that never ran.
             Phase::PortScan { targets, .. } => {
                 let hosts = targets.hosts();
                 let probes = targets.probes();
-                let line = if probes == 0 {
+                let line = if probes == 0 && targets.continues() {
                     format!(
                         "no probes left for {hosts} {} ({targets})",
                         plural(hosts, "host"),
                     )
+                } else if probes == 0 {
+                    format!("nothing to probe in {targets} (every target refused)")
                 } else {
                     format!(
                         "scanning {probes} {} across {hosts} {} ({targets})",
@@ -2111,6 +2118,48 @@ mod tests {
         assert_eq!(
             capture.text().trim_end(),
             "\u{2022} no probes left for 1 host (192.0.2.1 on 2 ports)"
+        );
+    }
+
+    /// **A first sitting with nothing it can probe says so, and why**, rather
+    /// than that nothing is left: no earlier sitting covered anything, and a
+    /// line in a resume's words sends a reader looking for one. What leaves a
+    /// fresh scan nothing to probe is the engine refusing every target, a
+    /// link-local range naming no interface among them, and the refusals it
+    /// names at the end say which.
+    #[tokio::test]
+    async fn a_fresh_scan_with_nothing_probeable_says_every_target_was_refused() {
+        let targets = crate::target::resolve_ports(
+            &["fe80::1-fe80::2"],
+            &[] as &[&str],
+            &zond_engine::Exclusions::none(),
+            "22".parse().expect("a port"),
+            &zond_engine::PortSet::new(),
+            false,
+        )
+        .await
+        .expect("well-formed");
+        assert_eq!(targets.probes(), 0, "the range names no interface");
+
+        let capture = Capture::default();
+        let mut narrator = Narrator::new(
+            Box::new(capture.clone()),
+            Verbosity::default(),
+            Style::bare(),
+        );
+        narrator
+            .started(
+                Phase::PortScan {
+                    targets: &targets,
+                    resumable: true,
+                },
+                Redaction::None,
+            )
+            .expect("a capture never fails");
+
+        assert_eq!(
+            capture.text().trim_end(),
+            "\u{2022} nothing to probe in fe80::1-fe80::2 (every target refused)"
         );
     }
 

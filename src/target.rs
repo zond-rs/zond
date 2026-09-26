@@ -713,6 +713,9 @@ pub(crate) struct ScanTargets {
     /// What the scan probes, as a listing names it; see
     /// [`summary`](Self::summary).
     summary: String,
+    /// Whether these are what a recorded job's earlier sittings left; see
+    /// [`continues`](Self::continues).
+    continued: bool,
 }
 
 impl ScanTargets {
@@ -743,7 +746,20 @@ impl ScanTargets {
             map,
             // A resumed scan's names come back with its options.
             names: BTreeMap::new(),
+            continued: true,
         }
+    }
+
+    /// Whether these are what a recorded job's earlier sittings left, rather
+    /// than what was asked of this one.
+    ///
+    /// Read where a count of nothing is said: a job with nothing left is one
+    /// whose ground is covered, and a first sitting with nothing to probe is
+    /// one whose every target the scan refuses, which are two different things
+    /// to tell a reader.
+    #[must_use]
+    pub(crate) fn continues(&self) -> bool {
+        self.continued
     }
 
     /// What this scan probes, as a listing of recorded jobs names it: where
@@ -885,6 +901,7 @@ pub(crate) async fn resolve_ports<S: AsRef<str>, E: AsRef<str>>(
         map,
         names,
         summary: scanned(&probed),
+        continued: false,
     };
 
     if !addressed && !targets.map.is_empty() {
@@ -1065,6 +1082,7 @@ mod tests {
                 excluded: 0,
                 tied: 0,
                 summary: String::new(),
+                continued: false,
             };
 
             let mut from_discovery = ZondConfig::default();
