@@ -857,6 +857,7 @@ mod tests {
 
         let mut scope = to_set(&["192.0.2.0/30"], None, None).expect("a range");
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::Discovery,
             started_at: std::time::SystemTime::UNIX_EPOCH,

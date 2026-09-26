@@ -459,6 +459,14 @@ impl Narrator {
 
         self.passes_cut(report)?;
 
+        // A job whose last sitting never closed its phase: killed outright, or
+        // still running as this reads its record. Nothing else says so, since
+        // such a phase claims no stop and no count it never asked, and without
+        // this the count below reads as a scan that ran to its end.
+        if report.left_open() {
+            self.note("scan never closed (killed, or still running)")?;
+        }
+
         // Ground the engine declined before sending anything, in its own words.
         // First, because it is what explains a count of nothing above it, and
         // at every verbosity, because it is the whole reason such a run exits
@@ -1125,6 +1133,7 @@ mod tests {
         let phase = &report.phases()[0];
 
         let listened = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::Listen,
             started_at: phase.started_at(),
@@ -1175,6 +1184,7 @@ mod tests {
         let phase = &report.phases()[0];
 
         let rebuilt = ScanPhase::from_parts(PhaseParts {
+            open: phase.is_open(),
             attachments: phase.attachments().to_vec(),
             kind: phase.kind(),
             started_at: phase.started_at(),
@@ -1298,6 +1308,7 @@ mod tests {
 
         let mut targets = to_set(&[covered], None, None).expect("a range");
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: recorded_at(),
@@ -1436,6 +1447,7 @@ mod tests {
         let report = port_scanned(vec![host], "192.0.2.1");
         let phase = &report.phases()[0];
         let stopped = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: phase.attachments().to_vec(),
             kind: phase.kind(),
             started_at: phase.started_at(),
@@ -1466,6 +1478,56 @@ mod tests {
             said.contains("1 open port of 1 probed, 6620 unasked"),
             "{said}"
         );
+    }
+
+    /// A job whose last sitting never closed its phase says so under its
+    /// count, and a job a later sitting finished does not.
+    ///
+    /// Such a phase claims no stop and no target it never asked, so the count
+    /// alone reads as a scan that ran to its end.
+    #[test]
+    fn a_scan_that_never_closed_says_so() {
+        use zond_engine::report::{PhaseParts, ScanPhase};
+
+        let report = port_scanned(vec![host(1)], "192.0.2.1");
+        let phase = &report.phases()[0];
+        let as_open = |open| {
+            ScanPhase::from_parts(PhaseParts {
+                open,
+                attachments: phase.attachments().to_vec(),
+                kind: phase.kind(),
+                started_at: phase.started_at(),
+                elapsed: phase.elapsed(),
+                privilege: phase.privilege(),
+                targets: phase.targets().clone(),
+                settings: phase.settings().clone(),
+                failures: phase.failures().to_vec(),
+                refusals: phase.refusals().to_vec(),
+                unroutable: phase.unroutable().to_vec(),
+                timed_out: phase.timed_out().to_vec(),
+                icmp_rate_limited: phase.icmp_rate_limited().to_vec(),
+                reached_by_connect: phase.reached_by_connect().to_vec(),
+                undecided: phase.undecided().to_vec(),
+                liveness_skipped: phase.liveness_skipped(),
+                silent: phase.silent().to_vec(),
+                stopped: phase.stopped(),
+                passes_cut: phase.passes_cut().to_vec(),
+                unreached: phase.unreached(),
+                unheard_probes: phase.unheard_probes(),
+                probes: phase.probe_stats().to_vec(),
+                origin: phase.origin().cloned(),
+            })
+        };
+        let hosts: Vec<_> = report.hosts().cloned().collect();
+        let line = "scan never closed (killed, or still running)";
+
+        let killed = ScanReport::recorded("test", vec![as_open(true)], hosts.clone());
+        let said = summarised(&killed);
+        assert!(said.contains(line), "{said}");
+
+        let resumed = ScanReport::recorded("test", vec![as_open(true), as_open(false)], hosts);
+        let said = summarised(&resumed);
+        assert!(!said.contains(line), "{said}");
     }
 
     /// A scan whose every port went unasked probed none, and says so in the
@@ -1546,6 +1608,7 @@ mod tests {
         let mut targets = zond_engine::model::parse::ip::to_set(&["192.0.2.1"], None, None)
             .expect("a parseable address");
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: crate::render::test_support::recorded_at(),
@@ -1613,6 +1676,7 @@ mod tests {
             let mut targets = zond_engine::model::parse::ip::to_set(&["192.0.2.1"], None, None)
                 .expect("a parseable address");
             ScanPhase::from_parts(PhaseParts {
+                open: false,
                 attachments: Vec::new(),
                 kind: ScanKind::PortScan,
                 started_at: crate::render::test_support::recorded_at(),
@@ -2042,6 +2106,7 @@ mod tests {
         let report = scoped(vec![host(1)], "192.0.2.0/24");
         let phase = &report.phases()[0];
         let rebuilt = ScanPhase::from_parts(PhaseParts {
+            open: phase.is_open(),
             attachments: phase.attachments().to_vec(),
             kind: phase.kind(),
             started_at: phase.started_at(),
@@ -2080,6 +2145,7 @@ mod tests {
         let report = scoped(vec![host(1)], "192.0.2.0/24");
         let phase = &report.phases()[0];
         let rebuilt = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: phase.attachments().to_vec(),
             kind: phase.kind(),
             started_at: phase.started_at(),
@@ -2123,6 +2189,7 @@ mod tests {
         let report = scoped(vec![host(1)], "192.0.2.0/24");
         let phase = &report.phases()[0];
         let rebuilt = ScanPhase::from_parts(PhaseParts {
+            open: phase.is_open(),
             attachments: phase.attachments().to_vec(),
             kind: phase.kind(),
             started_at: phase.started_at(),

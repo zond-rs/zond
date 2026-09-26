@@ -142,6 +142,7 @@ pub(crate) fn scoped_at(
 
     let mut targets = to_set(&[covered], None, None).expect("a parseable range");
     let phase = ScanPhase::from_parts(PhaseParts {
+        open: false,
         attachments: Vec::new(),
         kind: ScanKind::Discovery,
         started_at,
@@ -212,6 +213,7 @@ pub(crate) fn standing_in_over(
         set.v4().iter().copied().map(IpRange::V4).collect()
     };
     let phase = ScanPhase::from_parts(PhaseParts {
+        open: false,
         attachments: Vec::new(),
         kind: ScanKind::PortScan,
         started_at: recorded_at(),
@@ -275,6 +277,7 @@ pub(crate) fn sittings(sittings: &[(&str, &[&str], &str)]) -> zond_engine::ScanR
     let phase = |kind: ScanKind, covered: &str, undecided: &[&str]| {
         let mut targets = set(&[covered]);
         ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind,
             started_at: recorded_at(),

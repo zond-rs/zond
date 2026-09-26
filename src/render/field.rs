@@ -3657,6 +3657,7 @@ mod tests {
 
         let mut scope = to_set(&["192.0.2.1"], None, None).expect("an address");
         let phase = ScanPhase::from_parts(PhaseParts {
+            open: false,
             attachments: Vec::new(),
             kind: ScanKind::PortScan,
             started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000),
