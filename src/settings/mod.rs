@@ -1185,19 +1185,19 @@ mod tests {
     /// or a configuration root that both would read.
     #[test]
     fn roots_own_settings_are_those_under_a_home_that_is_not_the_users() {
-        let erik =
-            zond_engine::journal::paths::InvokingUser::new(1000, 1000, PathBuf::from("/home/erik"));
+        let user =
+            zond_engine::journal::paths::InvokingUser::new(1000, 1000, PathBuf::from("/home/user"));
 
         assert_eq!(
-            roots_directory(&erik, false, Some(Path::new("/root"))),
+            roots_directory(&user, false, Some(Path::new("/root"))),
             Some(PathBuf::from("/root/.config/zond"))
         );
         assert_eq!(
-            roots_directory(&erik, false, Some(Path::new("/home/erik"))),
+            roots_directory(&user, false, Some(Path::new("/home/user"))),
             None
         );
-        assert_eq!(roots_directory(&erik, true, Some(Path::new("/root"))), None);
-        assert_eq!(roots_directory(&erik, false, None), None);
+        assert_eq!(roots_directory(&user, true, Some(Path::new("/root"))), None);
+        assert_eq!(roots_directory(&user, false, None), None);
     }
 
     /// A file root customised is named, and one that sets nothing is not: the
@@ -1218,24 +1218,24 @@ mod tests {
     /// differs and nothing is said.
     #[test]
     fn whose_settings_are_read_is_said_only_when_the_homes_differ() {
-        let erik =
-            zond_engine::journal::paths::InvokingUser::new(1000, 1000, PathBuf::from("/home/erik"));
-        let settings = Path::new("/home/erik/.config/zond");
+        let user =
+            zond_engine::journal::paths::InvokingUser::new(1000, 1000, PathBuf::from("/home/user"));
+        let settings = Path::new("/home/user/.config/zond");
 
         assert_eq!(
-            note_for(Some(&erik), Some(settings), Some(Path::new("/root"))).as_deref(),
-            Some("settings read from /home/erik/.config/zond (under sudo)")
+            note_for(Some(&user), Some(settings), Some(Path::new("/root"))).as_deref(),
+            Some("settings read from /home/user/.config/zond (under sudo)")
         );
 
         // `HOME` kept, as on macOS.
         assert_eq!(
-            note_for(Some(&erik), Some(settings), Some(Path::new("/home/erik"))),
+            note_for(Some(&user), Some(settings), Some(Path::new("/home/user"))),
             None
         );
         // A configured root that is nobody's home.
         assert_eq!(
             note_for(
-                Some(&erik),
+                Some(&user),
                 Some(Path::new("/config/zond")),
                 Some(Path::new("/root"))
             ),

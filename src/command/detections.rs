@@ -728,7 +728,7 @@ fn keys(args: &KeygenArgs) -> Result<Outcome, Error> {
         }
     }
 
-    // The directory the key goes in, since `~/.zond/erik` names one that
+    // The directory the key goes in, since `~/.zond/acme` names one that
     // usually does not exist yet and `sign --out` already creates its own.
     if let Some(parent) = args.path.parent()
         && !parent.as_os_str().is_empty()
