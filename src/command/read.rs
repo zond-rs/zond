@@ -65,10 +65,7 @@ pub(crate) fn run(
 
     let (name, report) = command::scan_named(&args.source)?;
 
-    // From this machine's settings rather than from the document. What a scan
-    // saw is in the file; whether to mask it on the way out belongs to whoever
-    // is reading it now.
-    let redaction = command::redaction(&command::engine_settings(None)?.config);
+    let redaction = command::reading_redaction(&args.redact)?;
 
     let mut renderer = renderer(presentation, verbosity, palette, showing);
 

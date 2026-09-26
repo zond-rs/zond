@@ -148,6 +148,22 @@ pub(crate) fn redaction(config: &ZondConfig) -> Redaction {
     }
 }
 
+/// The masking policy for writing out scans already taken: `--redact`, or
+/// else this machine's settings.
+///
+/// From the reader's side rather than from any document. What a scan saw is
+/// in the file; whether to mask it on the way out belongs to whoever is
+/// writing it out now. The settings are read either way, so a warning about
+/// them is given whether the flag was passed or not.
+pub(crate) fn reading_redaction(args: &crate::cli::RedactArgs) -> Result<Redaction, Error> {
+    let configured = redaction(&engine_settings(None)?.config);
+    Ok(if args.redact {
+        Redaction::Standard
+    } else {
+        configured
+    })
+}
+
 /// Whether this run leaves a record, and how many are kept once it has.
 ///
 /// The two travel together because they are answered in the same place from the

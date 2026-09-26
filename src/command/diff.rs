@@ -72,10 +72,7 @@ pub(crate) fn run(
     let (baseline_name, baseline) = command::scan_named(&args.before)?;
     let (current_name, current) = command::scan_named(&args.after)?;
 
-    // From this machine's settings rather than from either record. What a scan
-    // saw is in the file; whether to mask it on the way out belongs to whoever
-    // is reading it now.
-    let redaction = command::redaction(&command::engine_settings(None)?.config);
+    let redaction = command::reading_redaction(&args.redact)?;
     let options = ExportOptions::new().with_redaction(redaction);
 
     let diff = ScanDiff::compare(
@@ -371,6 +368,7 @@ mod identity {
             after: "b".to_string(),
             identity,
             output: Vec::new(),
+            redact: crate::cli::RedactArgs::default(),
         }
     }
 

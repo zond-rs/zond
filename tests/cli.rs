@@ -1600,6 +1600,75 @@ fn a_report_written_to_a_file_can_be_read_back() {
     );
 }
 
+/// An nmap document on one host at 192.0.2.7, named `name` where it is given.
+fn nmap_document(name: Option<&str>) -> String {
+    let named = name
+        .map(|name| format!(r#"<hostnames><hostname name="{name}" type="PTR"/></hostnames>"#))
+        .unwrap_or_default();
+    format!(
+        concat!(
+            r#"<?xml version="1.0"?>"#,
+            r#"<nmaprun scanner="nmap" args="nmap -sn 192.0.2.7" start="1787000000" version="7.94">"#,
+            r#"<host><status state="up" reason="arp-response"/>"#,
+            r#"<address addr="192.0.2.7" addrtype="ipv4"/>"#,
+            r#"<address addr="02:00:5e:10:20:30" addrtype="mac"/>{}</host>"#,
+            r#"<runstats><finished time="1787000009" elapsed="9.27"/></runstats></nmaprun>"#,
+        ),
+        named
+    )
+}
+
+/// **Every command that writes out a scan already taken masks it when asked
+/// to**: `read`, `merge` and `diff` each take `--redact`. The report worth
+/// keeping is the one taken whole, and the copy a client receives is made
+/// from it, so a command that could only copy it whole would leave no way to
+/// make that copy.
+#[test]
+fn read_merge_and_diff_mask_what_they_write_when_asked() {
+    const NAME: &str = "fs01.corp.example";
+    let home = config_home("redact-a-document");
+    let unnamed = home.join("before.xml");
+    let named = home.join("after.xml");
+    std::fs::write(&unnamed, nmap_document(None)).expect("a writable target directory");
+    std::fs::write(&named, nmap_document(Some(NAME))).expect("a writable target directory");
+    let unnamed = unnamed.to_str().expect("a utf-8 path");
+    let named = named.to_str().expect("a utf-8 path");
+
+    let commands: [(&str, Vec<&str>); 3] = [
+        ("read", vec!["read", named]),
+        ("merge", vec!["merge", unnamed, named]),
+        ("diff", vec!["diff", unnamed, named]),
+    ];
+    for (command, args) in commands {
+        for redacted in [false, true] {
+            let out = home.join(format!("{command}-{redacted}.json"));
+            let mut args = args.clone();
+            args.extend(["-o", out.to_str().expect("a utf-8 path")]);
+            if redacted {
+                args.push("--redact");
+            }
+
+            let run = zond_in(&home, &args);
+            assert!(
+                [0, 4].contains(&status(&run)),
+                "{command}: {}",
+                stderr(&run)
+            );
+            let written = std::fs::read_to_string(&out).expect("the document was written");
+            assert_eq!(
+                written.contains(NAME),
+                !redacted,
+                "{command} with redaction {redacted}:\n{written}"
+            );
+            assert_eq!(
+                written.contains("02:00:5e:10:20:30"),
+                !redacted,
+                "{command} with redaction {redacted}:\n{written}"
+            );
+        }
+    }
+}
+
 /// `--reason` shows the packet behind every verdict, and nothing shows it
 /// without.
 ///

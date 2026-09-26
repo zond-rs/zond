@@ -99,10 +99,7 @@ pub(crate) fn run(
         .map(|name| command::scan_named(name))
         .collect::<Result<_, _>>()?;
 
-    // From this machine's settings rather than from any source. What a scan saw
-    // is in the document; whether to mask it on the way out belongs to whoever
-    // is reading it now.
-    let redaction = command::redaction(&command::engine_settings(None)?.config);
+    let redaction = command::reading_redaction(&args.redact)?;
 
     let mut renderer = renderer(presentation, verbosity, palette, showing);
 
@@ -204,6 +201,7 @@ mod tests {
             sources: vec!["a".to_string(), "b".to_string()],
             identity,
             export: ExportArgs::default(),
+            redact: crate::cli::RedactArgs::default(),
         }
     }
 

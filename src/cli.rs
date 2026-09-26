@@ -525,6 +525,10 @@ pub(crate) struct ReadArgs {
     /// Where to write it, instead of the terminal.
     #[command(flatten)]
     pub export: ExportArgs,
+
+    /// Whether to mask it on the way out.
+    #[command(flatten)]
+    pub redact: RedactArgs,
 }
 
 /// What `zond read --help` ends with.
@@ -535,6 +539,8 @@ Examples:
   zond read merged.json         a folded report, and the documents it came from
   zond read theirs.xml          an nmap file, drawn the way this tool draws one
   zond read q1.xml -o q1.json   convert, since the writers are already there
+  zond read q1.json --redact -o client.json
+                                a masked copy of a report kept whole
 
 Nothing is probed:
   Every one of these is already written down. A scan still being recorded prints
@@ -585,6 +591,10 @@ pub(crate) struct MergeArgs {
     /// Where to write the merged report, instead of the terminal.
     #[command(flatten)]
     pub export: ExportArgs,
+
+    /// Whether to mask it on the way out.
+    #[command(flatten)]
+    pub redact: RedactArgs,
 }
 
 /// What `zond merge --help` ends with.
@@ -653,6 +663,10 @@ pub(crate) struct DiffArgs {
     /// Give the flag twice for both.
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: Vec<std::path::PathBuf>,
+
+    /// Whether to mask the comparison on the way out.
+    #[command(flatten)]
+    pub redact: RedactArgs,
 }
 
 /// What `zond diff --help` ends with.
@@ -688,6 +702,26 @@ pub(crate) struct JournalArgs {
     /// How much of the listing to show at once.
     #[command(flatten)]
     pub page: PageArgs,
+}
+
+/// Whether a command that writes out scans already taken masks what it
+/// writes.
+///
+/// A flag of its own on `read`, `merge` and `diff` rather than a scan's
+/// setting, because what a scan found is in the document whole, and whether to
+/// mask it belongs to whoever writes it out now: a report taken unredacted is
+/// the one worth keeping, and the copy a client receives is made from it.
+#[derive(Debug, Args, Default)]
+pub(crate) struct RedactArgs {
+    /// Mask host and domain names, hardware addresses and IPv6 host parts in
+    /// the output.
+    ///
+    /// The masking a scan's --redact applies, for a document that was written
+    /// without it, so the copy sent to a client can be made from the one kept.
+    /// `redact = true` in the engine's settings masks every output without the
+    /// flag.
+    #[arg(long)]
+    pub redact: bool,
 }
 
 /// Where a run writes its report, besides the terminal.
