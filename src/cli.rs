@@ -391,7 +391,7 @@ pub(crate) struct TestArgs {
 
     /// The most intrusive class to run, `exploit` by default so a check that
     /// triggers a weakness to confirm it actually fires. `zond scan` defaults to
-    /// `active-benign`; a test is an explicit act against a chosen target, so it
+    /// `passive`; a test is an explicit act against a chosen target, so it
     /// opens the ceiling instead of making you raise it.
     #[arg(long, value_name = "CLASS")]
     pub detection: Option<DetectionEnvelope>,
@@ -482,7 +482,7 @@ What it does:
   that decides which ports it fires on. Nothing is sent anywhere.
 
   The class matters as much as the gate. A scan runs detections up to the
-  ceiling `--detection` names, `active-benign` by default, so a detection above
+  ceiling `--detection` names, `passive` by default, so a detection above
   it is listed here and still does not run until an operator raises the ceiling.
 
 Finding one:
