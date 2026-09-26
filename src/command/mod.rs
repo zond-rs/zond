@@ -382,7 +382,9 @@ pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result
 /// settings files and before the flags typed for this sitting: a file edited
 /// since, or a profile named now, does not change a job already under way, and
 /// a flag typed now is either the same answer or refused by
-/// [`held_to_record`].
+/// [`held_to_record`]. Excluded ports are the one exception: an exclusion only
+/// narrows, so one a file or a flag adds is kept beside the record's, and a
+/// printer excluded since the job began is spared by the rest of it.
 ///
 /// A record from before options were recorded says nothing about them, so the
 /// run's own stand, and saying so is the one thing to do about it.
