@@ -2526,7 +2526,7 @@ pub(crate) fn addresses_scanned(report: &ScanReport) -> Option<u128> {
 ///
 /// **Counts only the addresses that were probed and stayed silent.** An address
 /// this host has no route to was never asked anything, so it is subtracted out
-/// here and reported by [`unroutable`] instead: the two are different findings
+/// here and reported by [`unroutable_and_refused`] instead: the two are different findings
 /// and only one of them can be answered by scanning on trust. An address the
 /// liveness phase reached no verdict on is subtracted too and reported by
 /// [`undecided`]: it was not found down, and scanning on trust is not what it
