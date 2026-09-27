@@ -33,6 +33,14 @@ sudo apt install ./zond_*.deb
 Installing grants the binary `cap_net_raw`, so a scan runs without `sudo` and
 the journals it writes belong to the user who ran it.
 
+On Fedora, from the same release, for `x86_64` and `aarch64`.
+
+```bash
+sudo dnf install ./zond-*.rpm
+```
+
+It grants the same capabilities as the Debian package.
+
 With a Rust toolchain, from crates.io.
 
 ```bash

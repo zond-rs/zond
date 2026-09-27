@@ -69,6 +69,24 @@ assets = [
 ]
 maintainer-scripts = "debian/"
 
+# The Fedora package, built by `cargo generate-rpm` in release.yml on the oldest
+# Fedora still carried, so its glibc floor admits every current one. The shared
+# libraries, libpcap among them, are read off the binary by rpm's own
+# find-requires; `libcap` is named because `setcap` comes from it and nothing in
+# the binary links it.
+[package.metadata.generate-rpm]
+name = "zond"
+summary = "Network scanner that maps hosts, ports and services and says what is wrong with them"
+assets = [
+    { source = "target/release/zond", dest = "/usr/bin/zond", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/zond/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/zond/LICENSE", mode = "644", doc = true },
+]
+post_install_script = "rpm/post.sh"
+
+[package.metadata.generate-rpm.requires]
+libcap = "*"
+
 
 [dependencies]
 # Every format the engine can write, because a scanner nobody can get results

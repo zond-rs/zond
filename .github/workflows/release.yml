@@ -1,4 +1,5 @@
-# Builds the Debian packages a tagged release ships, and attaches them to it.
+# Builds the Debian and Fedora packages a tagged release ships, and attaches them
+# to it.
 #
 # `cargo install zond-cli` already serves anybody who has a Rust toolchain. This
 # is for everybody else. On Kali, which is where this program has its audience,
@@ -188,9 +189,85 @@ jobs:
             zond-cli/dist/*.tar.gz.sha256
           if-no-files-found: error
 
+  rpm:
+    name: Fedora package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # Built on the oldest Fedora still carried, for the same reason the .debs
+    # are built on bookworm: the glibc it links against is the floor, and a
+    # newer Fedora runs what an older one built. Rust comes from rustup, since
+    # Fedora's own is older than the toolchain Cargo.toml asks for.
+    container: fedora:41
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y gcc libpcap-devel rpm-build jq git tar
+
+      - name: Checkout the CLI
+        uses: actions/checkout@v4
+        with:
+          path: zond-cli
+
+      - name: Checkout the engine beside it
+        uses: actions/checkout@v4
+        with:
+          repository: zond-rs/zond-engine
+          path: zond-engine
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-generate-rpm
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-generate-rpm
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zond-cli
+          key: fedora-${{ matrix.arch }}
+
+      - name: Check the tag against the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: zond-cli
+        run: |
+          crate="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$crate" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, Cargo.toml says $crate" >&2
+            exit 1
+          fi
+
+      - name: Build the package
+        working-directory: zond-cli
+        run: |
+          cargo build --release --locked
+          cargo generate-rpm
+
+      # What the package requires, on the run, so a library that resolved to an
+      # unexpected name is visible without downloading anything.
+      - name: Show what it declares
+        working-directory: zond-cli
+        run: |
+          rpm -qip target/generate-rpm/*.rpm
+          rpm -qpR target/generate-rpm/*.rpm
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zond-rpm-${{ matrix.arch }}
+          path: zond-cli/target/generate-rpm/*.rpm
+          if-no-files-found: error
+
   publish:
     name: Attach the packages to the release
-    needs: [package, macos]
+    needs: [package, macos, rpm]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
