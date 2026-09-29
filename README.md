@@ -100,8 +100,10 @@ sudo zond discover 192.168.0.0/24
 | `lan` | this host's own segment |
 
 Several at once, comma-separated, and a target may carry its own ports as in
-`10.0.0.1:8080`. `--exclude` takes the same grammar for addresses the run may
-not touch, enforced before the first packet and again at every finding.
+`10.0.0.1:8080`. `-i scope.txt` reads them from a file, one or more to a line
+with `#` comments, and `-i -` from standard input. `-x` (`--exclude`) takes the
+same grammar for addresses the run may not touch, enforced before the first
+packet and again at every finding, and `--exclude-file` reads them from a file.
 `--exclude-ports` takes the port grammar for ports no probe may reach, the
 liveness check and OS detection included.
 
@@ -131,7 +133,8 @@ only where it made a claim, so a host missing from tonight's scan is not a host
 that went away.
 
 **Shows its working.** `--reason` puts the packet behind every port state,
-`--evidence` the excerpt behind every finding.
+`--evidence` the excerpt behind every finding, `--remedy` what to do about it,
+and `--explain` all three at once.
 
 **Answers a program as readily as a person.** `--pipe` writes fourteen
 tab-separated fields per host. `-o out.json` takes the format from the
@@ -153,8 +156,17 @@ layer speaks only about the keys it mentions, so a flag you did not pass cannot
 cancel a setting you did write. `exclude` and `exclude_ports` accumulate
 rather than being overridden.
 
-`--presentation` picks how a run is drawn: `fancy` blocks, `minimal` listing, or
-`pipe` records.
+`--fancy`, `--minimal` and `--pipe` pick how a run is drawn: numbered blocks, a
+terse listing, or tab-separated records. `presentation` in `cli.toml` picks it
+for every run.
+
+## Coming from nmap
+
+The spellings your hands already know mostly work. `-p`, `-p-`, `-n`, `-F`,
+`-O`, `-Pn`, `-iL`, `-g`, `-D`, `-e`, `--max-rate`, `--reason`, `--badsum` and
+the `-o` family mean what they mean there, and `-sS`, `-sU` and `-sV` read as
+the zond flags they stand for. The ones zond has no counterpart for, such as
+`-sT` or `-T4`, are refused with what to write instead.
 
 ## Exit status
 
