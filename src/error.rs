@@ -135,7 +135,7 @@ pub(crate) enum Error {
         name: String,
     },
 
-    /// `--detections` named paths that hold no detection.
+    /// `--load` named paths that hold no detection.
     #[error(
         "no detections in {}; a detection is a .toml document, and a directory          is read one level deep",
         named.iter().map(|path| format!("'{}'", path.display()))

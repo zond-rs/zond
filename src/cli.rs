@@ -192,7 +192,7 @@ impl Command {
 /// Where a scan's detections come from, beyond the corpus this build ships.
 ///
 /// Flattened into `zond scan`, which runs them, and into `zond detections`,
-/// which compiles them and stops. Declared once so an author's `--detections`
+/// which compiles them and stops. Declared once so an author's `--load`
 /// means the same in the command that checks their work and the command that
 /// uses it.
 #[derive(Debug, Args)]
@@ -210,12 +210,12 @@ pub(crate) struct DetectionArgs {
     /// and the bodies they reference.
     ///
     /// These are detections you wrote or chose. Somebody else's arrive as a
-    /// signed bundle, through `--detections-bundle`.
+    /// signed bundle, through `--bundle`.
     #[arg(
         help_heading = "Custom detections",
-        long = "detections",
+        long = "load",
         value_name = "PATH",
-        num_args = 1..
+        action = ArgAction::Append
     )]
     pub paths: Vec<std::path::PathBuf>,
 
@@ -228,7 +228,7 @@ pub(crate) struct DetectionArgs {
     #[arg(
         help_heading = "Custom detections",
         hide_short_help = true,
-        long,
+        long = "bundle",
         value_name = "DIR",
         requires = "trust_key"
     )]
@@ -249,13 +249,14 @@ pub(crate) struct DetectionArgs {
     )]
     pub trust_key: Option<std::path::PathBuf>,
 
-    /// Run only the detections named here, leaving out the built-in corpus.
+    /// Leave out the built-in corpus, and run only what `--load` and
+    /// `--bundle` name.
     ///
     /// For checking one detection against a host without the rest of the
     /// catalogue reporting alongside it.
     #[arg(
         help_heading = "Custom detections",
-        long,
+        long = "no-builtin",
         requires = "named_detections"
     )]
     pub only_named_detections: bool,
@@ -289,7 +290,7 @@ pub(crate) struct DetectionsArgs {
 ///
 /// Attached to the listing rather than to [`DetectionArgs`], which every command
 /// that runs detections flattens. Narrowing a catalogue is reading; narrowing
-/// what a scan runs is `--detection` and the gates, and a flag that did both
+/// what a scan runs is `-d` and the gates, and a flag that did both
 /// would be a way to believe a check ran when nothing had compiled it.
 ///
 /// Every condition here ANDs, and a repeatable one ORs within itself:
@@ -430,7 +431,7 @@ pub(crate) enum SortBy {
 /// What `zond detections` was asked to do beyond listing.
 ///
 /// The two halves of publishing a set for somebody else to run. Loading one is
-/// `--detections-bundle`, a flag on a scan rather than a command, because
+/// `--bundle`, a flag on a scan rather than a command, because
 /// loading happens every run and publishing happens once.
 #[derive(Debug, Subcommand)]
 pub(crate) enum DetectionsAction {
@@ -440,7 +441,7 @@ pub(crate) enum DetectionsAction {
     /// and what it saw, without waiting on a full scan. It scans the one endpoint,
     /// identifies the service its gate needs, and runs the detections at a raised
     /// ceiling, `exploit` by default, so a check written to confirm actually runs
-    /// against the target you named. With `--detections` it runs your file alone;
+    /// against the target you named. With `--load` it runs your file alone;
     /// without, it runs the built-in corpus. Evidence is shown by default, since
     /// seeing what a detection decided on is the point.
     Test(TestArgs),
@@ -458,7 +459,7 @@ pub(crate) enum DetectionsAction {
     /// `grafana-path-traversal`) runs live and leaves nothing to replay, so it
     /// does not appear here; `zond read` shows the findings of a whole scan. It
     /// re-runs against this build's shipped corpus, so a detection that has since
-    /// changed or that came from `--detections` reports as unavailable rather than
+    /// changed or that came from `--load` reports as unavailable rather than
     /// being reproduced by something else.
     Replay(ReplayArgs),
 
@@ -489,7 +490,15 @@ pub(crate) struct TestArgs {
     /// triggers a weakness to confirm it actually fires. `zond scan` defaults to
     /// `passive`; a test is an explicit act against a chosen target, so it
     /// opens the ceiling instead of making you raise it.
-    #[arg(long, value_name = "CLASS", value_parser = detection_ceiling())]
+    ///
+    /// The same scale `zond scan -d` takes, by word or by step.
+    #[arg(
+        short = 'd',
+        long = "detect",
+        value_name = "LEVEL",
+        require_equals = true,
+        value_parser = detection_ceiling()
+    )]
     pub detection: Option<DetectionEnvelope>,
 }
 
@@ -528,7 +537,7 @@ pub(crate) struct KeygenArgs {
 pub(crate) struct SignArgs {
     /// The directory of detections to sign.
     ///
-    /// Read the way `--detections` reads one: every `.toml` in it, and the bodies
+    /// Read the way `--load` reads one: every `.toml` in it, and the bodies
     /// they reference. Nothing in it is modified.
     #[arg(value_name = "DIR")]
     pub directory: std::path::PathBuf,
@@ -539,7 +548,7 @@ pub(crate) struct SignArgs {
     /// self-contained document per detection: a module's code is written into the
     /// document that runs it, since a signature covers what a recipient hashes
     /// and a recipient hashes whole files. This is what gets distributed, and
-    /// what `--detections-bundle` is pointed at.
+    /// what `--bundle` is pointed at.
     #[arg(long, value_name = "DIR")]
     pub out: std::path::PathBuf,
 
@@ -565,8 +574,8 @@ Examples:
   zond detections --search redis              the ones about Redis, by id or by title
   zond detections --class exploit --class dos the loud ones, which a scan will not run
   zond detections --service http --sort class what is written for HTTP, loudest first
-  zond detections --detections ./checks       compile a directory and list what is in it
-  zond detections --detections ./checks --only-named-detections
+  zond detections --load ./checks             compile a directory and list what is in it
+  zond detections --load ./checks --no-builtin
                                               just yours, without the built-in corpus
   zond detections keygen ~/.zond/acme         a key to publish under
   zond detections sign ./checks --out ./acme-1 --key ~/.zond/acme --name acme
@@ -578,8 +587,8 @@ What it does:
   that decides which ports it fires on. Nothing is sent anywhere.
 
   The class matters as much as the gate. A scan runs detections up to the
-  ceiling `--detection` names, `passive` by default, so a detection above
-  it is listed here and still does not run until an operator raises the ceiling.
+  ceiling `-d` names, `passive` by default, so a detection above it is listed
+  here and still does not run until an operator raises the ceiling.
 
 Finding one:
   The corpus is long enough to page, ten at a time, `--page 2` for the next ten
@@ -599,9 +608,9 @@ Writing one:
 Giving them to somebody else:
   `sign` writes a manifest naming every detection and the hash of its source,
   and a signature over that manifest. A recipient loads it with
-  `--detections-bundle DIR --trust-key key.pub`, and the key has to reach them
-  by some route other than the bundle: a signature names the key that made it,
-  and trusting that one accepts anything anybody re-signed."
+  `--bundle DIR --trust-key key.pub`, and the key has to reach them by some
+  route other than the bundle: a signature names the key that made it, and
+  trusting that one accepts anything anybody re-signed."
         .to_string()
 }
 
@@ -1298,7 +1307,8 @@ pub(crate) struct ScanArgs {
     ///
     /// Defaults to `default_ports` in the settings file, and to the thousand
     /// ports most likely to be listening when that says nothing either.
-    #[arg(help_heading = "Ports", 
+    #[arg(
+        help_heading = "Ports",
         short = 'p',
         long,
         value_name = "PORTS",
@@ -1366,7 +1376,8 @@ pub(crate) struct ScanArgs {
     /// A printer's raw-print ports are already sent nothing but the probe
     /// that finds them open; exclude them to skip that too, and not find the
     /// printers. Adds to `exclude_ports` in engine.toml.
-    #[arg(help_heading = "Ports", 
+    #[arg(
+        help_heading = "Ports",
         long,
         value_name = "PORTS",
         value_parser = port_set,
@@ -1387,51 +1398,36 @@ pub(crate) struct ScanArgs {
     #[arg(help_heading = "Ports", long)]
     pub assume_up: bool,
 
-    /// How far to go past reading what the scan gathered, as a step from 0 to 5.
-    ///
-    /// `-d` on its own is `2`, which probes what the scan identified: the corpus
-    /// asks a web port about three dozen products by name, one connection each,
-    /// whether it is a Grafana with a traversable plugin path, a Vault left
-    /// unsealed, a WordPress with a readable config backup. Each is a real
-    /// finding on the box that runs that product and a wasted round trip on the
-    /// box that does not, so it is asked for rather than assumed.
-    ///
-    /// The steps are the same scale `--detection` names in words, `0` off
-    /// through `5` dos, so `-d=4` is `--detection exploit` and `-d=0` turns
-    /// detections off entirely and leaves a scan its ports and services. Written
-    /// with an equals sign or against the letter, `-d=4` or `-d4`, but never
-    /// apart: `zond scan -d 192.0.2.1` would otherwise read the address as a
-    /// step and scan nothing.
-    #[arg(help_heading = "Identification", 
-        short = 'd',
-        long = "detect",
-        value_name = "N",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "active-benign",
-        value_parser = detection_ceiling(),
-        conflicts_with = "detection"
-    )]
-    pub detect: Option<DetectionEnvelope>,
-
     /// How intrusive a detection the scan may run against what it identifies.
     ///
     /// After a service is named, the detection corpus can probe it further for
     /// what is wrong with it, and this is the ceiling on how far that goes.
-    /// `off` runs none at all; `passive`, the default, reads only what the scan
-    /// already gathered and sends nothing of its own; `active-benign` opens a
-    /// connection per check, which is what `-d` asks for; the classes above it,
-    /// `active-mutating`, `exploit` and `dos`, change or degrade the target and
-    /// run only when an operator names them here.
+    /// `passive`, the default, reads only what the scan already gathered and
+    /// sends nothing of its own. `-d` on its own is `active-benign`, which
+    /// probes what the scan identified: the corpus asks a web port about three
+    /// dozen products by name, one connection each, whether it is a Grafana
+    /// with a traversable plugin path, a Vault left unsealed, a WordPress with a
+    /// readable config backup. Each is a real finding on the box that runs that
+    /// product and a wasted round trip on the box that does not, so it is asked
+    /// for rather than assumed. The classes above it, `active-mutating`,
+    /// `exploit` and `dos`, change or degrade the target and run only when an
+    /// operator names them here. `off` runs none at all.
     ///
-    /// Takes the step number as readily as the word, which is what `-d` passes.
+    /// Takes the step along that scale as readily as the word, `0` off through
+    /// `5` dos, so `-d4` is `-d=exploit`. Written with an equals sign or, for a
+    /// step, against the letter, but never apart: `zond scan -d 192.0.2.1`
+    /// would otherwise read the address as a level and scan nothing.
     #[arg(
         help_heading = "Identification",
-        long,
-        value_name = "CLASS",
+        short = 'd',
+        long = "detect",
+        value_name = "LEVEL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "active-benign",
         value_parser = detection_ceiling()
     )]
-    pub detection: Option<DetectionEnvelope>,
+    pub detect: Option<DetectionEnvelope>,
 
     /// How far to go to identify what is listening behind each open port.
     ///
@@ -1697,7 +1693,7 @@ impl ScanArgs {
         if let Some(protocols) = &self.ip_protocols {
             config.ip_protocols.clone_from(protocols);
         }
-        if let Some(envelope) = self.detection.or(self.detect) {
+        if let Some(envelope) = self.detect {
             config.detection = envelope;
         }
         if let Some(idle) = self.idle_scan {
@@ -2546,7 +2542,7 @@ fn risk() -> Words<Risk> {
     words(|| Risk::names().into_iter().map(str::to_owned).collect())
 }
 
-/// The detection ceiling by the words `--detection` and `-d` take: `off`, then
+/// The detection ceiling by the words `-d` takes: `off`, then
 /// each class in lower case, least intrusive first. The engine labels the top
 /// class `DoS` and reads it without regard to case, and a word a person types
 /// on a command line is written in lower case.
@@ -3278,8 +3274,8 @@ mod tests {
         assert_eq!(config.os_detection, OsDetection::Aggressive);
     }
 
-    /// `-d` walks the same scale `--detection` names in words, and bare it is the
-    /// step that probes what the scan identified.
+    /// `-d` takes a step along the scale as readily as its word, and bare it is
+    /// the step that probes what the scan identified.
     ///
     /// The default reads what the scan already gathered and sends nothing, so a
     /// run without this flag is a run whose detections cost no round trips. The
@@ -3319,15 +3315,15 @@ mod tests {
             DetectionEnvelope::up_to(DetectionClass::Exploit),
         );
 
-        // The same steps `--detection` names in words, so the two spellings of
-        // one dial cannot drift apart.
+        // A step and its word are one setting, so the two spellings of one dial
+        // cannot drift apart.
         for (step, class) in DetectionClass::ALL.iter().copied().enumerate() {
             let numbered = format!("-d={}", step + 1);
+            let named = format!("-d={}", class.label());
             assert_eq!(
                 ceiling(&["zond", "s", &numbered, "192.0.2.1"]),
-                ceiling(&["zond", "s", "--detection", class.label(), "192.0.2.1"]),
-                "{numbered} and --detection {} are not the same step",
-                class.label()
+                ceiling(&["zond", "s", &named, "192.0.2.1"]),
+                "{numbered} and {named} are not the same step",
             );
         }
 
@@ -3335,6 +3331,19 @@ mod tests {
             Cli::try_parse_from(["zond", "s", "-d=9", "192.0.2.1"]).is_err(),
             "a step past the top of the scale was accepted"
         );
+    }
+
+    /// `--load` takes one path each time it is given, so a target written after
+    /// it is scanned rather than read as a second directory of detections.
+    #[test]
+    fn a_target_after_load_is_a_target() {
+        let cli = Cli::try_parse_from(["zond", "s", "--load", "./a", "--load", "./b", "192.0.2.1"])
+            .expect("should parse");
+        let Command::Scan(args) = cli.command else {
+            panic!("s is the scan alias");
+        };
+        assert_eq!(args.targets, ["192.0.2.1"]);
+        assert_eq!(args.detections.paths.len(), 2);
     }
 
     /// `-d4` is `-d=4`. A letter after `-d` is another flag, as it always was,
@@ -3384,16 +3393,6 @@ mod tests {
         assert_eq!(
             untouched.last().map(|a| a.to_string_lossy().into_owned()),
             Some("-d4".into())
-        );
-    }
-
-    /// `-d` and a ceiling named outright are two ways of saying the same thing,
-    /// and giving both says two things at once. Refused at the parser.
-    #[test]
-    fn the_detect_step_and_an_explicit_ceiling_cannot_both_be_given() {
-        assert!(
-            Cli::try_parse_from(["zond", "s", "-d", "--detection", "exploit", "192.0.2.1"])
-                .is_err()
         );
     }
 
@@ -3656,8 +3655,7 @@ mod tests {
             "cookie-echo",
             "--ip-protocols",
             "1,6,132",
-            "--detection",
-            "exploit",
+            "-d=exploit",
             "--min-probe-rate",
             "50",
             "--scan-timeout",

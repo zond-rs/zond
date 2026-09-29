@@ -2127,9 +2127,9 @@ fn a_detection_written_by_hand_is_compiled_and_listed() {
         &home,
         &[
             "detections",
-            "--detections",
+            "--load",
             checks.to_str().expect("a utf-8 path"),
-            "--only-named-detections",
+            "--no-builtin",
         ],
     );
     assert_eq!(status(&listed), 0, "{}", stderr(&listed));
@@ -2152,9 +2152,9 @@ fn a_detection_written_by_hand_is_compiled_and_listed() {
             "--presentation",
             "pipe",
             "detections",
-            "--detections",
+            "--load",
             checks.to_str().expect("a utf-8 path"),
-            "--only-named-detections",
+            "--no-builtin",
         ],
     );
     assert_eq!(status(&piped), 0, "{}", stderr(&piped));
@@ -2293,7 +2293,7 @@ fn a_detection_that_will_not_compile_names_the_file_it_came_from() {
         &home,
         &[
             "detections",
-            "--detections",
+            "--load",
             checks.to_str().expect("a utf-8 path"),
         ],
     );
@@ -2347,11 +2347,11 @@ fn a_signed_bundle_loads_only_under_the_key_that_signed_it() {
         &home,
         &[
             "detections",
-            "--detections-bundle",
+            "--bundle",
             out.to_str().expect("utf-8"),
             "--trust-key",
             public.to_str().expect("utf-8"),
-            "--only-named-detections",
+            "--no-builtin",
         ],
     );
     assert_eq!(status(&loaded), 0, "{}", stderr(&loaded));
@@ -2373,7 +2373,7 @@ fn a_signed_bundle_loads_only_under_the_key_that_signed_it() {
         &home,
         &[
             "detections",
-            "--detections-bundle",
+            "--bundle",
             out.to_str().expect("utf-8"),
             "--trust-key",
             other.with_extension("pub").to_str().expect("utf-8"),
@@ -2408,7 +2408,7 @@ fn a_detection_the_caller_wrote_files_a_finding_in_a_scan() {
             "9",
             "--assume-up",
             "--no-journal",
-            "--detections",
+            "--load",
             checks.to_str().expect("a utf-8 path"),
         ],
     );

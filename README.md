@@ -137,7 +137,7 @@ extension: JSON, JSONL, CSV, a self-contained HTML page, nmap XML. Records go to
 stdout and everything else to stderr.
 
 **Runs detections you wrote, and detections you were sent.** A detection is a
-TOML document; `--detections ./checks` runs a directory of them. Somebody else's
+TOML document; `--load ./checks` runs a directory of them. Somebody else's
 arrive as a signed bundle and load only against a key you name.
 
 ## Settings

@@ -444,7 +444,7 @@ fn flag_for(option: &'static str) -> &'static str {
         "retry.dampen_silent_hosts" => "--no-dampen",
         "os_detection" => "--os-detection",
         "service_detection" => "--service-detection",
-        "detection" => "--detection",
+        "detection" => "-d",
         "traceroute" => "--traceroute",
         "characterise" => "--characterise",
         "ip_protocols" => "--ip-protocols",

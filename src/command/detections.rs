@@ -68,8 +68,8 @@ const BODY: &str = "rhai";
 
 /// The corpus a scan should run, given what the command line named.
 ///
-/// The built-in detections unless `--only-named-detections` says otherwise, then
-/// whatever `--detections` names, then a bundle if one was named. Each detection
+/// The built-in detections unless `--no-builtin` says otherwise, then
+/// whatever `--load` names, then a bundle if one was named. Each detection
 /// is validated and compiled here, so a file that will not compile stops the run
 /// before a packet is sent rather than at the moment a port it gates on turns up.
 pub(crate) fn corpus(args: &DetectionArgs) -> Result<Detections, Error> {
@@ -329,7 +329,7 @@ fn test_corpus(args: &DetectionArgs) -> Result<Detections, Error> {
 /// no packet. A finding prints with its evidence; a run that drew nothing waits
 /// for `-v`, the way a finding's own working does, so an all-quiet replay is one
 /// summary line rather than a line per run. A run this build can no longer
-/// reproduce (its detection changed, or came off `--detections`) is named as
+/// reproduce (its detection changed, or came off `--load`) is named as
 /// unavailable rather than reproduced by a different one, since [`replay_run`]
 /// matches by the content hash of the body that ran. Only the compute tier tapes
 /// a run; a flow leaves nothing here, which the summary says when a scan recorded
@@ -572,7 +572,7 @@ fn journal_directory(scan: &str) -> Result<(PathBuf, String), Error> {
     Ok((entry.directory.clone(), entry.manifest.id.clone()))
 }
 
-/// Reads one `--detections` path into `sources`, keyed by file name.
+/// Reads one `--load` path into `sources`, keyed by file name.
 ///
 /// A file is read as it stands. A directory is read one level deep, taking the
 /// documents and the bodies and leaving everything else, so a README or a
@@ -867,7 +867,7 @@ fn publish(args: &SignArgs) -> Result<Outcome, Error> {
     }
     writeln!(
         out,
-        "\nA recipient runs: zond scan TARGET --detections-bundle {} --trust-key {}",
+        "\nA recipient runs: zond scan TARGET --bundle {} --trust-key {}",
         args.out.display(),
         args.key.with_extension("pub").display()
     )?;

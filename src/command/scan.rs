@@ -117,7 +117,7 @@ pub(crate) async fn run(
 
     // The corpus the scan runs against a service it identifies, held to the
     // ceiling `config.detection` names. The built-in catalogue unless
-    // `--detections` named more, and every one of them compiled before the scan
+    // `--load` named more, and every one of them compiled before the scan
     // starts: a detection that will not build is a mistake made before the run
     // and the end of one is the worst moment to be told.
     let detections = command::detections::corpus(&args.detections)?;
