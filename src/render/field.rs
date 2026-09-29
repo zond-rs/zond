@@ -1502,25 +1502,56 @@ fn endpoint(port: &Port) -> String {
     format!("{}/{}", port.number(), protocol(port.protocol()))
 }
 
-/// How many findings a host carries, and the worst grade among them.
+/// Whether a finding is too unsure to count as a risk.
+///
+/// Below [`Probable`](Confidence::Probable): a claim the engine made on
+/// evidence it says does not settle the question, such as a vulnerability
+/// matched on the upstream version of a distribution's build, which the
+/// distribution may well have fixed. Shown, since it may be true, and never
+/// counted with the claims that are probably true, since a count is what a
+/// reader acts on.
+pub(crate) fn is_unverified(confidence: Confidence) -> bool {
+    confidence < Confidence::Probable
+}
+
+/// A host's findings, counted the way its header states them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RiskCount {
+    /// Findings at least probably true.
+    pub settled: usize,
+    /// The worst grade among them, where there are any.
+    pub worst: Option<Severity>,
+    /// Findings too unsure to count as risks. See [`is_unverified`].
+    pub unverified: usize,
+}
+
+/// How many findings a host carries, and the worst grade among those that
+/// count.
 ///
 /// `None` where it carries none, so a host with nothing wrong says nothing
 /// rather than reporting a zero. Counted over the findings themselves rather
 /// than over the rows [`findings`] folds them into, because the line at the
 /// bottom of a run counts findings and two numbers for one thing that disagree
 /// is worse than either.
-pub(crate) fn host_risks(host: &Host) -> Option<(usize, Severity)> {
-    let mut count = 0usize;
-    let mut worst: Option<Severity> = None;
-
+pub(crate) fn host_risks(host: &Host) -> Option<RiskCount> {
+    let mut count = RiskCount {
+        settled: 0,
+        worst: None,
+        unverified: 0,
+    };
     for finding in host.findings().chain(host.ports().flat_map(Port::findings)) {
-        count += 1;
-        worst = Some(worst.map_or(finding.severity(), |held: Severity| {
-            held.max(finding.severity())
-        }));
+        if is_unverified(finding.confidence()) {
+            count.unverified += 1;
+        } else {
+            count.settled += 1;
+            count.worst = Some(
+                count
+                    .worst
+                    .map_or(finding.severity(), |held| held.max(finding.severity())),
+            );
+        }
     }
-
-    worst.map(|worst| (count, worst))
+    (count.settled + count.unverified > 0).then_some(count)
 }
 
 /// How many of a host's ports were probed: every one it records but those
@@ -1755,8 +1786,13 @@ pub(crate) struct FindingView {
     /// which is the flag for the evidence behind a verdict.
     pub evidence: Option<String>,
     /// How sure it is true, and `None` where it is certain: a word that is the
-    /// same on every line is a word nobody reads.
+    /// same on every line is a word nobody reads. `unverified` for a finding
+    /// too unsure to count, which is the word a reader needs rather than the
+    /// grade's own name.
     pub confidence: Option<&'static str>,
+    /// Whether the finding is too unsure to count as a risk, so a mode draws
+    /// it without the alarm its severity would otherwise carry.
+    pub unverified: bool,
     /// Every port this finding was raised on, where the listing folded more of
     /// them into a count than the subject column will spell. Shown under `-v`.
     pub ports: Option<String>,
@@ -1898,13 +1934,16 @@ pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListi
 
     let mut folded = fold(claims);
 
-    // Worst first. `Severity` orders weakest-to-strongest, so the comparison is
-    // reversed; what the row is about breaks the tie, the host's own findings
-    // ahead of its ports' and the rest by number, so the order is total.
+    // What counts first, then worst first. `Severity` orders weakest-to-
+    // strongest, so the comparison is reversed; what the row is about breaks
+    // the tie, the host's own findings ahead of its ports' and the rest by
+    // number, so the order is total. An unverified critical below a probable
+    // medium, because the list is read top down and the top is what gets acted
+    // on.
     folded.sort_by(|a, b| {
-        b.key
-            .severity
-            .cmp(&a.key.severity)
+        is_unverified(a.key.confidence)
+            .cmp(&is_unverified(b.key.confidence))
+            .then_with(|| b.key.severity.cmp(&a.key.severity))
             .then_with(|| a.found.first().cmp(&b.found.first()))
     });
 
@@ -1961,8 +2000,12 @@ pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListi
             reference: key.reference,
             cves: key.cves,
             evidence: key.evidence,
-            confidence: (key.confidence != Confidence::Certain)
-                .then(|| wire::confidence_name(key.confidence)),
+            confidence: match key.confidence {
+                Confidence::Certain => None,
+                unsure if is_unverified(unsure) => Some("unverified"),
+                sure => Some(wire::confidence_name(sure)),
+            },
+            unverified: is_unverified(key.confidence),
             ports,
             remediation: key.remediation,
         })
@@ -2448,6 +2491,20 @@ fn product_text(port: &Port, masking: &HostRedaction) -> Option<String> {
         }
         described.push_str(version);
     }
+    // Whose build it is, straight after the version it qualifies: a
+    // distribution's `6.6.1p1` carries the fixes of the build named here, and
+    // the version alone does not say so. From the typed build rather than the
+    // free-text detail, which is cut to a width and may say it differently or
+    // not at all.
+    let build = service.build();
+    if let Some(build) = build {
+        if !described.is_empty() {
+            described.push(' ');
+        }
+        described.push('(');
+        described.push_str(&build.describe());
+        described.push(')');
+    }
     // What is running *on* the server, as distinct from the server: the
     // application a title or a vendor-prefixed header named, or the technology
     // an `X-Powered-By` did. Parenthesised because it qualifies the product
@@ -2459,9 +2516,16 @@ fn product_text(port: &Port, masking: &HostRedaction) -> Option<String> {
     // seventy characters. A port table is a column of rows somebody scans down,
     // not a place to read a list. The full value is in the report either way;
     // this is the rendering, not the record.
+    // A detail that only restates the build, as an OpenSSH comment does, is
+    // the same fact twice.
+    let restates_build = |extra: &str| {
+        build
+            .and_then(|build| build.revision())
+            .is_some_and(|revision| extra.contains(revision))
+    };
     if let Some(extra) = service
         .extrainfo()
-        .filter(|extra| extra.len() <= EXTRAINFO_WIDTH)
+        .filter(|extra| extra.len() <= EXTRAINFO_WIDTH && !restates_build(extra))
     {
         if !described.is_empty() {
             described.push(' ');
@@ -2864,23 +2928,43 @@ pub(crate) fn summary(report: &ScanReport) -> ScanSummary {
 /// only inside a host's block.
 ///
 /// `serious` is the count at [`High`](Severity::High) or above, the ones that
-/// ask for action tonight rather than at the next review. `None` when the report
-/// carries no findings at all, so a clean scan draws no line about them.
-pub(crate) fn findings_tally(report: &ScanReport) -> Option<(usize, usize)> {
-    let mut total = 0usize;
-    let mut serious = 0usize;
+/// ask for action tonight rather than at the next review. Both count only
+/// findings at least probably true; the rest are `unverified`, counted apart
+/// for the reason [`is_unverified`] gives. `None` when the report carries no
+/// findings at all, so a clean scan draws no line about them.
+pub(crate) fn findings_tally(report: &ScanReport) -> Option<FindingsTally> {
+    let mut tally = FindingsTally {
+        settled: 0,
+        serious: 0,
+        unverified: 0,
+    };
 
     for host in report.hosts() {
         let all = host.findings().chain(host.ports().flat_map(Port::findings));
         for finding in all {
-            total += 1;
+            if is_unverified(finding.confidence()) {
+                tally.unverified += 1;
+                continue;
+            }
+            tally.settled += 1;
             if finding.severity() >= Severity::High {
-                serious += 1;
+                tally.serious += 1;
             }
         }
     }
 
-    (total > 0).then_some((total, serious))
+    (tally.settled + tally.unverified > 0).then_some(tally)
+}
+
+/// A report's findings, counted the way its last line states them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FindingsTally {
+    /// Findings at least probably true.
+    pub settled: usize,
+    /// How many of those are high or above.
+    pub serious: usize,
+    /// Findings too unsure to count. See [`is_unverified`].
+    pub unverified: usize,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4018,6 +4102,86 @@ mod tests {
         assert!(
             !masked.contains("dc01") && !masked.contains("corp"),
             "a name survived redaction: {masked}"
+        );
+    }
+
+    /// A host with one probable medium and one unverified critical.
+    fn host_with_one_settled_and_one_unverified_finding() -> Host {
+        use zond_engine::model::finding::{DetectionClass, DetectionId, Finding, Version};
+
+        let finding = |title: &str, severity: Severity, confidence: Confidence| {
+            Finding::new(
+                DetectionId::new("zond:cve-kev", Version::new(0, 3, 0), "h").expect("an id"),
+                title,
+                severity,
+                confidence,
+                DetectionClass::Passive,
+            )
+            .expect("a finding")
+        };
+        let mut host = host(1);
+        let mut port = Port::new(22, Protocol::Tcp, PortState::Open);
+        port.add_finding(finding(
+            "OpenSSH 6.6.1p1: 44 upstream CVEs, build unchecked",
+            Severity::Critical,
+            Confidence::Weak,
+        ));
+        port.add_finding(finding(
+            "missing security headers",
+            Severity::Medium,
+            Confidence::Probable,
+        ));
+        host.add_port(port);
+        host
+    }
+
+    /// **A finding the engine could not settle is shown and never counted as a
+    /// risk.** A distribution build's upstream vulnerabilities are mostly
+    /// fixed, and counting them with the probable ones put a patched server's
+    /// every known CVE into the number a reader triages by, coloured as the
+    /// worst of them.
+    #[test]
+    fn an_unverified_finding_is_counted_apart_and_listed_after_what_counts() {
+        let host = host_with_one_settled_and_one_unverified_finding();
+
+        let count = host_risks(&host).expect("the host carries findings");
+        assert_eq!(count.settled, 1);
+        assert_eq!(count.unverified, 1);
+        assert_eq!(
+            count.worst,
+            Some(Severity::Medium),
+            "the unverified critical ranks nothing"
+        );
+
+        let rows = findings(Reader::default(), &host, Risk::default()).rows;
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].unverified, "what counts is listed first");
+        assert!(rows[1].unverified);
+        assert_eq!(rows[1].confidence, Some("unverified"));
+    }
+
+    /// The build is what says whose fixes a version carries, so it is on the
+    /// row beside the version, and a detail that only restates its revision is
+    /// not printed a second time.
+    #[test]
+    fn a_port_row_names_the_build_and_not_its_revision_twice() {
+        use zond_engine::model::port::{Build, Distributor, Release, ReleaseBasis, Service};
+
+        let port = Port::new(22, Protocol::Tcp, PortState::Open).with_service(
+            Service::new("ssh", 100)
+                .with_product("OpenSSH")
+                .with_version("6.6.1p1")
+                .with_extrainfo("Ubuntu-2ubuntu2.13")
+                .with_build(
+                    Build::new(Distributor::Ubuntu)
+                        .with_revision("2ubuntu2.13")
+                        .with_release(Release::new("14.04", ReleaseBasis::Banner)),
+                ),
+        );
+        let masking = Reader::default().masking(&host(1));
+        assert_eq!(
+            product_text(&port, &masking).as_deref(),
+            Some("OpenSSH 6.6.1p1 (Ubuntu 14.04 2ubuntu2.13)")
         );
     }
 

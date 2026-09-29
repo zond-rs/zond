@@ -395,13 +395,37 @@ impl Narrator {
         // a number that fits at the end of this one. The count at high or above
         // is still called out, since that is the part that asks for action rather
         // than a note in a review.
+        //
+        // Counted apart from what the engine could not settle, which is
+        // stated after it: a total that folded both together would put a
+        // patched distribution build's upstream vulnerabilities in the number a
+        // reader decides by.
         let line = match field::findings_tally(report) {
-            Some((total, serious)) => {
-                let found = format!("{total} {}", plural(total as u128, "finding"));
-                match serious {
-                    0 => format!("{line}, {found}"),
-                    _ => format!("{line}, {found} ({serious} high or above)"),
+            Some(tally) => {
+                let settled = tally.settled;
+                let mut text = match (settled, tally.serious) {
+                    (0, _) => line,
+                    (_, 0) => format!("{line}, {settled} {}", plural(settled as u128, "finding")),
+                    (_, serious) => format!(
+                        "{line}, {settled} {} ({serious} high or above)",
+                        plural(settled as u128, "finding")
+                    ),
+                };
+                match (settled, tally.unverified) {
+                    (_, 0) => {}
+                    (0, unverified) => {
+                        text.push_str(", ");
+                        text.push_str(&unverified.to_string());
+                        text.push_str(" unverified ");
+                        text.push_str(&plural(unverified as u128, "finding"));
+                    }
+                    (_, unverified) => {
+                        text.push_str(" and ");
+                        text.push_str(&unverified.to_string());
+                        text.push_str(" unverified");
+                    }
                 }
+                text
             }
             None => line,
         };

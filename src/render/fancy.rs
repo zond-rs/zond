@@ -238,9 +238,20 @@ fn verdict(style: Style, host: &Host) -> Option<String> {
     // reading the block; a count here is what lets a sweep be scanned for the
     // hosts worth opening. Coloured by the worst grade present, and the count and
     // the word are both spelled, so the colour only ranks what the text says.
-    if let Some((count, worst)) = field::host_risks(host) {
-        let counted = format!("{count} {}", if count == 1 { "risk" } else { "risks" });
-        parts.push(style.by_urgency(field::severity_urgency(worst), &counted));
+    //
+    // Only what is at least probably true counts as a risk. A claim the engine
+    // could not settle is counted beside it, faint, so the number a reader
+    // triages by is not inflated by vulnerabilities a distribution has likely
+    // fixed, and none of them is hidden either.
+    if let Some(count) = field::host_risks(host) {
+        if let Some(worst) = count.worst {
+            let settled = count.settled;
+            let counted = format!("{settled} {}", if settled == 1 { "risk" } else { "risks" });
+            parts.push(style.by_urgency(field::severity_urgency(worst), &counted));
+        }
+        if count.unverified > 0 {
+            parts.push(style.faint(&format!("{} unverified", count.unverified)));
+        }
     }
 
     // A column between them rather than a comma. Two reasons, and the second is
@@ -473,9 +484,17 @@ fn findings(
         let token = view.token.trim_end();
         let subject = view.subject.trim_end();
 
+        // An unverified finding keeps its severity word, since how bad it would
+        // be is still true, and loses the colour, since the colour is what says
+        // act on this now.
+        let painted = if view.unverified {
+            style.faint(token)
+        } else {
+            style.by_urgency(field::severity_urgency(view.severity), token)
+        };
         let mut line = format!(
             "{}{}  {}{}  {}",
-            style.by_urgency(field::severity_urgency(view.severity), token),
+            painted,
             " ".repeat(view.token.len() - token.len()),
             style.plain(subject),
             " ".repeat(view.subject.chars().count() - subject.chars().count()),
@@ -493,7 +512,12 @@ fn findings(
                 line.push_str(&" ".repeat(view.pad));
             }
             line.push_str("  ");
-            line.push_str(&style.faint(&format!("~{confidence}")));
+            let marked = if view.unverified {
+                confidence.to_owned()
+            } else {
+                format!("~{confidence}")
+            };
+            line.push_str(&style.faint(&marked));
         }
 
         // Raw, not painted: a `Detail` carries text and the block paints it,
