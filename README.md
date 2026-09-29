@@ -53,6 +53,13 @@ On Windows, `zond-<version>-setup.exe` from the latest release. It needs
 [Npcap](https://npcap.com), and installs for the current user without
 administrator rights.
 
+For Nix or NixOS is a [pre-packed module](https://search.nixos.org/packages?channel=unstable&from=0&size=50&sort=relevance&query=zond)
+available. The latest release is usually present in the `unstable` channel.
+
+```bash
+nix-env -iA nixos.zond
+```
+
 ## The commands
 
 | | |
