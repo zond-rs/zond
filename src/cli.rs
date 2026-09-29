@@ -522,13 +522,13 @@ pub(crate) struct ReadArgs {
     #[arg(value_name = "SCAN")]
     pub source: String,
 
-    /// Where to write it, instead of the terminal.
-    #[command(flatten)]
-    pub export: ExportArgs,
-
     /// Whether to mask it on the way out.
     #[command(flatten)]
     pub redact: RedactArgs,
+
+    /// Where to write it, instead of the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
 }
 
 /// What `zond read --help` ends with.
@@ -588,13 +588,13 @@ pub(crate) struct MergeArgs {
     #[arg(long, value_name = "HOW")]
     pub identity: Option<Identity>,
 
-    /// Where to write the merged report, instead of the terminal.
-    #[command(flatten)]
-    pub export: ExportArgs,
-
     /// Whether to mask it on the way out.
     #[command(flatten)]
     pub redact: RedactArgs,
+
+    /// Where to write the merged report, instead of the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
 }
 
 /// What `zond merge --help` ends with.
@@ -734,7 +734,11 @@ pub(crate) struct RedactArgs {
 /// Besides the terminal for a scan, and *instead of* it for
 /// [`Read`](Command::Read) and [`Merge`](Command::Merge). The difference is
 /// whether anybody is watching the run that produces the report.
+///
+/// Headed on its own, and flattened last wherever it appears, because a
+/// heading carries over to whatever is flattened after it.
 #[derive(Debug, Args, Default)]
+#[command(next_help_heading = "Report files")]
 pub(crate) struct ExportArgs {
     /// Write the report to FILE, in the format its extension names.
     ///
