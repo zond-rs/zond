@@ -9,7 +9,7 @@
 //! # The line that says the scan is still running
 //!
 //! ```text
-//! ⠹  ━━━━━━━━────────  50%  ports · 12 hosts found so far
+//! ⠹  ━━━━━━━━──────── 50%  12 open ports on 3 hosts · probing ports
 //! ```
 //!
 //! One line, held at the bottom of standard error and rewritten in place while a
@@ -84,7 +84,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use zond_engine::Progress;
+use zond_engine::{Progress, Stage};
 
 use crate::render::style::Style;
 use crate::render::terminal::{self, Stream};
@@ -99,8 +99,8 @@ const TICK: Duration = Duration::from_millis(125);
 ///
 /// Sixteen: wide enough to show a long scan creeping, coarse enough that one
 /// cell is worth about six percent rather than a rounding error. The spinner, a
-/// full bar and the longest of [`TIPS`] come to sixty-nine columns together, so
-/// the line still fits a narrow terminal, and it has to. The erase sequence
+/// full bar and the longest of [`TIPS`] come to seventy-nine columns together,
+/// so the line still fits an eighty-column terminal, and it has to. The erase sequence
 /// takes back one line, so a line that wrapped would leave its first half on
 /// the screen.
 const BAR_CELLS: u64 = 16;
@@ -126,19 +126,46 @@ const INSIGHT_WINDOW: Duration = Duration::from_secs(5);
 /// as the glyphs differ in weight, and one made of blocks is a strobe.
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// What a run is told while it waits.
+/// What a run is told while it waits: the flags worth knowing, what the engine
+/// is doing on the reader's behalf, and what a scan can and cannot tell.
 ///
-/// Forty-three characters at the outside, which is what a narrow terminal has
-/// left once the spinner and a full bar have taken their share. See
-/// [`BAR_CELLS`] for the rest of that arithmetic.
-const TIPS: [&str; 7] = [
-    "-d asks what is wrong with what it found",
-    "--assume-up scans a host that never answers",
-    "-n runs without a single DNS query",
-    "zond journal lists what is on record",
-    "zond resume continues a scan that stopped",
-    "zond diff compares two records",
-    "accent_colour in cli.toml sets the hue",
+/// Fifty-three characters at the outside, which is what an eighty-column
+/// terminal has left once the spinner and a full bar have taken their share.
+/// See [`BAR_CELLS`] for the rest of that arithmetic.
+const TIPS: [&str; 30] = [
+    // The command line.
+    "-d runs checks against every service a scan names",
+    "-x keeps an address out, whatever the targets say",
+    "-n names hosts without sending a single DNS query",
+    "--assume-up scans hosts that answer no liveness probe",
+    "-i scope.txt reads the targets from a file",
+    "-sU -p 53,161 asks those ports over UDP",
+    "-F is a quick pass over the hundred likeliest ports",
+    "zond resume latest picks up where a scan stopped",
+    "zond diff old new says what changed in between",
+    "-o report.html writes a page anybody can open",
+    "--explain shows the working behind every verdict",
+    "space turns this line over, q stops and reports",
+    "zond help ports shows every way to write a port",
+    "accent_colour in cli.toml moves the accent colour",
+    // What the engine does.
+    "runs are journalled, so a cut-off scan can resume",
+    "blocked means a refusal came back; no-reply, silence",
+    "no port flag means the thousand likeliest TCP ports",
+    "printer ports 9100-9107 are found and sent nothing",
+    "a host is checked for life before its ports are asked",
+    "hosts that answer nothing get their retries cut short",
+    "without root, SYN probes become full connections",
+    "--min-risk info shows findings below medium too",
+    // Scanning in general.
+    "a SYN scan never completes the TCP handshake",
+    "a closed port answers RST; a dropped probe, nothing",
+    "an open UDP port often says nothing at all",
+    "hosts rate-limit ICMP unreachables, so UDP is slow",
+    "TTL 64 hints at Linux or macOS, 128 at Windows",
+    "ARP only reaches your own segment, not past a router",
+    "an IPv6 /64 is too big to sweep; lan asks neighbours",
+    "a host behind a dropping firewall can look absent",
 ];
 
 /// What the line counts, which is whatever the run is for.
@@ -584,12 +611,13 @@ fn said(live: &mut Live, plan: Option<&Progress>) -> String {
 }
 
 /// The count, with the figures carrying the weight and the words around them
-/// not, after the stage the scan says it is working on.
+/// not, and after it what the scan says it is doing now.
 ///
-/// The figures mean different things from one stage to the next: an open port
+/// The figures first, because they are what a reader glances at the line for,
+/// and they stay in one column whichever stage the run is in. The stage after
+/// them, in a few words, says what the figures are waiting on: an open port
 /// found during the port sweep and one being asked what it is running are the
-/// same number and not the same news. Naming the stage is what keeps a bar that
-/// restarts from reading as a bar that went backwards.
+/// same number and not the same news.
 fn counted(live: &Live, plan: Option<&Progress>) -> String {
     let style = live.style;
 
@@ -605,12 +633,35 @@ fn counted(live: &Live, plan: Option<&Progress>) -> String {
 
     match plan {
         Some(plan) => format!(
-            "{} {} {tally}",
-            style.plain(&plan.stage().to_string()),
-            style.faint("·")
+            "{tally} {} {}",
+            style.faint("·"),
+            style.plain(&doing(plan.stage()))
         ),
         None => tally,
     }
+}
+
+/// What a scan in `stage` is doing, in a few words that read after a count.
+///
+/// Eighteen characters at the most, the room a full line has left once the
+/// widest count has taken its share. A stage this build has no words for is
+/// named the engine's way.
+fn doing(stage: Stage) -> String {
+    match stage {
+        Stage::Discovery => "checking who's up",
+        Stage::Ports => "probing ports",
+        Stage::Services => "naming services",
+        Stage::Detections => "running checks",
+        Stage::Tls => "reading TLS",
+        Stage::Os => "fingerprinting OS",
+        Stage::Traceroute => "tracing routes",
+        Stage::Filters => "testing filters",
+        Stage::IpProtocols => "asking protocols",
+        Stage::Listening => "listening",
+        Stage::Finishing => "finishing up",
+        other => return other.to_string(),
+    }
+    .to_owned()
 }
 
 /// A figure and the word for it.
@@ -749,7 +800,7 @@ mod tests {
         // Half of the first stage of two, so a quarter of the run.
         assert_eq!(
             counted,
-            "\u{280B}  \u{2501}\u{2501}\u{2501}\u{2501}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}  25%  discovery \u{b7} 7 hosts found so far",
+            "\u{280B}  \u{2501}\u{2501}\u{2501}\u{2501}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}  25%  7 hosts found so far \u{b7} checking who's up",
             "the line, composed"
         );
         assert!(
@@ -762,7 +813,7 @@ mod tests {
         // rather than emptying and filling again.
         ctx.enter_stage(zond_engine::Stage::Detections, Some(8));
         let detecting = line(&mut live(7, Counting::Hosts, Saying::Count), plan);
-        assert!(detecting.contains("detections \u{b7}"), "{detecting}");
+        assert!(detecting.ends_with("\u{b7} running checks"), "{detecting}");
         assert!(
             detecting.contains(" 50%"),
             "one stage of two behind it: {detecting}"
@@ -1053,16 +1104,24 @@ mod tests {
     /// screen every time the spinner turned.
     #[test]
     fn nothing_the_line_says_can_wrap_a_narrow_terminal() {
-        // Two for the spinner and its gap, four for "tip ", and the longest
-        // count this is ever going to hold.
+        // What the spinner, its gap, a full bar and the gap after it leave of
+        // eighty columns, with one to spare for the cursor.
+        let room = 79 - (1 + 2 + bar(Style::bare(), 1, 1).chars().count() + 2);
+
         for tip in TIPS {
-            assert!(tip.chars().count() + 6 <= 64, "too long to draw: {tip}");
+            assert!(tip.chars().count() <= room, "too long to draw: {tip}");
         }
 
+        // The widest count a run will hold, beside the longest stage.
         let mut crowded = live(65_535, Counting::Ports, Saying::Count);
         crowded.open = 1_000_000;
-        let widest = says(crowded);
-        assert!(widest.chars().count() + 3 <= 64, "{widest}");
+        let count = says(crowded);
+        let widest = Stage::ALL
+            .iter()
+            .map(|stage| format!("{count} · {}", doing(*stage)))
+            .max_by_key(|line| line.chars().count())
+            .expect("there is a stage");
+        assert!(widest.chars().count() <= room, "{widest}");
     }
 
     /// Nothing is drawn where there is nothing to draw on, and the calls that
