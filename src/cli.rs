@@ -72,6 +72,62 @@ pub(crate) struct Cli {
     pub command: Command,
 }
 
+impl Cli {
+    /// Folds the targets and exclusions read from files into the lists typed
+    /// on the command line, so a command reads one list of each.
+    pub(crate) fn fold_files(&mut self) {
+        let (targets, files, scope) = match &mut self.command {
+            Command::Scan(args) => (
+                Some(&mut args.targets),
+                &mut args.input_file,
+                &mut args.engine.scope,
+            ),
+            Command::Discover(args) => (
+                Some(&mut args.targets),
+                &mut args.input_file,
+                &mut args.engine.scope,
+            ),
+            Command::Listen(args) => (None, &mut Vec::new(), &mut args.scope),
+            _ => return,
+        };
+        if let Some(targets) = targets {
+            for list in files.drain(..) {
+                targets.extend(list.0);
+            }
+        }
+        scope.fold_files();
+    }
+}
+
+/// The targets a file named on the command line holds, in the order written.
+#[derive(Debug, Clone)]
+pub(crate) struct TargetList(Vec<String>);
+
+/// Reads a file of targets, or standard input for `-`: expressions separated
+/// by whitespace or commas, with `#` starting a comment.
+///
+/// Read while the command line is parsed, so a file that is missing or names
+/// nothing is refused as a usage error before anything is sent.
+fn target_list(path: &str) -> Result<TargetList, String> {
+    let text = if path == "-" {
+        std::io::read_to_string(std::io::stdin())
+            .map_err(|error| format!("standard input could not be read: {error}"))?
+    } else {
+        std::fs::read_to_string(path).map_err(|error| format!("could not be read: {error}"))?
+    };
+    let targets: Vec<String> = text
+        .lines()
+        .map(|line| line.split_once('#').map_or(line, |(before, _)| before))
+        .flat_map(|line| line.split(|c: char| c.is_whitespace() || c == ','))
+        .filter(|target| !target.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if targets.is_empty() {
+        return Err("names no targets".to_owned());
+    }
+    Ok(TargetList(targets))
+}
+
 /// What `zond -h` ends with: the handful of commands a first run is made of.
 const GETTING_STARTED: &str = "\
 Getting started:
@@ -1197,10 +1253,28 @@ pub(crate) struct DiscoverArgs {
         help_heading = "Targets",
         display_order = 0,
         value_name = "TARGET",
-        required_unless_present = "resume",
+        required_unless_present_any = ["resume", "input_file"],
         num_args = 1..
     )]
     pub targets: Vec<String>,
+
+    /// Read targets from FILE as well, one or more to a line; `-` reads them
+    /// from standard input.
+    ///
+    /// Each is written the way a target on the command line is, and several on
+    /// a line are separated by spaces or commas. A `#` starts a comment that
+    /// runs to the end of its line, so a scope document can say where each
+    /// range came from. Repeatable, and combines with targets typed out.
+    #[arg(
+        help_heading = "Targets",
+        display_order = 1,
+        short = 'i',
+        long,
+        value_name = "FILE",
+        value_parser = target_list,
+        action = ArgAction::Append
+    )]
+    pub input_file: Vec<TargetList>,
 
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
@@ -1245,7 +1319,7 @@ pub(crate) struct DiscoverArgs {
         help_heading = "Journal",
         long,
         value_name = "ID",
-        conflicts_with_all = ["targets", "exclude"]
+        conflicts_with_all = ["targets", "input_file", "exclude", "exclude_file"]
     )]
     pub resume: Option<String>,
 
@@ -1290,10 +1364,28 @@ pub(crate) struct ScanArgs {
         help_heading = "Targets",
         display_order = 0,
         value_name = "TARGET",
-        required_unless_present = "resume",
+        required_unless_present_any = ["resume", "input_file"],
         num_args = 1..
     )]
     pub targets: Vec<String>,
+
+    /// Read targets from FILE as well, one or more to a line; `-` reads them
+    /// from standard input.
+    ///
+    /// Each is written the way a target on the command line is, and several on
+    /// a line are separated by spaces or commas. A `#` starts a comment that
+    /// runs to the end of its line, so a scope document can say where each
+    /// range came from. Repeatable, and combines with targets typed out.
+    #[arg(
+        help_heading = "Targets",
+        display_order = 1,
+        short = 'i',
+        long,
+        value_name = "FILE",
+        value_parser = target_list,
+        action = ArgAction::Append
+    )]
+    pub input_file: Vec<TargetList>,
 
     /// Which ports to probe: `22,80,443`, `1-1024`, `u:53,161` for UDP,
     /// `s:2905` for SCTP.
@@ -1646,7 +1738,7 @@ pub(crate) struct ScanArgs {
         help_heading = "Journal",
         long,
         value_name = "ID",
-        conflicts_with = "exclude"
+        conflicts_with_all = ["exclude", "exclude_file"]
     )]
     pub resume: Option<String>,
 
@@ -2059,6 +2151,18 @@ pub(crate) struct ScopeArgs {
     )]
     pub exclude: Vec<String>,
 
+    /// Read addresses this run may not probe from FILE, in the form `-i` reads
+    /// targets in.
+    #[arg(
+        help_heading = "Targets",
+        hide_short_help = true,
+        long,
+        value_name = "FILE",
+        value_parser = target_list,
+        action = ArgAction::Append
+    )]
+    pub exclude_file: Vec<TargetList>,
+
     /// Send no DNS traffic, and name hosts from the hosts file alone.
     ///
     /// Discovered hosts are normally resolved to names in the background. A
@@ -2088,6 +2192,14 @@ pub(crate) struct ScopeArgs {
 }
 
 impl ScopeArgs {
+    /// Folds what `--exclude-file` read into `--exclude`, so what follows reads
+    /// one list whichever way an address was given.
+    fn fold_files(&mut self) {
+        for list in self.exclude_file.drain(..) {
+            self.exclude.extend(list.0);
+        }
+    }
+
     /// Lays these flags over a configuration the settings files produced, on
     /// the terms [`EngineArgs::apply_to`] gives.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
@@ -3705,6 +3817,61 @@ mod tests {
             Cli::try_parse_from(["zond", "s", "192.0.2.1", "-F", "-p", "22"]).is_err(),
             "-F and a port list name two different sets of ports"
         );
+    }
+
+    /// A file of targets reads one or more to a line, split on spaces or
+    /// commas, with `#` comments left out, and adds to the targets typed out.
+    /// A file naming nothing is refused rather than scanning nothing.
+    #[test]
+    fn targets_and_exclusions_are_read_from_files() {
+        let dir = std::env::temp_dir().join(format!("zond-cli-target-list-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let scope = dir.join("scope.txt");
+        std::fs::write(
+            &scope,
+            "# the client's ranges\n192.0.2.0/28  198.51.100.1,198.51.100.2\n\n2001:db8::1 # lab\n",
+        )
+        .expect("written");
+        let out = dir.join("out.txt");
+        std::fs::write(&out, "192.0.2.5\n").expect("written");
+        let empty = dir.join("empty.txt");
+        std::fs::write(&empty, "# nothing yet\n").expect("written");
+        let path = |p: &std::path::Path| p.to_str().expect("utf-8").to_owned();
+
+        let mut cli = Cli::try_parse_from([
+            "zond".to_owned(),
+            "s".to_owned(),
+            "10.0.0.1".to_owned(),
+            "-i".to_owned(),
+            path(&scope),
+            "--exclude-file".to_owned(),
+            path(&out),
+        ])
+        .expect("should parse");
+        cli.fold_files();
+        let Command::Scan(args) = cli.command else {
+            panic!("s is the scan alias");
+        };
+        assert_eq!(
+            args.targets,
+            [
+                "10.0.0.1",
+                "192.0.2.0/28",
+                "198.51.100.1",
+                "198.51.100.2",
+                "2001:db8::1"
+            ]
+        );
+        assert_eq!(args.engine.scope.exclude, ["192.0.2.5"]);
+
+        assert!(
+            Cli::try_parse_from(["zond", "d", "-i", &path(&scope)]).is_ok(),
+            "a file stands in for typed targets"
+        );
+        assert!(Cli::try_parse_from(["zond", "d", "-i", &path(&empty)]).is_err());
+        assert!(Cli::try_parse_from(["zond", "d", "-i", &path(&dir.join("absent"))]).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `-g 53` is nmap's spelling of a source port, and the one people arrive
