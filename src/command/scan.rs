@@ -65,7 +65,7 @@ pub(crate) async fn run(
     // Read once, here, and threaded down: `ports` and `config` come out of the
     // same document, and asking for them separately means parsing `engine.toml`
     // twice and warning about it twice. See `settings::EngineSettings`.
-    let settings = command::engine_settings(args.engine.profile.as_deref())?;
+    let settings = command::engine_settings(args.engine.scope.profile.as_deref())?;
     let mut config = settings.config;
 
     // A resume asks what the recorded scan asked: its options go over the
@@ -170,7 +170,7 @@ async fn started(
 ) -> Result<(ScanTargets, Option<Journal>), Error> {
     let targets = target::resolve_ports(
         &args.targets,
-        &args.engine.exclude,
+        &args.engine.scope.exclude,
         &config.exclusions,
         ports,
         &config.excluded_ports,
@@ -243,7 +243,7 @@ async fn continued(
             .unwrap_or(ports);
         let named = target::resolve_ports(
             &args.targets,
-            &args.engine.exclude,
+            &args.engine.scope.exclude,
             &config.exclusions,
             ports,
             &config.excluded_ports,

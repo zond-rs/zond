@@ -46,8 +46,8 @@ pub(crate) async fn run(
     // worst moment to be told.
     let destinations = args.export.destinations()?;
 
-    let mut config = command::engine_settings(args.engine.profile.as_deref())?.config;
-    args.engine.apply_to(&mut config);
+    let mut config = command::engine_settings(args.scope.profile.as_deref())?.config;
+    args.scope.apply_to(&mut config);
 
     let span = args.r#for;
 

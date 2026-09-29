@@ -43,7 +43,7 @@ pub(crate) async fn run(
     // Before the targets: whether a hostname may be looked up at all depends
     // on the `no_dns` these layers settle on, which a file may set as well as a
     // flag.
-    let mut config = command::engine_settings(args.engine.profile.as_deref())?.config;
+    let mut config = command::engine_settings(args.engine.scope.profile.as_deref())?.config;
 
     // A resume asks what the recorded sweep asked; see `scan` for the order
     // the layers go on in.
@@ -129,7 +129,7 @@ async fn started(
     // module deciding what either half of a scope means.
     let targets = target::resolve(
         &args.targets,
-        &args.engine.exclude,
+        &args.engine.scope.exclude,
         &config.exclusions,
         !config.no_dns,
     )

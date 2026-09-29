@@ -14,8 +14,15 @@
 //! place it changes one is [`EngineArgs::apply_to`]. Splitting them means every
 //! new flag is declared in one place and forgotten in another.
 //!
-//! Both subcommands flatten the same [`EngineArgs`], so a setting they share is
-//! declared once and cannot drift apart.
+//! `scan` and `discover` flatten the same [`EngineArgs`], and `listen` the
+//! [`ScopeArgs`] inside it, so a setting they share is declared once and cannot
+//! drift apart.
+//!
+//! Each flag names the task it belongs to with `help_heading`, rather than
+//! taking the heading of the struct that declares it, so `-h` reads as Targets,
+//! Ports, Identification and so on. A heading is listed where its first flag is
+//! declared, which is why the fields are in the order they are. Flags few runs
+//! need are left out of `-h` with `hide_short_help` and listed by `--help`.
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
@@ -191,7 +198,12 @@ pub(crate) struct DetectionArgs {
     ///
     /// These are detections you wrote or chose. Somebody else's arrive as a
     /// signed bundle, through `--detections-bundle`.
-    #[arg(long = "detections", value_name = "PATH", num_args = 1..)]
+    #[arg(
+        help_heading = "Custom detections",
+        long = "detections",
+        value_name = "PATH",
+        num_args = 1..
+    )]
     pub paths: Vec<std::path::PathBuf>,
 
     /// A directory holding a signed detection bundle: somebody else's detections.
@@ -200,7 +212,13 @@ pub(crate) struct DetectionArgs {
     /// beside it, and every source the manifest names. The manifest is checked
     /// against `--trust-key` before it is parsed and each source against the hash
     /// it records, so nothing is compiled that the key did not cover.
-    #[arg(long, value_name = "DIR", requires = "trust_key")]
+    #[arg(
+        help_heading = "Custom detections",
+        hide_short_help = true,
+        long,
+        value_name = "DIR",
+        requires = "trust_key"
+    )]
     pub detections_bundle: Option<std::path::PathBuf>,
 
     /// The public key file a bundle must be signed by: the `.pub` that
@@ -210,14 +228,23 @@ pub(crate) struct DetectionArgs {
     /// signature names the key that made it, and trusting that one would accept
     /// anything anybody re-signed, so the key is named here or the bundle is not
     /// loaded.
-    #[arg(long, value_name = "FILE")]
+    #[arg(
+        help_heading = "Custom detections",
+        hide_short_help = true,
+        long,
+        value_name = "FILE"
+    )]
     pub trust_key: Option<std::path::PathBuf>,
 
     /// Run only the detections named here, leaving out the built-in corpus.
     ///
     /// For checking one detection against a host without the rest of the
     /// catalogue reporting alongside it.
-    #[arg(long, requires = "named_detections")]
+    #[arg(
+        help_heading = "Custom detections",
+        long,
+        requires = "named_detections"
+    )]
     pub only_named_detections: bool,
 }
 
@@ -1025,13 +1052,24 @@ pub(crate) struct ListenArgs {
     #[arg(long)]
     pub everything: bool,
 
+    /// Which addresses the watch may record, and how what it hears is named.
+    ///
+    /// Only these of the engine's settings: a watch sends nothing, so nothing
+    /// that shapes a probe has anything to act on.
+    #[command(flatten)]
+    pub scope: ScopeArgs,
+
+    /// Where to write the report, besides the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
+
     /// Do not write down what this watch hears.
     ///
     /// A watch is recorded by default, on the same reasoning a scan is: the
     /// moment you want what it heard is after it stopped. A watch's record is
     /// appended to rather than resumed — there is no progress to continue, so
     /// `--resume` adds another sitting to the same record.
-    #[arg(long, conflicts_with = "resume")]
+    #[arg(help_heading = "Journal", long, conflicts_with = "resume")]
     pub no_journal: bool,
 
     /// Add a sitting to the watch with this id.
@@ -1039,7 +1077,12 @@ pub(crate) struct ListenArgs {
     /// The links come from the record. Nothing is skipped, because a watch
     /// settles nothing: what this buys is that the earlier sittings' findings
     /// are restored first, so the report describes the whole watch.
-    #[arg(long, value_name = "ID", conflicts_with = "links")]
+    #[arg(
+        help_heading = "Journal",
+        long,
+        value_name = "ID",
+        conflicts_with = "links"
+    )]
     pub resume: Option<String>,
 
     /// Continue the record even though its lock names a process that has
@@ -1052,16 +1095,13 @@ pub(crate) struct ListenArgs {
     /// the same from here. Once the process it names is known not to be the
     /// run, this takes the record over. A lock its run is still beating is
     /// refused whatever is passed.
-    #[arg(long, requires = "resume")]
+    #[arg(
+        help_heading = "Journal",
+        hide_short_help = true,
+        long,
+        requires = "resume"
+    )]
     pub take_over: bool,
-
-    /// Settings that change what the watch reads.
-    #[command(flatten)]
-    pub engine: EngineArgs,
-
-    /// Where to write the report, besides the terminal.
-    #[command(flatten)]
-    pub export: ExportArgs,
 }
 
 /// How long a watch runs, as it is written on the command line.
@@ -1119,8 +1159,22 @@ pub(crate) struct DiscoverArgs {
     ///
     /// Not needed with `--resume`, which sweeps what the recorded run was
     /// sweeping.
-    #[arg(value_name = "TARGET", required_unless_present = "resume", num_args = 1..)]
+    #[arg(
+        help_heading = "Targets",
+        display_order = 0,
+        value_name = "TARGET",
+        required_unless_present = "resume",
+        num_args = 1..
+    )]
     pub targets: Vec<String>,
+
+    /// Settings that change what the scan puts on the wire.
+    #[command(flatten)]
+    pub engine: EngineArgs,
+
+    /// Where to write the report, besides the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
 
     /// Do not write down how far this sweep gets.
     ///
@@ -1133,7 +1187,7 @@ pub(crate) struct DiscoverArgs {
     /// A record holds the addresses you swept and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one
     /// run; `journal = false` in `cli.toml` turns it off for all of them.
-    #[arg(long, conflicts_with = "resume")]
+    #[arg(help_heading = "Journal", long, conflicts_with = "resume")]
     pub no_journal: bool,
 
     /// Continue the sweep with this id, asking only about what it did not settle.
@@ -1149,7 +1203,12 @@ pub(crate) struct DiscoverArgs {
     /// `zond journal` lists what can be continued. A record's scope is fixed,
     /// so `--exclude` cannot be added to one: withholding an address the record
     /// counted would renumber every address after it.
-    #[arg(long, value_name = "ID", conflicts_with_all = ["targets", "exclude"])]
+    #[arg(
+        help_heading = "Journal",
+        long,
+        value_name = "ID",
+        conflicts_with_all = ["targets", "exclude"]
+    )]
     pub resume: Option<String>,
 
     /// Continue the record even though its lock names a process that has
@@ -1162,16 +1221,13 @@ pub(crate) struct DiscoverArgs {
     /// the same from here. Once the process it names is known not to be the
     /// run, this takes the record over. A lock its run is still beating is
     /// refused whatever is passed.
-    #[arg(long, requires = "resume")]
+    #[arg(
+        help_heading = "Journal",
+        hide_short_help = true,
+        long,
+        requires = "resume"
+    )]
     pub take_over: bool,
-
-    /// Settings that change what the scan puts on the wire.
-    #[command(flatten)]
-    pub engine: EngineArgs,
-
-    /// Where to write the report, besides the terminal.
-    #[command(flatten)]
-    pub export: ExportArgs,
 }
 
 /// Arguments to `zond scan`.
@@ -1192,7 +1248,13 @@ pub(crate) struct ScanArgs {
     /// Not needed with `--resume`, which scans what the recorded scan was
     /// scanning. Given anyway, they must describe the same scan, or the resume
     /// is refused rather than continuing something else.
-    #[arg(value_name = "TARGET", required_unless_present = "resume", num_args = 1..)]
+    #[arg(
+        help_heading = "Targets",
+        display_order = 0,
+        value_name = "TARGET",
+        required_unless_present = "resume",
+        num_args = 1..
+    )]
     pub targets: Vec<String>,
 
     /// Which ports to probe: `22,80,443`, `1-1024`, `u:53,161` for UDP,
@@ -1207,7 +1269,7 @@ pub(crate) struct ScanArgs {
     ///
     /// Defaults to `default_ports` in the settings file, and to the thousand
     /// ports most likely to be listening when that says nothing either.
-    #[arg(
+    #[arg(help_heading = "Ports", 
         short = 'p',
         long,
         value_name = "PORTS",
@@ -1226,23 +1288,6 @@ pub(crate) struct ScanArgs {
     )]
     pub ports: Option<PortSet>,
 
-    /// Correlate against a vulnerability catalogue on disk, beside the one this
-    /// build ships.
-    ///
-    /// The shipped catalogue is a starting set, not a complete one. This is how
-    /// a scan is pointed at real data: convert a feed once with
-    /// `zond_engine::import::nvd` or `::kev` and name the result here.
-    ///
-    /// It is a file rather than a URL on purpose. A scan that fetched a dataset
-    /// would depend on somebody else's server being up to say what it found, and
-    /// a report nobody can reproduce next week is not evidence. Convert once,
-    /// keep the file, and every re-run says the same thing.
-    ///
-    /// Findings deduplicate by claim, so an entry both catalogues carry is
-    /// recorded once, and the report names which dataset concluded what.
-    #[arg(long, value_name = "PATH")]
-    pub cve_catalogue: Option<std::path::PathBuf>,
-
     /// Probe the N TCP ports most likely to be listening.
     ///
     /// The engine ranks them, most likely first, and this takes the first N.
@@ -1252,7 +1297,13 @@ pub(crate) struct ScanArgs {
     ///
     /// TCP only. `--top-ports-udp` asks for the UDP list, and `-p u:53,u:161`
     /// names particular UDP ports.
-    #[arg(long, value_name = "N", value_parser = port_count, conflicts_with = "ports")]
+    #[arg(
+        help_heading = "Ports",
+        long,
+        value_name = "N",
+        value_parser = port_count,
+        conflicts_with = "ports"
+    )]
     pub top_ports: Option<usize>,
 
     /// Probe the N UDP ports most likely to be listening.
@@ -1268,91 +1319,14 @@ pub(crate) struct ScanArgs {
     /// yields all of it. The two flags combine: `--top-ports 100
     /// --top-ports-udp 50` probes both lists, and either one on its own probes
     /// only its own transport.
-    #[arg(long, value_name = "N", value_parser = port_count, conflicts_with = "ports")]
+    #[arg(
+        help_heading = "Ports",
+        long,
+        value_name = "N",
+        value_parser = port_count,
+        conflicts_with = "ports"
+    )]
     pub top_ports_udp: Option<usize>,
-
-    /// Do not write down how far this scan gets.
-    ///
-    /// Every scan is recorded by default, because the moment you want to
-    /// continue one is after it was cut short, and a flag you would have had to
-    /// pass beforehand is a flag you did not pass. `zond journal` lists what is
-    /// on record and prunes it.
-    ///
-    /// A record holds the addresses you scanned and what answered. It is written
-    /// under your own home, readable only by you. This turns that off for one
-    /// run; `journal = false` in `cli.toml` turns it off for all of them.
-    #[arg(long, conflicts_with = "resume")]
-    pub no_journal: bool,
-
-    /// Continue the scan with this id, asking only about what it did not settle.
-    ///
-    /// The targets and ports come from the record, so there is nothing to type
-    /// but the id. Naming them anyway is allowed and checked: a position in a
-    /// record means nothing against a different plan, so a mismatch is refused
-    /// rather than quietly scanning something else.
-    ///
-    /// So do the options it ran under. A flag that changes what the scan asks,
-    /// such as `--assume-up` or `--effort`, is refused; one that changes its
-    /// pace, such as `--max-probe-rate`, applies to this sitting.
-    ///
-    /// `zond journal` lists what can be continued. A record's scope is fixed,
-    /// so `--exclude` cannot be added to one: withholding an address the record
-    /// counted would renumber every target after it.
-    #[arg(long, value_name = "ID", conflicts_with = "exclude")]
-    pub resume: Option<String>,
-
-    /// Continue the record even though its lock names a process that has
-    /// stopped checkpointing.
-    ///
-    /// A record is locked while a run writes it, so two runs never write one.
-    /// A lock whose process is gone is released on its own. One naming a
-    /// process that is alive and silent is refused, because a hung run and a
-    /// crashed one whose process number was handed to something else look
-    /// the same from here. Once the process it names is known not to be the
-    /// run, this takes the record over. A lock its run is still beating is
-    /// refused whatever is passed.
-    #[arg(long, requires = "resume")]
-    pub take_over: bool,
-
-    /// Scan every target without checking first that anything is there.
-    ///
-    /// A scan normally probes each address for liveness, using the same probes
-    /// `zond discover` sends against those addresses and no others, then skips
-    /// the ones that answer nothing. An address nothing lives at costs a probe
-    /// per port to learn that. This spends them anyway.
-    ///
-    /// For a host that is up and answering no knock: one behind a firewall that
-    /// drops ICMP, and has nothing on the ports discovery tries.
-    #[arg(long)]
-    pub assume_up: bool,
-
-    /// Which TCP segment a probe carries, and so what its answers mean.
-    ///
-    /// Only `syn` identifies an open port positively, and only `syn` has an
-    /// unprivileged fallback; the rest need root and are refused without it
-    /// rather than quietly substituted. `window` reads an ACK's reset for its
-    /// window field, which some stacks set differently on an open port.
-    #[arg(long, value_name = "TECHNIQUE", value_parser = tcp_technique())]
-    pub tcp_technique: Option<TcpScanTechnique>,
-
-    /// Which SCTP probe carries the scan, for the ports named `s:`.
-    ///
-    /// `init` attempts an association and is the only one that confirms a
-    /// listener positively; `cookie-echo` sends an unminted cookie, which a
-    /// closed port answers and an open one ignores. Both need root. Only the
-    /// ports written as SCTP, `-p s:2905`, are probed this way.
-    #[arg(long, value_name = "TECHNIQUE", value_parser = sctp_technique())]
-    pub sctp_technique: Option<SctpScanTechnique>,
-
-    /// Enumerate the TLS versions and cipher suites each TLS port accepts.
-    ///
-    /// A pass after service detection that costs a connection per suite a port
-    /// accepts: a dozen or so for a current server, some 250 for an old one that
-    /// accepts everything. --host-timeout bounds it. A deprecated version
-    /// or a weak suite is reported as a finding against the port, and a version
-    /// whose walk was cut short is marked unfinished.
-    #[arg(long)]
-    pub tls_enum: bool,
 
     /// Ports to send nothing at all, on any target: `9100-9107`, `u:161`.
     ///
@@ -1363,7 +1337,7 @@ pub(crate) struct ScanArgs {
     /// A printer's raw-print ports are already sent nothing but the probe
     /// that finds them open; exclude them to skip that too, and not find the
     /// printers. Adds to `exclude_ports` in engine.toml.
-    #[arg(
+    #[arg(help_heading = "Ports", 
         long,
         value_name = "PORTS",
         value_parser = port_set,
@@ -1372,49 +1346,17 @@ pub(crate) struct ScanArgs {
     )]
     pub exclude_ports: Vec<PortSet>,
 
-    /// Probe printers' raw-print ports, TCP 9100 to 9107, like any other port.
+    /// Scan every target without checking first that anything is there.
     ///
-    /// A network printer prints whatever arrives on these ports, so by default
-    /// they are found open, listened to, and sent nothing: no service probe, no
-    /// detection and no TLS handshake, each of which would come out of the
-    /// printer as a page of gibberish. With this they are probed like every
-    /// other port, and a printer behind one will print what it is sent.
-    #[arg(long)]
-    pub probe_print_ports: bool,
-
-    /// Characterise the filter in front of each host that answered.
+    /// A scan normally probes each address for liveness, using the same probes
+    /// `zond discover` sends against those addresses and no others, then skips
+    /// the ones that answer nothing. An address nothing lives at costs a probe
+    /// per port to learn that. This spends them anyway.
     ///
-    /// A last pass against the hosts that answered, sending a bad-checksum probe
-    /// to an open port and a comparative one to a port a SYN did not reach: what answers,
-    /// and what it answers with, tells a stateful filter from a stateless one
-    /// and a middlebox from the host itself. Needs root. Records its conclusion
-    /// on the host rather than opening or closing any port.
-    #[arg(long)]
-    pub characterise: bool,
-
-    /// Ask each host which IP protocols its stack takes delivery of.
-    ///
-    /// A comma-separated list of protocol numbers, as in `1,6,17,132` for ICMP,
-    /// TCP, UDP and SCTP. Each host is sent one datagram per protocol and its
-    /// answer — a reply, a protocol-unreachable, or silence — says whether the
-    /// stack accepts it. Independent of the port scan: this asks what the host
-    /// speaks, not what listens on it. Needs root.
-    #[arg(long, value_name = "LIST", value_parser = ip_protocols)]
-    pub ip_protocols: Option<std::collections::BTreeSet<u8>>,
-
-    /// How intrusive a detection the scan may run against what it identifies.
-    ///
-    /// After a service is named, the detection corpus can probe it further for
-    /// what is wrong with it, and this is the ceiling on how far that goes.
-    /// `off` runs none at all; `passive`, the default, reads only what the scan
-    /// already gathered and sends nothing of its own; `active-benign` opens a
-    /// connection per check, which is what `-d` asks for; the classes above it,
-    /// `active-mutating`, `exploit` and `dos`, change or degrade the target and
-    /// run only when an operator names them here.
-    ///
-    /// Takes the step number as readily as the word, which is what `-d` passes.
-    #[arg(long, value_name = "CLASS", value_parser = detection_ceiling())]
-    pub detection: Option<DetectionEnvelope>,
+    /// For a host that is up and answering no knock: one behind a firewall that
+    /// drops ICMP, and has nothing on the ports discovery tries.
+    #[arg(help_heading = "Ports", long)]
+    pub assume_up: bool,
 
     /// How far to go past reading what the scan gathered, as a step from 0 to 5.
     ///
@@ -1431,7 +1373,7 @@ pub(crate) struct ScanArgs {
     /// with an equals sign or against the letter, `-d=4` or `-d4`, but never
     /// apart: `zond scan -d 192.0.2.1` would otherwise read the address as a
     /// step and scan nothing.
-    #[arg(
+    #[arg(help_heading = "Identification", 
         short = 'd',
         long = "detect",
         value_name = "N",
@@ -1443,9 +1385,127 @@ pub(crate) struct ScanArgs {
     )]
     pub detect: Option<DetectionEnvelope>,
 
+    /// How intrusive a detection the scan may run against what it identifies.
+    ///
+    /// After a service is named, the detection corpus can probe it further for
+    /// what is wrong with it, and this is the ceiling on how far that goes.
+    /// `off` runs none at all; `passive`, the default, reads only what the scan
+    /// already gathered and sends nothing of its own; `active-benign` opens a
+    /// connection per check, which is what `-d` asks for; the classes above it,
+    /// `active-mutating`, `exploit` and `dos`, change or degrade the target and
+    /// run only when an operator names them here.
+    ///
+    /// Takes the step number as readily as the word, which is what `-d` passes.
+    #[arg(
+        help_heading = "Identification",
+        long,
+        value_name = "CLASS",
+        value_parser = detection_ceiling()
+    )]
+    pub detection: Option<DetectionEnvelope>,
+
+    /// How far to go to identify what is listening behind each open port.
+    ///
+    /// `off` never connects: ports come back with a state and whatever name
+    /// their number implies. It is the fastest, and the only level that leaves
+    /// no trace in the target's application logs. `banner` connects and listens
+    /// without sending, which is everything a service that greets on connect was
+    /// going to say anyway. Reach for it with equipment that must not be sent
+    /// anything it did not expect. `probe`, the default, also asks: each port
+    /// gets the requests its service registered, and a port nothing recognises
+    /// gets the one generic request worth asking of anything. `thorough` goes
+    /// one step further, and only for a port that answered none of that: it
+    /// puts the questions other services registered to it, likeliest first. A
+    /// Redis moved to 8443 answers `PING` and nothing else, so nothing below
+    /// this level ever finds it.
+    ///
+    /// Turning it down does not make an unknown port faster to scan. Asking is
+    /// how a port is finished with quickly, and the alternative is waiting out a
+    /// greeting that never comes.
+    #[arg(
+        help_heading = "Identification",
+        long,
+        value_name = "LEVEL",
+        value_parser = service_detection()
+    )]
+    pub service_detection: Option<ServiceDetection>,
+
+    /// Report port states and no service detail.
+    ///
+    /// Shorthand for `--service-detection off`. A separate flag because it is
+    /// the one level people reach for by name: the scan that answers "what is
+    /// open" without opening a connection to find out what is behind it.
+    #[arg(
+        help_heading = "Identification",
+        long,
+        conflicts_with = "service_detection"
+    )]
+    pub no_service_detection: bool,
+
+    /// Enumerate the TLS versions and cipher suites each TLS port accepts.
+    ///
+    /// A pass after service detection that costs a connection per suite a port
+    /// accepts: a dozen or so for a current server, some 250 for an old one that
+    /// accepts everything. --host-timeout bounds it. A deprecated version
+    /// or a weak suite is reported as a finding against the port, and a version
+    /// whose walk was cut short is marked unfinished.
+    #[arg(help_heading = "Identification", long)]
+    pub tls_enum: bool,
+
+    /// Correlate against a vulnerability catalogue on disk, beside the one this
+    /// build ships.
+    ///
+    /// The shipped catalogue is a starting set, not a complete one. This is how
+    /// a scan is pointed at real data: convert a feed once with
+    /// `zond_engine::import::nvd` or `::kev` and name the result here.
+    ///
+    /// It is a file rather than a URL on purpose. A scan that fetched a dataset
+    /// would depend on somebody else's server being up to say what it found, and
+    /// a report nobody can reproduce next week is not evidence. Convert once,
+    /// keep the file, and every re-run says the same thing.
+    ///
+    /// Findings deduplicate by claim, so an entry both catalogues carry is
+    /// recorded once, and the report names which dataset concluded what.
+    #[arg(
+        help_heading = "Identification",
+        hide_short_help = true,
+        long,
+        value_name = "PATH"
+    )]
+    pub cve_catalogue: Option<std::path::PathBuf>,
+
     /// Which detections the scan runs, beyond the ones built in.
     #[command(flatten)]
     pub detections: DetectionArgs,
+
+    /// Which TCP segment a probe carries, and so what its answers mean.
+    ///
+    /// Only `syn` identifies an open port positively, and only `syn` has an
+    /// unprivileged fallback; the rest need root and are refused without it
+    /// rather than quietly substituted. `window` reads an ACK's reset for its
+    /// window field, which some stacks set differently on an open port.
+    #[arg(
+        help_heading = "Techniques",
+        long,
+        value_name = "TECHNIQUE",
+        value_parser = tcp_technique()
+    )]
+    pub tcp_technique: Option<TcpScanTechnique>,
+
+    /// Which SCTP probe carries the scan, for the ports named `s:`.
+    ///
+    /// `init` attempts an association and is the only one that confirms a
+    /// listener positively; `cookie-echo` sends an unminted cookie, which a
+    /// closed port answers and an open one ignores. Both need root. Only the
+    /// ports written as SCTP, `-p s:2905`, are probed this way.
+    #[arg(
+        help_heading = "Techniques",
+        hide_short_help = true,
+        long,
+        value_name = "TECHNIQUE",
+        value_parser = sctp_technique()
+    )]
+    pub sctp_technique: Option<SctpScanTechnique>,
 
     /// Read the target's TCP ports off a third party's IP-ID counter.
     ///
@@ -1458,8 +1518,50 @@ pub(crate) struct ScanArgs {
     /// Needs root, and forges nothing the target can trace back here. A loud,
     /// slow scan whose whole point is that the target learns the zombie's
     /// address and not this one.
-    #[arg(long = "idle-scan", value_name = "ZOMBIE", value_parser = idle_scan)]
+    #[arg(
+        help_heading = "Techniques",
+        hide_short_help = true,
+        long = "idle-scan",
+        value_name = "ZOMBIE",
+        value_parser = idle_scan
+    )]
     pub idle_scan: Option<IdleScan>,
+
+    /// Ask each host which IP protocols its stack takes delivery of.
+    ///
+    /// A comma-separated list of protocol numbers, as in `1,6,17,132` for ICMP,
+    /// TCP, UDP and SCTP. Each host is sent one datagram per protocol and its
+    /// answer — a reply, a protocol-unreachable, or silence — says whether the
+    /// stack accepts it. Independent of the port scan: this asks what the host
+    /// speaks, not what listens on it. Needs root.
+    #[arg(
+        help_heading = "Techniques",
+        hide_short_help = true,
+        long,
+        value_name = "LIST",
+        value_parser = ip_protocols
+    )]
+    pub ip_protocols: Option<std::collections::BTreeSet<u8>>,
+
+    /// Characterise the filter in front of each host that answered.
+    ///
+    /// A last pass against the hosts that answered, sending a bad-checksum probe
+    /// to an open port and a comparative one to a port a SYN did not reach: what answers,
+    /// and what it answers with, tells a stateful filter from a stateless one
+    /// and a middlebox from the host itself. Needs root. Records its conclusion
+    /// on the host rather than opening or closing any port.
+    #[arg(help_heading = "Techniques", hide_short_help = true, long)]
+    pub characterise: bool,
+
+    /// Probe printers' raw-print ports, TCP 9100 to 9107, like any other port.
+    ///
+    /// A network printer prints whatever arrives on these ports, so by default
+    /// they are found open, listened to, and sent nothing: no service probe, no
+    /// detection and no TLS handshake, each of which would come out of the
+    /// printer as a page of gibberish. With this they are probed like every
+    /// other port, and a printer behind one will print what it is sent.
+    #[arg(help_heading = "Techniques", hide_short_help = true, long)]
+    pub probe_print_ports: bool,
 
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
@@ -1468,12 +1570,73 @@ pub(crate) struct ScanArgs {
     /// Where to write the report, besides the terminal.
     #[command(flatten)]
     pub export: ExportArgs,
+
+    /// Do not write down how far this scan gets.
+    ///
+    /// Every scan is recorded by default, because the moment you want to
+    /// continue one is after it was cut short, and a flag you would have had to
+    /// pass beforehand is a flag you did not pass. `zond journal` lists what is
+    /// on record and prunes it.
+    ///
+    /// A record holds the addresses you scanned and what answered. It is written
+    /// under your own home, readable only by you. This turns that off for one
+    /// run; `journal = false` in `cli.toml` turns it off for all of them.
+    #[arg(help_heading = "Journal", long, conflicts_with = "resume")]
+    pub no_journal: bool,
+
+    /// Continue the scan with this id, asking only about what it did not settle.
+    ///
+    /// The targets and ports come from the record, so there is nothing to type
+    /// but the id. Naming them anyway is allowed and checked: a position in a
+    /// record means nothing against a different plan, so a mismatch is refused
+    /// rather than quietly scanning something else.
+    ///
+    /// So do the options it ran under. A flag that changes what the scan asks,
+    /// such as `--assume-up` or `--effort`, is refused; one that changes its
+    /// pace, such as `--max-probe-rate`, applies to this sitting.
+    ///
+    /// `zond journal` lists what can be continued. A record's scope is fixed,
+    /// so `--exclude` cannot be added to one: withholding an address the record
+    /// counted would renumber every target after it.
+    #[arg(
+        help_heading = "Journal",
+        long,
+        value_name = "ID",
+        conflicts_with = "exclude"
+    )]
+    pub resume: Option<String>,
+
+    /// Continue the record even though its lock names a process that has
+    /// stopped checkpointing.
+    ///
+    /// A record is locked while a run writes it, so two runs never write one.
+    /// A lock whose process is gone is released on its own. One naming a
+    /// process that is alive and silent is refused, because a hung run and a
+    /// crashed one whose process number was handed to something else look
+    /// the same from here. Once the process it names is known not to be the
+    /// run, this takes the record over. A lock its run is still beating is
+    /// refused whatever is passed.
+    #[arg(
+        help_heading = "Journal",
+        hide_short_help = true,
+        long,
+        requires = "resume"
+    )]
+    pub take_over: bool,
 }
 
 impl ScanArgs {
     /// Lays these flags over a configuration the settings files produced.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
         self.engine.apply_to(config);
+
+        // Mutually exclusive at the parser, as `-O` and `--os-detection` are.
+        if self.no_service_detection {
+            config.service_detection = ServiceDetection::Off;
+        }
+        if let Some(detection) = self.service_detection {
+            config.service_detection = detection;
+        }
 
         if self.assume_up {
             config.assume_up = true;
@@ -1736,8 +1899,8 @@ Examples:
   sudo zond d 192.168.0.0/24 --exclude 192.168.0.1
   sudo zond d 10.0.0.1-50 -o hosts.json
 
---help lists every form a target takes, the report formats, and how to stop a
-run.";
+--help also lists the flags for tuning and evasion, every form a target takes,
+the report formats, and how to stop a run.";
 
 /// What `zond scan -h` ends with.
 const SCAN_SHORT_HELP: &str = "\
@@ -1747,8 +1910,8 @@ Examples:
   sudo zond s lan --top-ports 100 --pipe        a quick pass, one record per line
   sudo zond s 10.0.0.0/24 -p 22,443 -o report.html
 
---help lists every form a target takes, the report formats, and how to stop a
-run.";
+--help also lists the flags for tuning, techniques and evasion, every form a
+target takes, the report formats, and how to stop a run.";
 
 /// What is shown under `zond discover --help`, below the flags.
 ///
@@ -1813,21 +1976,14 @@ which happened.",
     .concat()
 }
 
-/// The settings that change what a scan does, as opposed to how it is shown.
+/// Which addresses a run may touch, how the hosts it finds are named, and
+/// which settings profile it runs under.
 ///
-/// Flattened into every subcommand that runs the engine, so a setting means the
-/// same thing wherever it is written. The split follows the engine's own:
-/// [`ZondConfig`] holds only what changes packets or timing, and anything about
-/// rendering belongs to [`OutputArgs`] instead.
+/// The part of the engine's settings every command that runs the engine takes,
+/// `listen` included. The rest of [`EngineArgs`] shapes the probes a run sends,
+/// and a watch sends none.
 #[derive(Debug, Args)]
-#[command(next_help_heading = "Scan settings")]
-// A command-line flag *is* a bool, and there are more than three of them
-// because this engine has more than three switches. The lint is aimed at a
-// domain type whose bools should have been an enum; here they are independent
-// options a caller sets in any combination, and clap derives the parser from
-// exactly these fields.
-#[allow(clippy::struct_excessive_bools)]
-pub(crate) struct EngineArgs {
+pub(crate) struct ScopeArgs {
     /// Addresses this run may not probe, whatever the targets say.
     ///
     /// The same grammar targets take, meaning an address, a range, a CIDR
@@ -1841,7 +1997,7 @@ pub(crate) struct EngineArgs {
     /// the segment if that matters.
     ///
     /// Adds to `exclude` in engine.toml rather than replacing it.
-    #[arg(long, value_name = "TARGET", action = ArgAction::Append)]
+    #[arg(help_heading = "Targets", long, value_name = "TARGET", action = ArgAction::Append)]
     pub exclude: Vec<String>,
 
     /// Send no DNS traffic, and name hosts from the hosts file alone.
@@ -1852,8 +2008,14 @@ pub(crate) struct EngineArgs {
     /// it is still read: a host the scan finds is named from it, and a
     /// hostname written as a target is resolved from it, and refused rather
     /// than dropped when the file does not list it.
-    #[arg(short = 'n', long)]
+    #[arg(help_heading = "Targets", short = 'n', long)]
     pub no_dns: bool,
+
+    /// Use a named profile from the engine's settings file.
+    ///
+    /// Profiles are defined in `engine.toml` and layer on top of its defaults.
+    #[arg(help_heading = "Settings", long, value_name = "NAME")]
+    pub profile: Option<String>,
 
     /// Mask host and domain names, hardware addresses and IPv6 host parts in
     /// the output.
@@ -1862,31 +2024,65 @@ pub(crate) struct EngineArgs {
     /// knowing which device is which: a client, an auditor, a screenshot in an
     /// issue. The scan still finds everything, and only what leaves this process
     /// is masked.
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     pub redact: bool,
+}
 
+impl ScopeArgs {
+    /// Lays these flags over a configuration the settings files produced, on
+    /// the terms [`EngineArgs::apply_to`] gives.
+    pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
+        if self.no_dns {
+            config.no_dns = true;
+        }
+        if self.redact {
+            config.redact = true;
+        }
+    }
+}
+
+/// The settings that change what a scan does, as opposed to how it is shown.
+///
+/// Flattened into `scan` and `discover`, the two commands that send probes, so
+/// a setting means the same thing wherever it is written. The split follows the engine's own:
+/// [`ZondConfig`] holds only what changes packets or timing, and anything about
+/// rendering belongs to [`OutputArgs`] instead.
+#[derive(Debug, Args)]
+// A command-line flag *is* a bool, and there are more than three of them
+// because this engine has more than three switches. The lint is aimed at a
+// domain type whose bools should have been an enum; here they are independent
+// options a caller sets in any combination, and clap derives the parser from
+// exactly these fields.
+#[allow(clippy::struct_excessive_bools)]
+pub(crate) struct EngineArgs {
     /// How hard the scan tries before it accepts silence as an answer.
-    #[arg(long, value_name = "LEVEL", value_parser = effort())]
+    #[arg(help_heading = "Speed", long, value_name = "LEVEL", value_parser = effort())]
     pub effort: Option<ScanEffort>,
 
     /// Replace the attempt budget outright, whatever --effort implies.
     ///
     /// 1 disables retransmission.
-    #[arg(long, value_name = "N")]
+    #[arg(help_heading = "Speed", hide_short_help = true, long, value_name = "N")]
     pub max_attempts: Option<NonZeroU8>,
 
     /// Multiply how long the scan is willing to wait.
     ///
     /// Does not touch the shortest timeout a protocol allows. That floor is not
     /// a preference, it is what the protocol costs.
-    #[arg(long, value_name = "FACTOR", value_parser = timeout_scale)]
+    #[arg(
+        help_heading = "Speed",
+        hide_short_help = true,
+        long,
+        value_name = "FACTOR",
+        value_parser = timeout_scale
+    )]
     pub timeout_scale: Option<TimeoutScale>,
 
     /// Spend the full probe budget on hosts that answer nothing at all.
     ///
     /// Thorough and expensive. Normally a silent host has its remaining budget
     /// cut so the scan can spend it somewhere that is answering.
-    #[arg(long)]
+    #[arg(help_heading = "Speed", hide_short_help = true, long)]
     pub no_dampen: bool,
 
     /// The fastest the scan may put probes on the wire, in probes per second.
@@ -1897,7 +2093,7 @@ pub(crate) struct EngineArgs {
     /// The discovery sweep and a UDP port scan run at this pace. A TCP port scan
     /// paces itself on how fast its targets answer, and this is only its
     /// ceiling.
-    #[arg(long, value_name = "PPS")]
+    #[arg(help_heading = "Speed", long, value_name = "PPS")]
     pub max_probe_rate: Option<NonZeroU32>,
 
     /// The slowest the scan may fall to, in probes per second.
@@ -1906,7 +2102,12 @@ pub(crate) struct EngineArgs {
     /// and never speeds one past what `--max-probe-rate` allows. For a link whose
     /// round trips are long enough that the adaptive window crawls, where the
     /// operator would rather spend packets than wait.
-    #[arg(long, value_name = "PPS")]
+    #[arg(
+        help_heading = "Speed",
+        hide_short_help = true,
+        long,
+        value_name = "PPS"
+    )]
     pub min_probe_rate: Option<NonZeroU32>,
 
     /// Give up on a host that is still answering after this long.
@@ -1915,7 +2116,7 @@ pub(crate) struct EngineArgs {
     /// that reaches it is left where it stands and named in the report as one
     /// the budget cut short, so a slow host cannot hold a scan open. Accepts a
     /// plain number of seconds or a suffix: `30s`, `10m`, `4h`.
-    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    #[arg(help_heading = "Speed", long, value_name = "DURATION", value_parser = parse_duration)]
     pub host_timeout: Option<std::time::Duration>,
 
     /// Give up on the whole scan after this long.
@@ -1924,11 +2125,17 @@ pub(crate) struct EngineArgs {
     /// it expires is left where it stands and named in the report, and the run
     /// exits 3 rather than as interrupted. Accepts a plain number of seconds or
     /// a suffix: `30s`, `10m`, `4h`.
-    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    #[arg(help_heading = "Speed", long, value_name = "DURATION", value_parser = parse_duration)]
     pub scan_timeout: Option<std::time::Duration>,
 
     /// How raw probes are placed on the wire.
-    #[arg(long, value_name = "MODE", value_parser = send_mode())]
+    #[arg(
+        help_heading = "Techniques",
+        hide_short_help = true,
+        long,
+        value_name = "MODE",
+        value_parser = send_mode()
+    )]
     pub send_mode: Option<SendMode>,
 
     /// Send probes to routed targets from this interface, whatever the
@@ -1948,14 +2155,19 @@ pub(crate) struct EngineArgs {
     /// On Linux a run without root needs kernel 5.7 or later to pin its
     /// connections; an older kernel refuses them, and their targets are
     /// reported unreachable rather than scanned through the tunnel.
-    #[arg(long, value_name = "NAME")]
+    #[arg(help_heading = "Techniques", long, value_name = "NAME")]
     pub send_interface: Option<String>,
 
     /// How far to go identifying the system behind each host.
     ///
     /// `passive` sends nothing of its own. `active` and above send probes, and
     /// have to be asked for.
-    #[arg(long, value_name = "LEVEL", value_parser = os_detection())]
+    #[arg(
+        help_heading = "Identification",
+        long,
+        value_name = "LEVEL",
+        value_parser = os_detection()
+    )]
     pub os_detection: Option<OsDetection>,
 
     /// Identify the system behind each host as thoroughly as this engine can.
@@ -1968,37 +2180,13 @@ pub(crate) struct EngineArgs {
     /// A separate flag rather than an optional value on `--os-detection`. An
     /// option that may or may not take a value would read
     /// `zond scan -O 192.0.2.1` as a level of `192.0.2.1` and scan nothing.
-    #[arg(short = 'O', long, conflicts_with = "os_detection")]
+    #[arg(
+        help_heading = "Identification",
+        short = 'O',
+        long,
+        conflicts_with = "os_detection"
+    )]
     pub os_aggressive: bool,
-
-    /// How far to go to identify what is listening behind each open port.
-    ///
-    /// `off` never connects: ports come back with a state and whatever name
-    /// their number implies. It is the fastest, and the only level that leaves
-    /// no trace in the target's application logs. `banner` connects and listens
-    /// without sending, which is everything a service that greets on connect was
-    /// going to say anyway. Reach for it with equipment that must not be sent
-    /// anything it did not expect. `probe`, the default, also asks: each port
-    /// gets the requests its service registered, and a port nothing recognises
-    /// gets the one generic request worth asking of anything. `thorough` goes
-    /// one step further, and only for a port that answered none of that: it
-    /// puts the questions other services registered to it, likeliest first. A
-    /// Redis moved to 8443 answers `PING` and nothing else, so nothing below
-    /// this level ever finds it.
-    ///
-    /// Turning it down does not make an unknown port faster to scan. Asking is
-    /// how a port is finished with quickly, and the alternative is waiting out a
-    /// greeting that never comes.
-    #[arg(long, value_name = "LEVEL", value_parser = service_detection())]
-    pub service_detection: Option<ServiceDetection>,
-
-    /// Report port states and no service detail.
-    ///
-    /// Shorthand for `--service-detection off`. A separate flag because it is
-    /// the one level people reach for by name: the scan that answers "what is
-    /// open" without opening a connection to find out what is behind it.
-    #[arg(long, conflicts_with = "service_detection")]
-    pub no_service_detection: bool,
 
     /// Measure the route to each host that answered.
     ///
@@ -2013,18 +2201,16 @@ pub(crate) struct EngineArgs {
     /// that answered nothing has no path to measure.
     ///
     /// Needs root, like every other probe built by hand here.
-    #[arg(long)]
+    #[arg(help_heading = "Identification", long)]
     pub traceroute: bool,
-
-    /// Use a named profile from the engine's settings file.
-    ///
-    /// Profiles are defined in `engine.toml` and layer on top of its defaults.
-    #[arg(long, value_name = "NAME")]
-    pub profile: Option<String>,
 
     /// What the scan is allowed to change about the packets it sends.
     #[command(flatten)]
     pub evasion: EvasionArgs,
+
+    /// Which addresses the run may touch, and how what it finds is named.
+    #[command(flatten)]
+    pub scope: ScopeArgs,
 }
 
 /// What a scan may change about the packets it sends, to get past a filter or to
@@ -2048,7 +2234,7 @@ pub(crate) struct EvasionArgs {
     /// from a particular distance. Refused at zero, which is a packet that never
     /// leaves the first hop. The service, TLS and detection connections that
     /// follow a probe keep this host's default.
-    #[arg(long, value_name = "HOPS")]
+    #[arg(hide_short_help = true, long, value_name = "HOPS")]
     pub ttl: Option<u8>,
 
     /// Send every probe from this source port.
@@ -2058,7 +2244,12 @@ pub(crate) struct EvasionArgs {
     /// service, TLS and detection connections that follow leave from ports the
     /// system picks: one port cannot hold several connections to one target
     /// port at once.
-    #[arg(short = 'g', long = "source-port", value_name = "PORT")]
+    #[arg(
+        hide_short_help = true,
+        short = 'g',
+        long = "source-port",
+        value_name = "PORT"
+    )]
     pub source_port: Option<u16>,
 
     /// Mingle the real probes with decoys from these addresses.
@@ -2067,7 +2258,13 @@ pub(crate) struct EvasionArgs {
     /// address at once and cannot tell which one is asking, at the cost of one
     /// full scan's traffic per decoy. Addresses that are alive make better cover
     /// than empty ones, which a defender can rule out.
-    #[arg(long = "decoy", value_name = "IP", value_delimiter = ',', action = ArgAction::Append)]
+    #[arg(
+        hide_short_help = true,
+        long = "decoy",
+        value_name = "IP",
+        value_delimiter = ',',
+        action = ArgAction::Append
+    )]
     pub decoys: Vec<std::net::IpAddr>,
 
     /// Fragment every crafted probe to this MTU, in bytes.
@@ -2076,14 +2273,14 @@ pub(crate) struct EvasionArgs {
     /// probe whose flags land in a later one. A multiple of eight, and no
     /// smaller than one IP header plus the transport's first bytes, which the
     /// engine enforces and refuses below.
-    #[arg(long = "mtu", value_name = "MTU")]
+    #[arg(hide_short_help = true, long = "mtu", value_name = "MTU")]
     pub fragment: Option<u16>,
 
     /// Append this many bytes of padding to each crafted probe.
     ///
     /// A blunt shape change: a scan whose every packet is a fixed odd length is
     /// less like the fingerprint a signature is looking for.
-    #[arg(long = "data-length", value_name = "LEN")]
+    #[arg(hide_short_help = true, long = "data-length", value_name = "LEN")]
     pub padding: Option<u16>,
 
     /// Give every crafted TCP probe a deliberately wrong checksum.
@@ -2091,7 +2288,7 @@ pub(crate) struct EvasionArgs {
     /// A conformant host drops it unread, so anything that answers was not the
     /// host: a middlebox in the path replying without validating. A probe rather
     /// than an evasion, and it shares the machinery, which is why it is here.
-    #[arg(long = "badsum")]
+    #[arg(hide_short_help = true, long = "badsum")]
     pub bad_checksum: bool,
 
     /// Send crafted frames from this hardware address.
@@ -2099,7 +2296,7 @@ pub(crate) struct EvasionArgs {
     /// Only reaches the wire on the local segment, where the scan builds its own
     /// Ethernet frames; a routed probe carries this host's real address whatever
     /// is set here.
-    #[arg(long = "spoof-mac", value_name = "MAC")]
+    #[arg(hide_short_help = true, long = "spoof-mac", value_name = "MAC")]
     pub spoof_mac: Option<MacAddr>,
 
     /// Set the TCP flags on every port probe by name or number.
@@ -2108,7 +2305,12 @@ pub(crate) struct EvasionArgs {
     /// `FIN SYN RST PSH ACK URG ECE CWR`; or a number, decimal or `0x`-hex. What
     /// a reply means is read the way the closest standard technique reads it, so
     /// an answer is still a verdict rather than a raw packet.
-    #[arg(long = "scanflags", value_name = "FLAGS", value_parser = scan_flags)]
+    #[arg(
+        hide_short_help = true,
+        long = "scanflags",
+        value_name = "FLAGS",
+        value_parser = scan_flags
+    )]
     pub flags: Option<u8>,
 }
 
@@ -2382,12 +2584,7 @@ impl EngineArgs {
     /// written by the same `apply_to`, so the two halves of one grammar are
     /// parsed by one module rather than by two that could disagree.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
-        if self.no_dns {
-            config.no_dns = true;
-        }
-        if self.redact {
-            config.redact = true;
-        }
+        self.scope.apply_to(config);
         if self.no_dampen {
             config.retry.dampen_silent_hosts = false;
         }
@@ -2429,12 +2626,6 @@ impl EngineArgs {
         // this happens to check second.
         if self.os_aggressive {
             config.os_detection = OsDetection::Aggressive;
-        }
-        if self.no_service_detection {
-            config.service_detection = ServiceDetection::Off;
-        }
-        if let Some(detection) = self.service_detection {
-            config.service_detection = detection;
         }
         if let Some(detection) = self.os_detection {
             config.os_detection = detection;
@@ -2801,6 +2992,51 @@ mod tests {
         check("risk", &risk());
         check("detection", &detection_ceiling());
         check("send-mode", &send_mode());
+    }
+
+    /// A command is offered only the flags it acts on. A watch sends nothing,
+    /// so it takes no flag that shapes a probe, and a sweep identifies no
+    /// services, so it takes no service detection. Each would otherwise be
+    /// accepted and do nothing.
+    #[test]
+    fn a_command_refuses_the_flags_it_would_ignore() {
+        for flag in [
+            &["--decoy", "192.0.2.9"][..],
+            &["--ttl", "9"],
+            &["--effort", "fast"],
+            &["--max-probe-rate", "10"],
+            &["--traceroute"],
+            &["-O"],
+        ] {
+            let mut args = vec!["zond", "listen", "lan"];
+            args.extend_from_slice(flag);
+            assert!(Cli::try_parse_from(&args).is_err(), "listen took {flag:?}");
+        }
+        for flag in [
+            &["--service-detection", "off"][..],
+            &["--no-service-detection"],
+        ] {
+            let mut args = vec!["zond", "discover", "lan"];
+            args.extend_from_slice(flag);
+            assert!(
+                Cli::try_parse_from(&args).is_err(),
+                "discover took {flag:?}"
+            );
+        }
+
+        // What a watch does act on is still there.
+        assert!(
+            Cli::try_parse_from([
+                "zond",
+                "listen",
+                "lan",
+                "-n",
+                "--redact",
+                "--exclude",
+                "10.0.0.1"
+            ])
+            .is_ok()
+        );
     }
 
     /// `raw-socket` is the command line's spelling, and `raw_socket`, which is
