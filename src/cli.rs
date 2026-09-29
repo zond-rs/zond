@@ -73,9 +73,26 @@ pub(crate) struct Cli {
 }
 
 impl Cli {
+    /// Settles what the parser read into what the commands act on: the files
+    /// of targets and exclusions folded into the lists typed out, and nmap's
+    /// scan types into the flags they stand for.
+    ///
+    /// A contradiction found here is a usage error like any the parser finds,
+    /// told in its words and with its exit status.
+    pub(crate) fn settle(&mut self) -> Result<(), clap::Error> {
+        self.fold_files();
+        if let Command::Scan(args) = &mut self.command {
+            args.apply_scan_types().map_err(|conflict| {
+                use clap::CommandFactory;
+                Cli::command().error(clap::error::ErrorKind::ArgumentConflict, conflict)
+            })?;
+        }
+        Ok(())
+    }
+
     /// Folds the targets and exclusions read from files into the lists typed
     /// on the command line, so a command reads one list of each.
-    pub(crate) fn fold_files(&mut self) {
+    fn fold_files(&mut self) {
         let (targets, files, scope) = match &mut self.command {
             Command::Scan(args) => (
                 Some(&mut args.targets),
@@ -1696,6 +1713,28 @@ pub(crate) struct ScanArgs {
     )]
     pub tcp_technique: Option<TcpScanTechnique>,
 
+    /// nmap's scan types, written the way nmap writes them: `-sS`, `-sU`,
+    /// `-sV`.
+    ///
+    /// `S F N X A W M` are the TCP techniques `--tcp-technique` names, `syn`
+    /// through `maimon`, and `Y` and `Z` the SCTP ones. `U` reads the `-p` list
+    /// as UDP ports, or with no list probes the likeliest UDP ports, and beside
+    /// a TCP letter scans both. `V` is service detection, which runs unless it
+    /// was turned off. Letters combine, `-sSV`, and so do flags, `-sS -sU`.
+    ///
+    /// For the hands that type nmap's. The zond spellings above are the ones
+    /// the help and the documentation use.
+    #[arg(
+        help_heading = "Techniques",
+        hide_short_help = true,
+        short = 's',
+        long = "scan-type",
+        value_name = "LETTERS",
+        value_parser = scan_types,
+        action = ArgAction::Append
+    )]
+    pub scan_types: Vec<ScanTypes>,
+
     /// Which SCTP probe carries the scan, for the ports named `s:`.
     ///
     /// `init` attempts an association and is the only one that confirms a
@@ -1816,6 +1855,90 @@ impl ScanArgs {
         self.top_ports.or(self.fast.then_some(FAST_TOP_PORTS))
     }
 
+    /// Lays what `-s` named over the flags it stands for, refusing a letter
+    /// that says something else than a flag beside it.
+    fn apply_scan_types(&mut self) -> Result<(), String> {
+        let named: Vec<ScanType> = self
+            .scan_types
+            .iter()
+            .flat_map(|types| types.0.iter().copied())
+            .collect();
+
+        let mut tcp: Vec<TcpScanTechnique> = named
+            .iter()
+            .filter_map(|kind| match kind {
+                ScanType::Tcp(technique) => Some(*technique),
+                _ => None,
+            })
+            .collect();
+        tcp.dedup();
+        match (tcp.as_slice(), self.tcp_technique) {
+            ([], _) => {}
+            ([one], None) => self.tcp_technique = Some(*one),
+            ([one], Some(given)) if given == *one => {}
+            ([one], Some(given)) => {
+                return Err(format!(
+                    "-s names {} and --tcp-technique names {}; a probe carries one",
+                    one.name(),
+                    given.name()
+                ));
+            }
+            _ => {
+                return Err(String::from(
+                    "-s names two TCP techniques; a probe carries one",
+                ));
+            }
+        }
+
+        let mut sctp: Vec<SctpScanTechnique> = named
+            .iter()
+            .filter_map(|kind| match kind {
+                ScanType::Sctp(technique) => Some(*technique),
+                _ => None,
+            })
+            .collect();
+        sctp.dedup();
+        match (sctp.as_slice(), self.sctp_technique) {
+            ([], _) => {}
+            ([one], None) => self.sctp_technique = Some(*one),
+            ([one], Some(given)) if given == *one => {}
+            _ => {
+                return Err(String::from(
+                    "-s names two SCTP techniques; a probe carries one",
+                ));
+            }
+        }
+
+        if named.contains(&ScanType::Services) {
+            if self.no_service_detection {
+                return Err(String::from(
+                    "-sV asks for service detection and --no-service-detection turns it off",
+                ));
+            }
+            self.service_detection
+                .get_or_insert(ServiceDetection::Probe);
+        }
+
+        if named.contains(&ScanType::Udp) {
+            let with_tcp = !tcp.is_empty();
+            if let Some(ports) = &self.ports {
+                self.ports = Some(tcp_as_udp(ports, with_tcp));
+            } else {
+                let count = self
+                    .top_tcp_ports()
+                    .unwrap_or(crate::command::scan::DEFAULT_TOP_PORTS);
+                self.top_ports_udp.get_or_insert(count);
+                if with_tcp {
+                    self.top_ports.get_or_insert(count);
+                } else {
+                    self.top_ports = None;
+                    self.fast = false;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Lays these flags over a configuration the settings files produced.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
         self.engine.apply_to(config);
@@ -1891,6 +2014,101 @@ pub(crate) fn join_detect_step(arguments: Vec<std::ffi::OsString>) -> Vec<std::f
             }
         })
         .collect()
+}
+
+/// One of nmap's scan types, as `-s` reads its letters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanType {
+    /// A TCP technique: `S`, `F`, `N`, `X`, `A`, `W` or `M`.
+    Tcp(TcpScanTechnique),
+    /// An SCTP technique: `Y` or `Z`.
+    Sctp(SctpScanTechnique),
+    /// `U`: the ports named are UDP ports.
+    Udp,
+    /// `V`: service detection.
+    Services,
+}
+
+/// The scan types one `-s` named, in the order its letters were written.
+#[derive(Debug, Clone)]
+pub(crate) struct ScanTypes(Vec<ScanType>);
+
+/// Reads the letters of one `-s`, refusing the ones zond has no counterpart
+/// for with what to write instead.
+fn scan_types(letters: &str) -> Result<ScanTypes, String> {
+    use SctpScanTechnique as Sctp;
+    use TcpScanTechnique as Tcp;
+
+    let read = letters
+        .chars()
+        .map(|letter| match letter {
+            'S' => Ok(ScanType::Tcp(Tcp::Syn)),
+            'F' => Ok(ScanType::Tcp(Tcp::Fin)),
+            'N' => Ok(ScanType::Tcp(Tcp::Null)),
+            'X' => Ok(ScanType::Tcp(Tcp::Xmas)),
+            'A' => Ok(ScanType::Tcp(Tcp::Ack)),
+            'W' => Ok(ScanType::Tcp(Tcp::Window)),
+            'M' => Ok(ScanType::Tcp(Tcp::Maimon)),
+            'Y' => Ok(ScanType::Sctp(Sctp::Init)),
+            'Z' => Ok(ScanType::Sctp(Sctp::CookieEcho)),
+            'U' => Ok(ScanType::Udp),
+            'V' => Ok(ScanType::Services),
+            'T' => Err(String::from(
+                "-sT has no counterpart: a run without root completes connections already, \
+                 and one with root sends SYNs",
+            )),
+            'n' => Err(String::from(
+                "-sn is `zond discover`, which finds hosts without scanning their ports",
+            )),
+            'O' => Err(String::from(
+                "-sO is --ip-protocols, given the protocol numbers to ask about, as in 1,6,17,132",
+            )),
+            'I' => Err(String::from("-sI is --idle-scan ZOMBIE")),
+            'C' => Err(String::from(
+                "-sC is -d, which runs the checks a scan makes against what it identified",
+            )),
+            other => Err(format!(
+                "'{other}' is not a scan type zond reads: S F N X A W M, Y Z, U or V"
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if read.is_empty() {
+        return Err(String::from("names no scan type: write -sS, -sU or -sV"));
+    }
+    Ok(ScanTypes(read))
+}
+
+/// `ports` with its TCP ports read as UDP ports, and kept as TCP as well when
+/// `keep_tcp` says so: what `-sU` does to a `-p` list, alone or beside a TCP
+/// scan type.
+fn tcp_as_udp(ports: &PortSet, keep_tcp: bool) -> PortSet {
+    use zond_engine::Protocol;
+
+    let ranges = ports.ranges(Protocol::Tcp);
+    if ranges.is_empty() {
+        return ports.clone();
+    }
+    let list = ranges
+        .iter()
+        .map(|range| {
+            if range.start() == range.end() {
+                range.start().to_string()
+            } else {
+                format!("{}-{}", range.start(), range.end())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let written = |qualifier: &str| {
+        PortSet::try_from(format!("{qualifier}:{list}").as_str())
+            .expect("a port set's own ranges, written back, are a port list")
+    };
+    let udp = written("u");
+    if keep_tcp {
+        ports.union(&udp)
+    } else {
+        ports.difference(&written("t")).union(&udp)
+    }
 }
 
 /// Reads a zombie for the idle scan: an address, or `IP:PORT`.
@@ -3983,7 +4201,7 @@ mod tests {
             path(&out),
         ])
         .expect("should parse");
-        cli.fold_files();
+        cli.settle().expect("nothing to contradict");
         let Command::Scan(args) = cli.command else {
             panic!("s is the scan alias");
         };
@@ -4050,6 +4268,55 @@ mod tests {
             Cli::try_parse_from(["zond", "resume", "06G3JC", "--assume-up"]).is_err(),
             "a flag that changes what the job asks is not a resume's to give"
         );
+    }
+
+    /// nmap's scan types reach the flags they stand for, `-sU` reads the port
+    /// list as UDP, and a letter that contradicts a flag, or has no counterpart
+    /// here, is refused rather than quietly reinterpreted.
+    #[test]
+    fn nmaps_scan_types_stand_for_zonds_flags() {
+        use zond_engine::Protocol;
+
+        let settled = |args: &[&str]| {
+            let mut cli = Cli::try_parse_from(args)?;
+            cli.settle()?;
+            let Command::Scan(scan) = cli.command else {
+                panic!("s is the scan alias");
+            };
+            Ok::<_, clap::Error>(scan)
+        };
+
+        let scan = settled(&["zond", "s", "-sSV", "192.0.2.1"]).expect("should settle");
+        assert_eq!(scan.tcp_technique, Some(TcpScanTechnique::Syn));
+        assert_eq!(scan.service_detection, Some(ServiceDetection::Probe));
+        assert_eq!(scan.targets, ["192.0.2.1"]);
+
+        let udp = settled(&["zond", "s", "-sU", "-p", "53,161", "192.0.2.1"]).expect("udp");
+        let ports = udp.ports.expect("a port list");
+        assert!(ports.has_udp(53) && ports.has_udp(161));
+        assert_eq!(ports.len_on(Protocol::Tcp), 0, "-sU alone scans no TCP");
+
+        let both = settled(&["zond", "s", "-sS", "-sU", "-p", "53", "192.0.2.1"]).expect("both");
+        let ports = both.ports.expect("a port list");
+        assert!(ports.has_tcp(53) && ports.has_udp(53));
+
+        let ranked = settled(&["zond", "s", "-sU", "192.0.2.1"]).expect("ranked udp");
+        assert_eq!(
+            ranked.top_ports_udp,
+            Some(crate::command::scan::DEFAULT_TOP_PORTS)
+        );
+        assert_eq!(ranked.top_tcp_ports(), None);
+
+        for refused in [
+            &["zond", "s", "-sSF", "192.0.2.1"][..],
+            &["zond", "s", "-sF", "--tcp-technique", "syn", "192.0.2.1"],
+            &["zond", "s", "-sV", "--no-service-detection", "192.0.2.1"],
+            &["zond", "s", "-sT", "192.0.2.1"],
+            &["zond", "s", "-sn", "192.0.2.1"],
+            &["zond", "s", "-sQ", "192.0.2.1"],
+        ] {
+            assert!(settled(refused).is_err(), "{refused:?} was taken");
+        }
     }
 
     /// `-g 53` is nmap's spelling of a source port, and the one people arrive

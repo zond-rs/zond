@@ -80,7 +80,9 @@ fn main() -> ExitCode {
     // Exits the process itself on a usage error: the one exit path that does
     // not come through the code below.
     let mut cli = Cli::parse_from(cli::join_detect_step(arguments));
-    cli.fold_files();
+    if let Err(error) = cli.settle() {
+        error.exit();
+    }
 
     let outcome = runtime().and_then(|runtime| runtime.block_on(run(cli)));
     match outcome {

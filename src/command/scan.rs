@@ -48,7 +48,7 @@ use crate::target::{self, ScanTargets};
 ///
 /// The same thousand probes, spent on the thousand ports most likely to answer.
 /// See `zond_engine::model::port::catalog` for the ranking and its provenance.
-const DEFAULT_TOP_PORTS: usize = 1000;
+pub(crate) const DEFAULT_TOP_PORTS: usize = 1000;
 
 /// Runs a port scan.
 pub(crate) async fn run(

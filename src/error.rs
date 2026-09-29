@@ -329,6 +329,19 @@ pub(crate) enum Error {
         known: String,
     },
 
+    /// One of nmap's flags that zond has no counterpart for, or has not built
+    /// yet, named with what to write instead.
+    ///
+    /// Refused by name for the reason [`FormatNotBuilt`](Self::FormatNotBuilt)
+    /// is: an unknown-flag error would send somebody looking for a typo.
+    #[error("{spelling} is nmap's, and zond does not take it: {instead}")]
+    NmapFlag {
+        /// The spelling that was given.
+        spelling: String,
+        /// What to write instead, or why there is nothing to.
+        instead: &'static str,
+    },
+
     /// A page was asked for that the listing does not have.
     ///
     /// Refused rather than answered with nothing: an empty listing reads as
@@ -392,6 +405,7 @@ impl Error {
             | Error::MalformedOutputAs { .. }
             | Error::UnknownFormatName { .. }
             | Error::FormatNotBuilt { .. }
+            | Error::NmapFlag { .. }
             | Error::WrongPhase { .. }
             | Error::SpanOnAJob { .. }
             | Error::NotAFold { .. }
