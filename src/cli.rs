@@ -203,13 +203,14 @@ pub(crate) struct DetectionArgs {
     #[arg(long, value_name = "DIR", requires = "trust_key")]
     pub detections_bundle: Option<std::path::PathBuf>,
 
-    /// The public key a bundle must be signed by, as hex.
+    /// The public key file a bundle must be signed by: the `.pub` that
+    /// `detections keygen` writes.
     ///
     /// Obtained from the publisher by some route other than the bundle. A
     /// signature names the key that made it, and trusting that one would accept
     /// anything anybody re-signed, so the key is named here or the bundle is not
     /// loaded.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "FILE")]
     pub trust_key: Option<std::path::PathBuf>,
 
     /// Run only the detections named here, leaving out the built-in corpus.
@@ -294,7 +295,7 @@ pub(crate) struct CatalogueArgs {
     #[arg(long, value_name = "PORT")]
     pub port: Option<u16>,
 
-    /// The order to list them in. `id` by default.
+    /// The order to list them in.
     ///
     /// `class` is loudest first, the order the summary counts them in, so the
     /// detections an operator has to decide about come first. `tier` is the
@@ -1825,14 +1826,18 @@ pub(crate) struct EngineArgs {
     #[arg(long)]
     pub no_dampen: bool,
 
-    /// The fastest discovery may put probes on the wire, in probes per second.
+    /// The fastest the scan may put probes on the wire, in probes per second.
     ///
     /// A coverage control before it is a politeness one: on a policed path a
     /// burst loses most of its first attempt, so a lower rate buys coverage.
+    ///
+    /// The discovery sweep and a UDP port scan run at this pace. A TCP port scan
+    /// paces itself on how fast its targets answer, and this is only its
+    /// ceiling.
     #[arg(long, value_name = "PPS")]
     pub max_probe_rate: Option<NonZeroU32>,
 
-    /// The slowest discovery may fall to, in probes per second.
+    /// The slowest the scan may fall to, in probes per second.
     ///
     /// A floor, not a ceiling: it lifts a scan that pacing has slowed below it,
     /// and never speeds one past what `--max-probe-rate` allows. For a link whose
@@ -2430,7 +2435,7 @@ pub(crate) struct OutputArgs {
     #[arg(long = "colour", alias = "color", value_name = "WHEN", global = true)]
     pub colour: Option<ColourChoice>,
 
-    /// Show the evidence behind every verdict.
+    /// Show which packet settled each port, and who sent a refusal.
     ///
     /// A port says which packet settled it, `SYN/ACK`, `RST`, `ICMP prohibited`
     /// or `no reply`, with the TTL it carried and the round trip it took. A host
@@ -2489,7 +2494,7 @@ pub(crate) struct OutputArgs {
     #[arg(long = "remedy", global = true)]
     pub remedy: bool,
 
-    /// Show what each detection saw.
+    /// Show the bytes each finding was drawn from.
     ///
     /// A finding hangs the bytes it was drawn from underneath it: which headers
     /// were absent, which version the banner gave back. It is what separates a
