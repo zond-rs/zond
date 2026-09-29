@@ -31,7 +31,8 @@
 //! a scan run with `sudo` share one copy. There is no flag for it, as there is
 //! none for the journal.
 
-use zond_engine::fetch::{self, Client, Outcome as Fetched, Resource, Store};
+use zond_engine::fetch::advisory::Dataset;
+use zond_engine::fetch::{self, Client, Derivation, Outcome as Fetched, Resource, Store};
 
 use crate::diagnostics::Verbosity;
 use crate::error::Error;
@@ -95,7 +96,39 @@ async fn update(client: &Client, store: &Store) -> Outcome {
         }
     }
 
-    concluded(failed, resources.len())
+    // Then what a scan reads: each distributor's feeds converted into its
+    // dataset, which is a minute of work for Ubuntu's and done only when a
+    // feed changed or the engine did. A feed that failed above leaves the
+    // copy it replaces, so its dataset still converts from what is stored.
+    for dataset in Dataset::ALL {
+        let derived = dataset.derived();
+        let id = derived.id().to_owned();
+        progress::downloading(&id, 0, None);
+        let root = store.root().to_path_buf();
+        let converted =
+            tokio::task::spawn_blocking(move || dataset.convert(&Store::new(root))).await;
+        match converted {
+            Ok(Ok(derivation)) => {
+                let (metadata, word) = match &derivation {
+                    Derivation::Built(metadata) => (metadata, "converted"),
+                    Derivation::Current(metadata) => (metadata, "unchanged"),
+                    _ => continue,
+                };
+                tracing::info!("{id:<WIDTH$} {:>8}  {word}", field::bytes(metadata.size));
+            }
+            Ok(Err(e)) => {
+                failed += 1;
+                tracing::warn!("{id:<WIDTH$} failed: {e}");
+                tracing::info!(verbosity = 1, "{id}: {}", chain(&e));
+            }
+            Err(e) => {
+                failed += 1;
+                tracing::warn!("{id:<WIDTH$} failed: {e}");
+            }
+        }
+    }
+
+    concluded(failed, resources.len() + Dataset::ALL.len())
 }
 
 /// How wide the resource column is: the longest id the engine registers
