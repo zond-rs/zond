@@ -70,8 +70,8 @@ administrator rights.
 sudo zond discover lan                              # sweep this host's own segment
 sudo zond scan 10.0.0.0/24 -d                       # ports, services, and findings
 sudo zond scan 10.0.0.1 -p- -O --tls-enum           # every port, the OS, and what TLS accepts
-sudo zond scan lan --top-ports 100 --pipe           # a quick pass, one record per line
-sudo zond scan 10.0.0.0/16 --exclude 10.0.5.0/24
+sudo zond scan lan -F --pipe                        # a quick pass, one record per line
+sudo zond scan 10.0.0.0/16 -x 10.0.5.0/24
 sudo zond listen %en0 --for 10m                     # watch a link, send nothing
 
 zond scan --resume 06G3JC                           # continue one that stopped

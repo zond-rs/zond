@@ -299,10 +299,12 @@ fn typed_ports(args: &ScanArgs) -> Option<(PortSet, &'static str)> {
     if let Some(ports) = args.ports.clone() {
         return Some((ports, "--ports"));
     }
-    if args.top_ports.is_some() || args.top_ports_udp.is_some() {
-        let tcp = PortSet::top_tcp(args.top_ports.unwrap_or(0));
+    if args.top_tcp_ports().is_some() || args.top_ports_udp.is_some() {
+        let tcp = PortSet::top_tcp(args.top_tcp_ports().unwrap_or(0));
         let udp = PortSet::top_udp(args.top_ports_udp.unwrap_or(0));
-        let flag = if args.top_ports.is_some() {
+        let flag = if args.fast {
+            "-F"
+        } else if args.top_ports.is_some() {
             "--top-ports"
         } else {
             "--top-ports-udp"

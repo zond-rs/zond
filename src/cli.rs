@@ -1312,7 +1312,7 @@ pub(crate) struct ScanArgs {
         short = 'p',
         long,
         value_name = "PORTS",
-        conflicts_with_all = ["top_ports", "top_ports_udp"],
+        conflicts_with_all = ["top_ports", "top_ports_udp", "fast"],
         value_parser = port_set,
         // `-p-` is the spelling everybody arrives with, and without this clap
         // reads the `-` as the start of another flag and refuses it.
@@ -1344,6 +1344,15 @@ pub(crate) struct ScanArgs {
         conflicts_with = "ports"
     )]
     pub top_ports: Option<usize>,
+
+    /// Probe the hundred TCP ports most likely to be listening: `--top-ports
+    /// 100`, spelled the way nmap spells its fast scan.
+    #[arg(
+        help_heading = "Ports",
+        short = 'F',
+        conflicts_with_all = ["ports", "top_ports"]
+    )]
+    pub fast: bool,
 
     /// Probe the N UDP ports most likely to be listening.
     ///
@@ -1495,6 +1504,7 @@ pub(crate) struct ScanArgs {
         help_heading = "Identification",
         hide_short_help = true,
         long,
+        visible_alias = "cve-catalog",
         value_name = "PATH"
     )]
     pub cve_catalogue: Option<std::path::PathBuf>,
@@ -1575,7 +1585,12 @@ pub(crate) struct ScanArgs {
     /// and what it answers with, tells a stateful filter from a stateless one
     /// and a middlebox from the host itself. Needs root. Records its conclusion
     /// on the host rather than opening or closing any port.
-    #[arg(help_heading = "Techniques", hide_short_help = true, long)]
+    #[arg(
+        help_heading = "Techniques",
+        hide_short_help = true,
+        long,
+        visible_alias = "characterize"
+    )]
     pub characterise: bool,
 
     /// Probe printers' raw-print ports, TCP 9100 to 9107, like any other port.
@@ -1654,7 +1669,16 @@ pub(crate) struct ScanArgs {
     pub take_over: bool,
 }
 
+/// How many of the likeliest TCP ports `-F` probes.
+pub(crate) const FAST_TOP_PORTS: usize = 100;
+
 impl ScanArgs {
+    /// How many of the likeliest TCP ports were asked for, by `--top-ports` or
+    /// by `-F`, which is a count spelled as a letter.
+    pub(crate) fn top_tcp_ports(&self) -> Option<usize> {
+        self.top_ports.or(self.fast.then_some(FAST_TOP_PORTS))
+    }
+
     /// Lays these flags over a configuration the settings files produced.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
         self.engine.apply_to(config);
@@ -1936,7 +1960,7 @@ const SCAN_SHORT_HELP: &str = "\
 Examples:
   sudo zond scan 192.168.0.0/24
   sudo zond s 10.0.0.1 -p-                      every port there is
-  sudo zond s lan --top-ports 100 --pipe        a quick pass, one record per line
+  sudo zond s lan -F --pipe                     a quick pass, one record per line
   sudo zond s 10.0.0.0/24 -p 22,443 -o report.html
 
 --help also lists the flags for tuning, techniques and evasion, every form a
@@ -2026,7 +2050,13 @@ pub(crate) struct ScopeArgs {
     /// the segment if that matters.
     ///
     /// Adds to `exclude` in engine.toml rather than replacing it.
-    #[arg(help_heading = "Targets", long, value_name = "TARGET", action = ArgAction::Append)]
+    #[arg(
+        help_heading = "Targets",
+        short = 'x',
+        long,
+        value_name = "TARGET",
+        action = ArgAction::Append
+    )]
     pub exclude: Vec<String>,
 
     /// Send no DNS traffic, and name hosts from the hosts file alone.
@@ -2122,7 +2152,12 @@ pub(crate) struct EngineArgs {
     /// The discovery sweep and a UDP port scan run at this pace. A TCP port scan
     /// paces itself on how fast its targets answer, and this is only its
     /// ceiling.
-    #[arg(help_heading = "Speed", long, value_name = "PPS")]
+    #[arg(
+        help_heading = "Speed",
+        long,
+        visible_alias = "max-rate",
+        value_name = "PPS"
+    )]
     pub max_probe_rate: Option<NonZeroU32>,
 
     /// The slowest the scan may fall to, in probes per second.
@@ -2135,6 +2170,7 @@ pub(crate) struct EngineArgs {
         help_heading = "Speed",
         hide_short_help = true,
         long,
+        visible_alias = "min-rate",
         value_name = "PPS"
     )]
     pub min_probe_rate: Option<NonZeroU32>,
@@ -2184,7 +2220,7 @@ pub(crate) struct EngineArgs {
     /// On Linux a run without root needs kernel 5.7 or later to pin its
     /// connections; an older kernel refuses them, and their targets are
     /// reported unreachable rather than scanned through the tunnel.
-    #[arg(help_heading = "Techniques", long, value_name = "NAME")]
+    #[arg(help_heading = "Techniques", short = 'e', long, value_name = "NAME")]
     pub send_interface: Option<String>,
 
     /// How far to go identifying the system behind each host.
@@ -2292,6 +2328,7 @@ pub(crate) struct EvasionArgs {
     /// than empty ones, which a defender can rule out.
     #[arg(
         hide_short_help = true,
+        short = 'D',
         long = "decoy",
         value_name = "IP",
         value_delimiter = ',',
@@ -2919,7 +2956,7 @@ pub(crate) struct OutputArgs {
     /// perfectly well, so only `TERM=dumb` takes the tree away.
     #[arg(
         long = "colour",
-        alias = "color",
+        visible_alias = "color",
         value_name = "WHEN",
         global = true,
         value_parser = colour()
@@ -3631,6 +3668,43 @@ mod tests {
         assert!(config.evasion.bad_tcp_checksum);
         // Nothing touched the source port, so it stays unset rather than zeroed.
         assert_eq!(config.evasion.source_port, None);
+    }
+
+    /// The short flags added for the flags scope-bound work types all day, and
+    /// nmap's names for the probe rates, reach the fields their long names do.
+    #[test]
+    fn the_short_spellings_reach_their_flags() {
+        let cli = Cli::try_parse_from([
+            "zond",
+            "s",
+            "192.0.2.1",
+            "-x",
+            "192.0.2.9",
+            "-e",
+            "en0",
+            "-D",
+            "192.0.2.7",
+            "--max-rate",
+            "50",
+            "--min-rate",
+            "5",
+            "-F",
+        ])
+        .expect("should parse");
+        let Command::Scan(args) = cli.command else {
+            panic!("s is the scan alias");
+        };
+        assert_eq!(args.engine.scope.exclude, ["192.0.2.9"]);
+        assert_eq!(args.engine.send_interface.as_deref(), Some("en0"));
+        assert_eq!(args.engine.evasion.decoys.len(), 1);
+        assert_eq!(args.engine.max_probe_rate.map(NonZeroU32::get), Some(50));
+        assert_eq!(args.engine.min_probe_rate.map(NonZeroU32::get), Some(5));
+        assert_eq!(args.top_tcp_ports(), Some(FAST_TOP_PORTS));
+
+        assert!(
+            Cli::try_parse_from(["zond", "s", "192.0.2.1", "-F", "-p", "22"]).is_err(),
+            "-F and a port list name two different sets of ports"
+        );
     }
 
     /// `-g 53` is nmap's spelling of a source port, and the one people arrive
