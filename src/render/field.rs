@@ -129,6 +129,23 @@ pub(crate) fn span(length: Duration) -> String {
     }
 }
 
+/// A count of bytes as a person reads one, in decimal units, as a download's
+/// size is quoted, to one decimal place above a thousand.
+pub(crate) fn bytes(count: u64) -> String {
+    const UNITS: [&str; 4] = ["kB", "MB", "GB", "TB"];
+    if count < 1000 {
+        return format!("{count} B");
+    }
+    #[allow(clippy::cast_precision_loss)] // A display to one decimal place.
+    let mut value = count as f64 / 1000.0;
+    let mut unit = 0;
+    while value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
 /// `text`, or [`UNKNOWN`] where there is none.
 pub(crate) fn or_dash(text: &str) -> &str {
     if text.is_empty() { UNKNOWN } else { text }
@@ -3463,6 +3480,7 @@ mod tests {
     }
 
     use super::*;
+
     use crate::render::test_support::host;
 
     use std::net::Ipv4Addr;
@@ -4898,5 +4916,16 @@ mod tests {
         report.merge(sweep);
 
         assert_eq!(skipped_as_down(&report), 3, "the scan's own three");
+    }
+
+    /// The feeds are tens of megabytes, and the line gives the size as a
+    /// download is quoted.
+    #[test]
+    fn a_size_reads_as_a_download_is_quoted() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(999), "999 B");
+        assert_eq!(bytes(1000), "1.0 kB");
+        assert_eq!(bytes(45_612_345), "45.6 MB");
+        assert_eq!(bytes(2_500_000_000), "2.5 GB");
     }
 }

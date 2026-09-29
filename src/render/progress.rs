@@ -12,6 +12,13 @@
 //! ⠹  ━━━━━━━━──────── 50%  12 open ports on 3 hosts · probing ports
 //! ```
 //!
+//! `zond update` draws the same line for a download, the bar filled from
+//! what has arrived of what the server said it would send:
+//!
+//! ```text
+//! ⠹  ━━━━━━━━────────  50%  advisories/ubuntu-vex · 34.0 MB of 67.9 MB
+//! ```
+//!
 //! One line, held at the bottom of standard error and rewritten in place while a
 //! scan runs. A sweep of a `/16` can go a minute without a single reply, and a
 //! program that says nothing for a minute is a program somebody reaches for
@@ -86,6 +93,7 @@ use std::time::{Duration, Instant};
 
 use zond_engine::{Progress, Stage};
 
+use crate::render::field;
 use crate::render::style::Style;
 use crate::render::terminal::{self, Stream};
 
@@ -183,6 +191,23 @@ pub(crate) enum Counting {
     /// question about: nine open ports across one host and across nine are
     /// different findings, and the scan already knows which.
     Ports,
+    /// A download: what has arrived of one resource, which [`downloading`]
+    /// names.
+    ///
+    /// No tips turn beside it. They are about scanning, and somebody updating
+    /// feeds is waiting on a figure that moves, not reading advice.
+    Bytes,
+}
+
+/// What a download line says: which resource, and how much of it is in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Transfer {
+    /// The resource, as the lines that report it name it.
+    label: String,
+    /// Bytes arrived so far.
+    received: u64,
+    /// What the server said it would send, where it said.
+    total: Option<u64>,
 }
 
 /// Which of the line's two halves is up.
@@ -246,6 +271,8 @@ struct Live {
     tip: usize,
     /// Whether there is a line on screen to take back.
     shown: bool,
+    /// The download under way, for a line counting [`Counting::Bytes`].
+    transfer: Transfer,
 }
 
 /// The one line, or none.
@@ -296,6 +323,7 @@ pub(crate) fn start(counting: Counting, style: Style) {
         frame: 0,
         tip,
         shown: false,
+        transfer: Transfer::default(),
     });
     drop(live);
 
@@ -329,6 +357,24 @@ pub(crate) fn seen(hosts: usize, open: usize) {
     {
         live.hosts = hosts;
         live.open = open;
+    }
+}
+
+/// How far the download of `label` has got: `received` bytes, of `total`
+/// where the server said.
+///
+/// Called for every chunk as it arrives, and with nothing received as each
+/// resource is asked for, so the line names the one being waited on before a
+/// byte of it is in. A no-op when no line is running.
+pub(crate) fn downloading(label: &str, received: u64, total: Option<u64>) {
+    if let Some(mut live) = held()
+        && let Some(live) = live.as_mut()
+    {
+        if live.transfer.label != label {
+            live.transfer.label = label.to_string();
+        }
+        live.transfer.received = received;
+        live.transfer.total = total;
     }
 }
 
@@ -518,7 +564,14 @@ fn line(live: &mut Live, plan: Option<&Progress>) -> String {
     let style = live.style;
     let spinner = style.accent(FRAMES[live.frame]);
 
-    match measured(style, plan) {
+    let measured = match live.counting {
+        Counting::Bytes => live
+            .transfer
+            .total
+            .map(|total| bar(style, live.transfer.received, total)),
+        Counting::Hosts | Counting::Ports => measured(style, plan),
+    };
+    match measured {
         Some(bar) => format!("{spinner}  {bar}  {}", said(live, plan)),
         None => format!("{spinner}  {}", said(live, plan)),
     }
@@ -600,6 +653,9 @@ fn scaled(settled: u64, planned: u64, range: u64) -> u64 {
 /// line that comes up and never changes again — reads exactly like a scan that
 /// finished in the first two seconds.
 fn said(live: &mut Live, plan: Option<&Progress>) -> String {
+    if live.counting == Counting::Bytes {
+        return transferred(live.style, &live.transfer);
+    }
     if live.turned_at.elapsed() >= live.saying.window() {
         turn(live);
     }
@@ -629,6 +685,7 @@ fn counted(live: &Live, plan: Option<&Progress>) -> String {
             style.faint("on"),
             tally(style, live.hosts, "host", "hosts")
         ),
+        Counting::Bytes => return transferred(style, &live.transfer),
     };
 
     match plan {
@@ -664,6 +721,28 @@ fn doing(stage: Stage) -> String {
     .to_owned()
 }
 
+/// Which resource is coming in, and how much of it has.
+///
+/// The name alone until the first byte, which is the wait on the server's
+/// answer, and one that says nothing changed never gets past it.
+fn transferred(style: Style, transfer: &Transfer) -> String {
+    let arrived = match (transfer.received, transfer.total) {
+        (0, _) => return style.plain(&transfer.label),
+        (received, Some(total)) => format!(
+            "{} {} {}",
+            style.strong(&field::bytes(received)),
+            style.faint("of"),
+            style.plain(&field::bytes(total))
+        ),
+        (received, None) => style.strong(&field::bytes(received)),
+    };
+    format!(
+        "{} {} {arrived}",
+        style.plain(&transfer.label),
+        style.faint("·")
+    )
+}
+
 /// A figure and the word for it.
 fn tally(style: Style, count: usize, singular: &str, plural: &str) -> String {
     let word = if count == 1 { singular } else { plural };
@@ -695,6 +774,7 @@ mod tests {
             frame: 0,
             tip: 0,
             shown: false,
+            transfer: Transfer::default(),
         }
     }
 
@@ -1124,6 +1204,58 @@ mod tests {
         assert!(widest.chars().count() <= room, "{widest}");
     }
 
+    /// A download's line says which resource and how much of it is in, with
+    /// the bar filled from what the server said it would send, and never
+    /// turns to a tip about scanning however long the download takes.
+    #[test]
+    fn a_download_line_counts_bytes_and_never_turns() {
+        let line_of = |received, total| {
+            let mut downloading = aged(
+                live(0, Counting::Bytes, Saying::Count),
+                INSIGHT_WINDOW + COUNT_WINDOW,
+            );
+            downloading.transfer = Transfer {
+                label: "advisories/ubuntu-vex".into(),
+                received,
+                total,
+            };
+            line(&mut downloading, None)
+        };
+
+        assert_eq!(
+            line_of(34_000_000, Some(67_900_000)),
+            format!(
+                "{}  {}  advisories/ubuntu-vex · 34.0 MB of 67.9 MB",
+                FRAMES[0],
+                bar(Style::bare(), 34_000_000, 67_900_000)
+            )
+        );
+        assert_eq!(
+            line_of(5_000, None),
+            format!("{}  advisories/ubuntu-vex · 5.0 kB", FRAMES[0]),
+            "no size from the server, no bar"
+        );
+        assert_eq!(
+            line_of(0, None),
+            format!("{}  advisories/ubuntu-vex", FRAMES[0]),
+            "waiting on the answer names the resource alone"
+        );
+    }
+
+    /// The widest download line, the longest id at the largest sizes the
+    /// ceilings allow, fits beside a full bar in a narrow terminal.
+    #[test]
+    fn a_download_line_fits_a_narrow_terminal() {
+        let mut widest = live(0, Counting::Bytes, Saying::Count);
+        widest.transfer = Transfer {
+            label: "advisories/debian-tracker".into(),
+            received: 335_000_000,
+            total: Some(335_000_000),
+        };
+        let width = line(&mut widest, None).chars().count();
+        assert!(width < 80, "a download line is {width} columns");
+    }
+
     /// Nothing is drawn where there is nothing to draw on, and the calls that
     /// take the line back are safe to make whether or not one is running. That
     /// is what lets every writer on this stream call `clear` unconditionally.
@@ -1133,6 +1265,7 @@ mod tests {
 
         clear();
         seen(1, 1);
+        downloading("advisories/ubuntu-osv", 1, Some(2));
         // Including the key: `input` reads it wherever stdin is a terminal, and
         // that is not the same question as whether stderr is one.
         advance();
