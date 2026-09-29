@@ -646,17 +646,16 @@ pub(crate) struct SignArgs {
 fn detections_help() -> String {
     "\
 Examples:
-  zond detections                             the first page of the corpus this build ships
-  zond detections --all                       every one of them
-  zond detections --search redis              the ones about Redis, by id or by title
-  zond detections --class exploit --class dos the loud ones, which a scan will not run
-  zond detections --service http --sort class what is written for HTTP, loudest first
-  zond detections --load ./checks             compile a directory and list what is in it
-  zond detections --load ./checks --no-builtin
-                                              just yours, without the built-in corpus
-  zond detections keygen ~/.zond/acme         a key to publish under
+  zond detections                               the first page of the corpus this build ships
+  zond detections --all                         every one of them
+  zond detections --search redis                the ones about Redis, by id or by title
+  zond detections --class exploit --class dos   the loud ones, which a scan will not run
+  zond detections --service http --sort class   what is written for HTTP, loudest first
+  zond detections --load ./checks               compile a directory and list what is in it
+  zond detections --load ./checks --no-builtin  just yours, without the built-in corpus
+  zond detections keygen ~/.zond/acme           a key to publish under
   zond detections sign ./checks --out ./acme-1 --key ~/.zond/acme --name acme
-                                              a bundle others can load
+                                                a bundle others can load
 
 What it does:
   Reads the detections, validates and compiles every one of them, and prints
@@ -4316,6 +4315,91 @@ mod tests {
             &["zond", "s", "-sQ", "192.0.2.1"],
         ] {
             assert!(settled(refused).is_err(), "{refused:?} was taken");
+        }
+    }
+
+    /// A short letter means one flag wherever it appears, so a hand that
+    /// learned it on one command is not surprised on the next. `-n` is the
+    /// one exception, written down: it is `--no-dns` on the commands that send
+    /// probes and a count or a dry run on the ones that list and prune, and no
+    /// command has both.
+    #[test]
+    fn a_short_letter_means_one_flag_everywhere() {
+        fn walk(
+            command: &clap::Command,
+            seen: &mut std::collections::BTreeMap<char, std::collections::BTreeSet<String>>,
+        ) {
+            for arg in command.get_arguments() {
+                if let Some(short) = arg.get_short() {
+                    let name = arg
+                        .get_long()
+                        .map_or_else(|| arg.get_id().to_string(), str::to_owned);
+                    seen.entry(short).or_default().insert(name);
+                }
+            }
+            for subcommand in command.get_subcommands() {
+                walk(subcommand, seen);
+            }
+        }
+
+        let mut seen = std::collections::BTreeMap::new();
+        walk(&Cli::command(), &mut seen);
+        for (short, longs) in seen {
+            if short == 'n' {
+                let expected: std::collections::BTreeSet<String> =
+                    ["no-dns", "limit", "dry-run"].map(str::to_owned).into();
+                assert_eq!(longs, expected, "-n took on another meaning");
+                continue;
+            }
+            assert_eq!(longs.len(), 1, "-{short} means {longs:?}");
+        }
+    }
+
+    /// Every example the help and the README show is one the parser takes, so
+    /// an example is never the thing that teaches a flag wrong.
+    #[test]
+    fn every_example_parses() {
+        fn examples_in(text: &str) -> Vec<String> {
+            text.lines()
+                .map(str::trim_start)
+                .map(|line| line.strip_prefix("sudo ").unwrap_or(line))
+                .filter(|line| line.starts_with("zond "))
+                .map(|line| {
+                    let command = line.split("  ").next().unwrap_or(line);
+                    command
+                        .split(" #")
+                        .next()
+                        .unwrap_or(command)
+                        .trim()
+                        .to_owned()
+                })
+                .collect()
+        }
+
+        let mut texts = vec![include_str!("../README.md").to_owned()];
+        let mut command = Cli::command();
+        command.build();
+        let mut pending = vec![command];
+        while let Some(command) = pending.pop() {
+            for help in [command.get_after_help(), command.get_after_long_help()]
+                .into_iter()
+                .flatten()
+            {
+                texts.push(help.to_string());
+            }
+            pending.extend(command.get_subcommands().cloned());
+        }
+
+        let examples: Vec<String> = texts.iter().flat_map(|text| examples_in(text)).collect();
+        assert!(examples.len() > 20, "found only {examples:?}");
+        for example in examples {
+            let arguments =
+                crate::nmap::rewrite(example.split_whitespace().map(std::ffi::OsString::from))
+                    .unwrap_or_else(|error| panic!("`{example}`: {error}"));
+            let mut cli = Cli::try_parse_from(join_detect_step(arguments))
+                .unwrap_or_else(|error| panic!("`{example}` does not parse: {error}"));
+            cli.settle()
+                .unwrap_or_else(|error| panic!("`{example}` does not settle: {error}"));
         }
     }
 
