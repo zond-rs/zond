@@ -256,8 +256,9 @@ fn show(
     out: &mut dyn Write,
     style: Style,
 ) -> Result<Outcome, Error> {
+    let id = newest_if_latest(id)?;
     let listing = read()?;
-    let entry = find_in(&listing, id)?;
+    let entry = find_in(&listing, &id)?;
 
     render::show(entry, presentation, out, style)?;
     Ok(Outcome::Complete)

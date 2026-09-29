@@ -1160,6 +1160,24 @@ fn a_resumed_job_names_the_record_apart_from_what_it_scans() {
     assert_eq!(said.matches(id.as_str()).count(), 1, "{said}");
 }
 
+/// `journal show` takes `latest` as `read` and `resume` do, so the three name
+/// a record the same way.
+#[test]
+fn the_newest_record_is_shown_as_latest() {
+    let home = config_home("journal-show-latest");
+
+    let scan = zond_in(&home, &["-q", "s", "::1", "-n", "-p", "1"]);
+    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
+    let id = recorded_ids(&home)
+        .into_iter()
+        .next()
+        .expect("a listed scan");
+
+    let shown = zond_in(&home, &["journal", "show", "latest"]);
+    assert_eq!(status(&shown), 0, "{}", stderr(&shown));
+    assert!(stdout(&shown).contains(&id), "{}", stdout(&shown));
+}
+
 /// One scan can be deleted by name, shortened to any prefix that names only it.
 #[test]
 fn a_named_scan_can_be_deleted() {

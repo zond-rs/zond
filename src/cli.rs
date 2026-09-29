@@ -1149,7 +1149,8 @@ pub(crate) enum JournalCommand {
     /// The record, not the findings. `zond read <ID>` prints what the scan
     /// found.
     Show {
-        /// Which one, as `zond journal` lists it.
+        /// Which one, as `zond journal` lists it: its id, any prefix of it
+        /// that names only one record, or `latest`.
         #[arg(value_name = "ID")]
         id: String,
     },
