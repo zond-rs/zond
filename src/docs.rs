@@ -88,9 +88,11 @@ pub(crate) fn generate(directory: &Path) -> Result<Outcome, Error> {
     std::fs::create_dir_all(&completions)?;
 
     let mut command = Cli::command()
-        // This machine's settings paths are what `zond --help` prints; a page
-        // installed for everybody names them the way a reader finds them.
-        .after_long_help(crate::cli::GETTING_STARTED);
+        // This machine's settings and journal paths are what `zond --help` and
+        // `--version` print; a page installed for everybody names them the way
+        // a reader finds them, under FILES.
+        .after_long_help(crate::cli::GETTING_STARTED)
+        .long_version(env!("CARGO_PKG_VERSION"));
     command.build();
     pages(&command, &man, true)?;
     for topic in TOPICS {

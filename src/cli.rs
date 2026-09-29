@@ -49,6 +49,7 @@ use crate::settings::Risk;
 #[command(
     name = "zond",
     version,
+    long_version = long_version(),
     about = "Find what is on a network.",
     long_about = "Find what is on a network.\n\n\
         Zond finds which hosts on a network are alive, which of their ports are \
@@ -144,6 +145,33 @@ fn target_list(path: &str) -> Result<TargetList, String> {
         return Err("names no targets".to_owned());
     }
     Ok(TargetList(targets))
+}
+
+/// What `zond --version` prints after the name: the version, and what a report
+/// of a problem is asked for beside it. `-V` prints the version alone.
+///
+/// Only what is known without asking the system anything, since it is drawn
+/// up on every run: whether raw probes are open is said by the first line of
+/// a scan instead.
+fn long_version() -> String {
+    let shown = |found: Option<std::path::PathBuf>| {
+        found.map_or_else(
+            || String::from("(no home directory)"),
+            |path| path.display().to_string(),
+        )
+    };
+    format!(
+        "{}\nengine    {}\nplatform  {} {}\nsettings  {}\njournal   {}",
+        env!("CARGO_PKG_VERSION"),
+        zond_engine::report::ENGINE_VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        shown(
+            crate::settings::user_path()
+                .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        ),
+        shown(zond_engine::journal::paths::root()),
+    )
 }
 
 /// What `zond -h` ends with: the handful of commands a first run is made of.
