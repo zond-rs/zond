@@ -34,7 +34,7 @@ use zond_engine::model::host::protocol::{IpProtocolState, ip_protocol_name};
 use zond_engine::model::host::status::{StatusProtocol, StatusReason};
 use zond_engine::model::ip::scoped::ScopedIp;
 use zond_engine::model::ip::set::IpSet;
-use zond_engine::model::port::discovery::{Discovery, ScanResponse};
+use zond_engine::model::port::discovery::ScanResponse;
 use zond_engine::model::tls::Interruption;
 use zond_engine::record::wire;
 use zond_engine::report::{ScanKind, ScanPhase};
@@ -629,7 +629,7 @@ fn spoken_filtering(conclusion: Filtering) -> &'static str {
 ///
 /// From `--ip-protocols`: a datagram per protocol, and what came back. Each line
 /// is the number, the protocol's name where this build knows one, and the
-/// verdict — `accepted`, `filtered`, `open|filtered`. Ordered by number, so two
+/// verdict — `accepted`, `blocked`, `open|no-reply`. Ordered by number, so two
 /// runs draw the same list. Empty where none were asked.
 pub(crate) fn ip_protocols(host: &Host) -> Vec<String> {
     host.ip_protocols()
@@ -648,14 +648,14 @@ pub(crate) fn ip_protocols(host: &Host) -> Vec<String> {
 ///
 /// The states mirror a port's, and read as one: a stack that answered accepts
 /// the protocol, one that sent an unreachable does not, and silence is the same
-/// open-or-filtered ambiguity a UDP port has. A state a newer engine records and
+/// open-or-no-reply ambiguity a UDP port has. A state a newer engine records and
 /// this build has no word for falls back to the wire spelling.
 fn spoken_ip_protocol_state(state: IpProtocolState) -> &'static str {
     match state {
         IpProtocolState::Open => "accepted",
         IpProtocolState::Closed => "not accepted",
-        IpProtocolState::Filtered => "filtered",
-        IpProtocolState::OpenFiltered => "open|filtered",
+        IpProtocolState::Blocked => "blocked",
+        IpProtocolState::OpenOrNoReply => "open|no-reply",
         IpProtocolState::Unasked => "not asked",
         other => wire::ip_protocol_state_name(other),
     }
@@ -850,15 +850,16 @@ const NO_SERVICE: &str = "???";
 
 /// Whether a port's verdict is worth a line of its own.
 ///
-/// The most filtered ports listed one per line before the rest are counted.
+/// The most ports of one unreached state, `blocked` or `no reply`, listed one
+/// per line before the rest are counted.
 ///
 /// Enough that an ordinary firewall policy, meaning a handful of refused
 /// services, still reads in full. Few enough that a host refusing everything
 /// does not bury the open ports that are the actual result.
-const MAX_LISTED_FILTERED: usize = 12;
+const MAX_LISTED_UNREACHED: usize = 12;
 
 /// The most unasked ports listed one per line before the rest are counted.
-/// Fewer than [`MAX_LISTED_FILTERED`]: which ports went unasked is arbitrary per
+/// Fewer than [`MAX_LISTED_UNREACHED`]: which ports went unasked is arbitrary per
 /// run, so the count is the finding and the numbers stay in the report.
 const MAX_LISTED_UNASKED: usize = 6;
 
@@ -1033,10 +1034,10 @@ impl PortDetail {
 /// The packet that settled a port's state, and what it carried.
 ///
 /// The claim under every verdict, and until `--reason` there was no way to see
-/// it: a port reported `filtered` because a firewall said so and one reported
-/// `filtered` because nothing came back are the same word and different
-/// findings. `ICMP prohibited` is somebody's policy; `no reply` is an absence,
-/// and an absence is only as good as the scan that waited for it.
+/// it: a `blocked` port says a refusal arrived, and this says which, a
+/// prohibition from the host or an unreachable from the path. `ICMP
+/// prohibited` is somebody's policy; `no reply` is an absence, and an absence
+/// is only as good as the scan that waited for it.
 ///
 /// `None` for a port carrying no telemetry, which is what a report from a
 /// scanner that recorded none reads as. Nothing is invented to fill the line.
@@ -1184,7 +1185,7 @@ pub(crate) struct PortListing {
 /// Which ports a listing shows, and what it says about the rest.
 ///
 /// The selection rules live here, once, because they are the part that carries
-/// judgement: what a wall of `filtered` means, and what an outrun scan is
+/// judgement: what a wall of `no reply` means, and what an outrun scan is
 /// allowed to claim. Two presentations disagreeing about that would be two
 /// different answers to the same scan.
 struct Selection<'a> {
@@ -1205,33 +1206,36 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
 
     shown.sort_by_key(|port| (port.state() != PortState::Open, port.number()));
 
-    // A wall of filtered ports says one thing, not six hundred of them.
+    // A wall of unreached ports says one thing, not six hundred of them.
     //
-    // Three filtered ports on a host is a firewall policy worth reading line by
-    // line. Six hundred is a different fact entirely: the host is refusing the
-    // whole range, or the scan lost its replies. Printing them individually
-    // buries the two open ports that are the actual result. Measured, on a
-    // consumer router probed too fast: nine hundred lines of `filtered`, with
-    // `80/tcp` among them.
+    // Three silent or refused ports on a host is a firewall policy worth
+    // reading line by line. Six hundred is a different fact entirely: the host
+    // is refusing the whole range, or the scan lost its replies. Printing them
+    // individually buries the two open ports that are the actual result.
+    // Measured, on a consumer router probed too fast: nine hundred lines of
+    // silence, with `80/tcp` among them.
     //
-    // The first few are kept rather than none, because *which* ports were
-    // filtered still matters when the list starts at 22 and 23.
+    // The first few are kept rather than none, because *which* ports went
+    // unreached still matters when the list starts at 22 and 23. Blocked and
+    // silent ports are counted apart, since a refusal and a silence are
+    // different findings about the same wall.
     //
-    // A scan that could not tell filtered from lost has no filtered ports to
-    // report, only ports it failed to reach. Listing them anyway is what turned
-    // a saturated radio into two hundred and forty claims about somebody's
-    // firewall. See `silence_means_something`.
+    // A scan that could not tell a dropped probe from a lost one has no silent
+    // ports to report, only ports it failed to reach. Listing them anyway is
+    // what turned a saturated radio into two hundred and forty claims about
+    // somebody's firewall. See `silence_means_something`. A blocked port stays:
+    // the pacing that made this scan's quiet unreadable has no bearing on a
+    // refusal that arrived.
     let unreachable = if silence_means_something {
         0
     } else {
         let before = shown.len();
-        // Silence goes, an ICMP refusal stays: the pacing that made this scan's
-        // quiet unreadable has no bearing on an error that arrived.
-        shown.retain(|port| port.state() != PortState::Filtered || refused_in_words(port));
+        shown.retain(|port| port.state() != PortState::NoReply);
         before - shown.len()
     };
 
-    let filtered_over_limit = elide_beyond(&mut shown, PortState::Filtered, MAX_LISTED_FILTERED);
+    let blocked_over_limit = elide_beyond(&mut shown, PortState::Blocked, MAX_LISTED_UNREACHED);
+    let silent_over_limit = elide_beyond(&mut shown, PortState::NoReply, MAX_LISTED_UNREACHED);
     let unasked_over_limit = elide_beyond(&mut shown, PortState::Unasked, MAX_LISTED_UNASKED);
 
     let mut notes = Vec::new();
@@ -1246,10 +1250,17 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
         notes.push(format!("{} probed, {closed} closed", probed(host)));
     }
 
-    if filtered_over_limit > 0 {
+    if blocked_over_limit > 0 {
         notes.push(format!(
-            "{filtered_over_limit} more filtered {} not listed",
-            plural(filtered_over_limit as u128, "port")
+            "{blocked_over_limit} more blocked {} not listed",
+            plural(blocked_over_limit as u128, "port")
+        ));
+    }
+
+    if silent_over_limit > 0 {
+        notes.push(format!(
+            "{silent_over_limit} more {} with no reply not listed",
+            plural(silent_over_limit as u128, "port")
         ));
     }
 
@@ -1271,15 +1282,6 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
     }
 
     Some(Selection { shown, notes })
-}
-
-/// Whether this port's verdict came from an ICMP error rather than from silence,
-/// so it survives the suppression an outrun scan applies to quiet ports.
-fn refused_in_words(port: &Port) -> bool {
-    matches!(
-        port.discovery().map(Discovery::reason),
-        Some(ScanResponse::IcmpUnreachable | ScanResponse::IcmpProhibited)
-    )
 }
 
 /// Keeps the first `limit` ports in `state` and drops the rest, returning how
@@ -2324,22 +2326,28 @@ fn protocol(protocol: Protocol) -> String {
 
 /// A port's verdict, lower case.
 ///
-/// `open-filtered` is one verdict, meaning "no answer, and for this technique
-/// that could be either". It is not two states to pick between.
+/// `open|no-reply` is one verdict, meaning "no answer, and for this technique
+/// an open port would not have answered either". It is not two states to pick
+/// between. `no reply` names only what was seen; `blocked` is kept for a
+/// refusal that arrived. A state a newer engine records and this build has no
+/// word for falls back to the wire spelling.
 fn state(state: PortState) -> String {
     match state {
-        PortState::Open => "open".to_owned(),
-        PortState::Closed => "closed".to_owned(),
-        PortState::Filtered => "filtered".to_owned(),
-        PortState::Unfiltered => "unfiltered".to_owned(),
-        PortState::OpenFiltered => "open-filtered".to_owned(),
-        PortState::ClosedFiltered => "closed-filtered".to_owned(),
-        other => format!("{other:?}").to_lowercase(),
+        PortState::Open => "open",
+        PortState::Closed => "closed",
+        PortState::Blocked => "blocked",
+        PortState::NoReply => "no reply",
+        PortState::Reachable => "reachable",
+        PortState::OpenOrNoReply => "open|no-reply",
+        PortState::ClosedOrNoReply => "closed|no-reply",
+        PortState::Unasked => "unasked",
+        other => wire::port_state_name(other),
     }
+    .to_owned()
 }
 
 /// How many of a run's probes may go unanswered before a scan which already
-/// paced itself to its floor has stopped being able to tell filtered from lost.
+/// paced itself to its floor has stopped being able to tell a dropped probe from a lost one.
 ///
 /// One in ten, held as the divisor rather than as `0.10`, so the comparison is
 /// exact integer arithmetic. A probe count is a `u128` and does not fit a
@@ -2349,14 +2357,14 @@ const UNREACHED_IN: u128 = 10;
 
 /// Whether this report's silence is a finding.
 ///
-/// A port reported `filtered` is a positive claim: something dropped a probe
-/// that a live host would have answered. That claim rests entirely on the scan
+/// A port reported `no reply` reads as a claim: something dropped a probe that
+/// a live host would have answered. That claim rests entirely on the scan
 /// having *asked properly*. A scan whose own pacing was cut back as far as it
 /// goes and which still left most of its probes unanswered did not ask properly;
 /// it ran out of link before it ran out of ports.
 ///
 /// Measured, and the reason this exists: a full-range scan from a wireless
-/// laptop reported forty-two thousand ports filtered on a host with no firewall
+/// laptop reported forty-two thousand silent ports on a host with no firewall
 /// at all. The scanner knew, and printed a warning saying so directly above the
 /// list, and then printed the list anyway. A warning that contradicts the rows
 /// under it is not a warning, it is a footnote nobody reads.
@@ -3189,19 +3197,19 @@ mod tests {
     // The evidence behind a verdict
     // -----------------------------------------------------------------------
 
-    /// The distinction the whole flag exists to draw.
+    /// The packet behind each of the two unreached verdicts.
     ///
-    /// Two ports, both `filtered`, and the word is all a reader had. One was
-    /// dropped by a firewall that said so and one answered nothing at all: the
-    /// first is somebody's policy and the second is an absence, which is only as
-    /// good as the scan that waited for it.
+    /// One port was refused by a firewall that said so and one answered
+    /// nothing at all: the first is somebody's policy and the second is an
+    /// absence, which is only as good as the scan that waited for it. The
+    /// states already differ; the evidence says which refusal it was.
     #[test]
-    fn two_filtered_ports_that_read_alike_are_told_apart_by_their_evidence() {
+    fn a_blocked_port_and_a_silent_one_each_name_their_packet() {
         use zond_engine::model::port::discovery::{Discovery, ScanResponse};
 
-        let refused = Port::new(80, Protocol::Tcp, PortState::Filtered)
+        let refused = Port::new(80, Protocol::Tcp, PortState::Blocked)
             .with_discovery(Discovery::new(ScanResponse::IcmpProhibited));
-        let silent = Port::new(443, Protocol::Tcp, PortState::Filtered)
+        let silent = Port::new(443, Protocol::Tcp, PortState::NoReply)
             .with_discovery(Discovery::new(ScanResponse::NoResponse));
 
         assert_eq!(
@@ -3400,7 +3408,7 @@ mod tests {
         Duration::from_micros(millis * 1000)
     }
 
-    /// A scanned host, arranged so the two sort orders disagree: the filtered
+    /// A scanned host, arranged so the two sort orders disagree: the silent
     /// port has the *lowest* number, so a listing sorted by number alone would
     /// lead with it, and the UDP port falls between two TCP ones.
     fn scanned() -> Host {
@@ -3414,7 +3422,7 @@ mod tests {
         );
         host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
         host.add_port(Port::new(53, Protocol::Udp, PortState::Open));
-        host.add_port(Port::new(21, Protocol::Tcp, PortState::Filtered));
+        host.add_port(Port::new(21, Protocol::Tcp, PortState::NoReply));
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Closed));
         host
     }
@@ -3876,32 +3884,32 @@ mod tests {
         assert!(silence_means_something(&paced(0, 0, true)));
     }
 
-    /// A scan that could not tell filtered from lost has no filtered ports to
-    /// report, only ports it never reached.
+    /// A scan that could not tell a dropped probe from a lost one has no
+    /// silent ports to report, only ports it never reached.
     ///
     /// The failure this exists to prevent: a full-range scan from a wireless
     /// laptop printed a warning saying it had been outrun, and then printed
-    /// forty-two thousand `filtered` rows underneath it, which are positive
-    /// claims about a firewall on a host that has none. A warning contradicted
-    /// by the rows below it is a footnote nobody reads.
+    /// forty-two thousand rows of silence underneath it, which read as claims
+    /// about a firewall on a host that has none. A warning contradicted by the
+    /// rows below it is a footnote nobody reads.
     #[test]
-    fn a_scan_that_was_outrun_reports_no_filtered_ports() {
+    fn a_scan_that_was_outrun_lists_no_silent_ports() {
         let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
         host.set_status(HostStatus::Up);
         host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
         for number in 100..140u16 {
-            host.add_port(Port::new(number, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(number, Protocol::Tcp, PortState::NoReply));
         }
 
         let trusted = ports(Reader::default(), &host, true, Showing::default());
         assert!(
-            trusted.iter().any(|line| line.contains("filtered")),
+            trusted.iter().any(|line| line.contains("no reply")),
             "a scan that could ask reports what it found: {trusted:?}"
         );
 
         let outrun = ports(Reader::default(), &host, false, Showing::default());
         assert!(
-            outrun.iter().all(|line| !line.contains("filtered")),
+            outrun.iter().all(|line| !line.contains("no reply")),
             "and one that could not makes no claim at all: {outrun:?}"
         );
         assert!(
@@ -4287,52 +4295,73 @@ mod tests {
                 "22/tcp   open      ssh OpenSSH 9.6",
                 "53/udp   open",
                 "443/tcp  open",
-                "21/tcp   filtered",
+                "21/tcp   no reply",
                 "5 probed, 1 closed",
             ]
         );
     }
 
-    /// A wall of filtered ports is one fact, not six hundred of them.
+    /// A wall of silent ports is one fact, not six hundred of them.
     ///
     /// Measured, on a consumer router probed faster than it would answer: nine
-    /// hundred lines of `filtered`, with `80/tcp` buried among them. The first
-    /// few still print, because *which* ports a firewall refuses matters when
+    /// hundred lines of silence, with `80/tcp` buried among them. The first
+    /// few still print, because *which* ports a firewall drops matters when
     /// the list starts at 22, and the rest are counted.
     #[test]
-    fn a_flood_of_filtered_ports_is_counted_rather_than_listed() {
+    fn a_flood_of_silent_ports_is_counted_rather_than_listed() {
         let mut host = host(1);
         host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
         for port in 1..=40u16 {
-            host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::NoReply));
         }
 
         let lines = ports(Reader::default(), &host, true, Showing::default());
 
-        // The open port, twelve filtered, and the rollup.
-        assert_eq!(lines.len(), 1 + MAX_LISTED_FILTERED + 1);
+        // The open port, twelve silent ones, and the rollup.
+        assert_eq!(lines.len(), 1 + MAX_LISTED_UNREACHED + 1);
         assert!(lines[0].starts_with("80/tcp"), "open first: {lines:?}");
         assert!(
             lines[1].starts_with("1001/tcp"),
-            "and the lowest filtered ones are the ones kept: {lines:?}"
+            "and the lowest silent ones are the ones kept: {lines:?}"
         );
         assert_eq!(
             lines.last().map(String::as_str),
-            Some("28 more filtered ports not listed")
+            Some("28 more ports with no reply not listed")
         );
     }
 
-    /// An ICMP-refused port survives the suppression an outrun scan applies to
-    /// its silent ports.
+    /// A wall of refusals is counted apart from a wall of silence beside it,
+    /// since the two are different findings about the same host.
     #[test]
-    fn a_port_refused_in_words_survives_a_scan_that_was_outrun() {
+    fn blocked_and_silent_floods_are_counted_apart() {
         let mut host = host(1);
-        let quiet = Port::new(81, Protocol::Tcp, PortState::Filtered)
-            .with_discovery(Discovery::new(ScanResponse::NoResponse));
-        let refused = Port::new(82, Protocol::Tcp, PortState::Filtered)
-            .with_discovery(Discovery::new(ScanResponse::IcmpProhibited));
-        host.add_port(quiet);
-        host.add_port(refused);
+        for port in 1..=20u16 {
+            host.add_port(Port::new(port + 1000, Protocol::Tcp, PortState::Blocked));
+            host.add_port(Port::new(port + 2000, Protocol::Tcp, PortState::NoReply));
+        }
+
+        let lines = ports(Reader::default(), &host, true, Showing::default());
+
+        assert_eq!(lines.len(), 2 * MAX_LISTED_UNREACHED + 2, "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "8 more blocked ports not listed")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "8 more ports with no reply not listed")
+        );
+    }
+
+    /// A blocked port survives the suppression an outrun scan applies to its
+    /// silent ports.
+    #[test]
+    fn a_blocked_port_survives_a_scan_that_was_outrun() {
+        let mut host = host(1);
+        host.add_port(Port::new(81, Protocol::Tcp, PortState::NoReply));
+        host.add_port(Port::new(82, Protocol::Tcp, PortState::Blocked));
 
         let lines = ports(Reader::default(), &host, false, Showing::default());
 
@@ -4346,7 +4375,7 @@ mod tests {
         );
     }
 
-    /// A wall of unasked ports is counted, not listed, as a flood of filtered
+    /// A wall of unasked ports is counted, not listed, as a flood of silent
     /// ones already is.
     #[test]
     fn a_flood_of_unasked_ports_is_counted_rather_than_listed() {
@@ -4391,10 +4420,10 @@ mod tests {
     /// rollup exists for the case that buries a result, not for every host with
     /// a closed service.
     #[test]
-    fn a_handful_of_filtered_ports_is_listed_in_full() {
+    fn a_handful_of_blocked_ports_is_listed_in_full() {
         let mut host = host(1);
         for port in [22u16, 23, 111] {
-            host.add_port(Port::new(port, Protocol::Tcp, PortState::Filtered));
+            host.add_port(Port::new(port, Protocol::Tcp, PortState::Blocked));
         }
 
         let lines = ports(Reader::default(), &host, true, Showing::default());
@@ -4462,7 +4491,7 @@ mod tests {
     /// A host whose every port went unasked has no closed count, rather than a
     /// count of nought: nothing was asked, so nothing is known closed or not.
     /// A `0` in that field reads as a host scanned and found with every port
-    /// open or filtered.
+    /// open or unreached.
     #[test]
     fn a_host_whose_ports_were_all_unasked_has_no_closed_count() {
         let mut host = host(1);
@@ -4471,7 +4500,7 @@ mod tests {
         }
         assert_eq!(closed_ports(&host), None);
 
-        host.add_port(Port::new(443, Protocol::Tcp, PortState::Filtered));
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::NoReply));
         assert_eq!(
             closed_ports(&host).as_deref(),
             Some("0"),
@@ -4484,7 +4513,7 @@ mod tests {
     fn packed_ports_carry_number_protocol_state_and_service() {
         assert_eq!(
             packed_ports(Reader::default(), &scanned()).as_deref(),
-            Some("21/tcp/filtered/-,22/tcp/open/ssh,443/tcp/open/-,53/udp/open/-"),
+            Some("21/tcp/no reply/-,22/tcp/open/ssh,443/tcp/open/-,53/udp/open/-"),
             "grouped by protocol, then by number, which is a different order from the listing"
         );
         assert_eq!(closed_ports(&scanned()).as_deref(), Some("1"));
@@ -4515,10 +4544,15 @@ mod tests {
     /// These are values a script matches on. Deriving them from variant names
     /// would let a rename in the engine change this program's output.
     #[test]
-    fn a_compound_port_state_keeps_its_hyphen() {
+    fn every_port_state_has_a_fixed_spelling() {
         assert_eq!(state(PortState::Open), "open");
-        assert_eq!(state(PortState::OpenFiltered), "open-filtered");
-        assert_eq!(state(PortState::ClosedFiltered), "closed-filtered");
+        assert_eq!(state(PortState::Closed), "closed");
+        assert_eq!(state(PortState::Blocked), "blocked");
+        assert_eq!(state(PortState::NoReply), "no reply");
+        assert_eq!(state(PortState::Reachable), "reachable");
+        assert_eq!(state(PortState::OpenOrNoReply), "open|no-reply");
+        assert_eq!(state(PortState::ClosedOrNoReply), "closed|no-reply");
+        assert_eq!(state(PortState::Unasked), "unasked");
         assert_eq!(protocol(Protocol::Tcp), "tcp");
         assert_eq!(protocol(Protocol::Udp), "udp");
     }

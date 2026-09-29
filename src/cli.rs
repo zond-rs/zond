@@ -1184,7 +1184,7 @@ pub(crate) struct ScanArgs {
     /// by a service that recognises the payload sent to it, or by an ICMP port
     /// unreachable the host is rate-limited to emitting roughly once a second,
     /// so each port costs far more to classify and far more of them come back
-    /// open|filtered whatever is done. That is worth asking for out loud.
+    /// open|no-reply whatever is done. That is worth asking for out loud.
     ///
     /// The ranked UDP list is 250 ports long, and asking for more than it holds
     /// yields all of it. The two flags combine: `--top-ports 100
@@ -1311,7 +1311,7 @@ pub(crate) struct ScanArgs {
     /// Characterise the filter in front of each host that answered.
     ///
     /// A last pass against the hosts that answered, sending a bad-checksum probe
-    /// to an open port and a comparative one to a filtered port: what answers,
+    /// to an open port and a comparative one to a port a SYN did not reach: what answers,
     /// and what it answers with, tells a stateful filter from a stateless one
     /// and a middlebox from the host itself. Needs root. Records its conclusion
     /// on the host rather than opening or closing any port.
@@ -2381,17 +2381,17 @@ pub(crate) struct OutputArgs {
     /// says what was observed and, where an ICMP error came from a router rather
     /// than the host itself, which router.
     ///
-    /// This separates two verdicts that read alike. A port reported `filtered`
-    /// because a firewall said so and one reported `filtered` because nothing
-    /// came back are the same word and different findings, and only one of them
-    /// is somebody's policy.
+    /// The verdict already says whether a refusal arrived: `blocked` is
+    /// somebody's policy, `no reply` is an absence. This says which refusal it
+    /// was, a prohibition from the host or an unreachable from a router on the
+    /// way, and how far away whatever sent it stood.
     ///
-    /// On a live SYN scan it also asks the capture to keep ICMP errors, which
-    /// that technique otherwise ignores because its verdict does not need them.
-    /// An ICMP error names no ports, so the kernel filter cannot narrow it and
-    /// every ICMP packet on every captured link is copied into userspace. That
-    /// is the cost of telling a refusal from a silence, and it is paid only when
-    /// this is set.
+    /// On a live SYN scan it also makes sure the capture keeps ICMP errors,
+    /// even where the settings turned that off. A SYN scan finds open and
+    /// closed ports without them, and a port a firewall refused then reads
+    /// `no reply`. An ICMP error names no ports, so the kernel filter cannot
+    /// narrow it and every ICMP packet on every captured link is copied into
+    /// userspace. That is the cost of telling a refusal from a silence.
     ///
     /// Works on a scan, on a record, and on a file, including one nmap wrote,
     /// whose own reasons are read back. Not on `--pipe`, whose fields are a

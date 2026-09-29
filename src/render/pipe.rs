@@ -25,7 +25,7 @@
 //! | | Field | |
 //! |---|---|---|
 //! | 1 | `ADDRESS` | every address the host answers at, comma-joined, primary first |
-//! | 2 | `STATUS` | `Up`, `Down`, `Filtered`, `Unknown` |
+//! | 2 | `STATUS` | `Up`, `Down`, `Blocked`, `Unknown` |
 //! | 3 | `RTT` | median round trip **in milliseconds**, no unit |
 //! | 4 | `EVIDENCE` | what proved it alive, comma-joined: `arp`, `ndp`, `icmp_echo`, `tcp_syn`, … |
 //! | 5 | `MAC` | hardware addresses, comma-joined, most recent first |

@@ -17,7 +17,7 @@
 //! be taking that choice back.
 //!
 //! There is a real cost to knowing nothing first: an address nothing lives at
-//! comes back with every port closed or filtered, having spent a probe on each.
+//! comes back with every port closed or unanswered, having spent a probe on each.
 //! That is the caller's trade to make. `zond discover` answers which hosts are
 //! there, and its output feeds straight back in.
 
@@ -84,9 +84,9 @@ pub(crate) async fn run(
         command::held_to_record(resumed, &config)?;
     }
 
-    // A SYN scan reaches `filtered` from silence and from a refusal alike, so it
-    // does not ask its capture for ICMP unless something wants to tell the two
-    // apart. `--reason` is that request.
+    // A SYN scan hears a refusal only where its capture keeps ICMP errors, and
+    // reads one it did not hear as `no reply`. The settings may turn that off;
+    // `--reason`, which shows the refusal, turns it back on.
     if reasons {
         config.icmp_evidence = true;
     }

@@ -125,7 +125,7 @@ fn port_records(port: &PortDelta, address: &str, masking: &HostRedaction) -> Vec
     }
 
     // A record that arrived or went without the endpoint opening or shutting,
-    // such as a filtered port that turned up, still happened.
+    // such as a silent port that turned up, still happened.
     if !port.is_opened() && !port.is_closed() {
         match port.presence() {
             zond_engine::diff::Presence::Added { .. } => records.push(line(

@@ -677,13 +677,13 @@ impl Narrator {
 
     /// The line naming hosts that rationed their ICMP errors.
     ///
-    /// Such a host left most of its closed UDP ports reading open|filtered,
+    /// Such a host left most of its closed UDP ports reading open|no-reply,
     /// which a reader would otherwise take for ports that might be listening.
     fn rationed(&mut self, report: &ScanReport) -> io::Result<()> {
         let rationed = field::icmp_rate_limited(report);
         if rationed > 0 {
             self.note(&format!(
-                "{rationed} {} rate-limited ICMP (closed UDP may read open|filtered)",
+                "{rationed} {} rate-limited ICMP (closed UDP may read open|no-reply)",
                 plural(rationed, "host"),
             ))?;
         }
@@ -2333,7 +2333,7 @@ mod tests {
     }
 
     /// A host that rationed its ICMP errors is said in one short line, so its
-    /// open|filtered UDP ports are not read as ports that might be listening.
+    /// open|no-reply UDP ports are not read as ports that might be listening.
     #[test]
     fn a_host_rationing_its_icmp_errors_is_said_in_one_line() {
         use zond_engine::report::{PhaseParts, ScanPhase};
@@ -2370,7 +2370,7 @@ mod tests {
         let said = summarised(&ScanReport::recorded("test", vec![rebuilt], hosts));
 
         assert!(
-            said.contains("1 host rate-limited ICMP (closed UDP may read open|filtered)\n"),
+            said.contains("1 host rate-limited ICMP (closed UDP may read open|no-reply)\n"),
             "{said}"
         );
     }

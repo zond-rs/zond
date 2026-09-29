@@ -52,7 +52,7 @@
 //! | [`faint`](Style::faint) | regular | labels, units, qualifiers, and the renderer's own notes |
 //! | [`accent`](Style::accent) | regular | a name the network gave back, and a handle a person reads out |
 //! | [`good`](Style::good) | regular | a port that is open, a host that arrived |
-//! | [`caution`](Style::caution) | regular | filtered, and a certificate near its end |
+//! | [`caution`](Style::caution) | regular | blocked or silent, and a certificate near its end |
 //! | [`alarm`](Style::alarm) | regular | a certificate past it, a host that went |
 //!
 //! Three greys, one accent, three states. A discovery sweep of a healthy
@@ -213,7 +213,7 @@ const FAINT: Ink = Ink::new(0x86, 0x8D, 0xA1);
 /// A port that answered, a host that arrived.
 const GOOD: Ink = Ink::new(0x79, 0xD1, 0x8C);
 
-/// Filtered, and anything approaching a deadline.
+/// Blocked or silent, and anything approaching a deadline.
 const CAUTION: Ink = Ink::new(0xDD, 0xB0, 0x61);
 
 /// Past that deadline.
@@ -265,7 +265,7 @@ impl Accent {
     /// An instrument-panel reading, and the closest of the three to the
     /// programme this tool is named after. One desaturation step from
     /// [`CAUTION`], so on a display that is unkind to either, a hostname and a
-    /// filtered port can end up looking alike.
+    /// blocked port can end up looking alike.
     pub(crate) const AMBER: Accent = Accent(Ink::new(0xE0, 0xA4, 0x58));
 
     /// Maximum separation from every state colour. Slightly less legible at dim
@@ -706,7 +706,7 @@ impl Style {
         self.paint(Some((GOOD, Weight::Regular)), text)
     }
 
-    /// Filtered, and anything approaching a deadline.
+    /// Blocked or silent, and anything approaching a deadline.
     #[must_use]
     pub(crate) fn caution(self, text: &str) -> String {
         self.paint(Some((CAUTION, Weight::Regular)), text)

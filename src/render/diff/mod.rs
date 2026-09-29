@@ -999,7 +999,7 @@ mod tests {
     /// A host that was more than merely there still says so.
     ///
     /// `beyond_presence` drops the line only where it would repeat the tag. A
-    /// host that was filtered, or that arrived with something open, is not what
+    /// host that was blocked, or that arrived with something open, is not what
     /// `gone` or `arrived` on its own implies.
     #[test]
     fn a_host_that_was_more_than_present_still_says_what() {

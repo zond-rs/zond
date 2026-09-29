@@ -154,7 +154,7 @@ pub(crate) struct Tag {
 /// Everything the columns are measured from is stored as plain text and painted
 /// here, so that the grammar decides what a handle and an identity look like
 /// rather than each caller deciding again. The verdict arrives already painted
-/// because its colour is a domain judgement about open, filtered or gone, and
+/// because its colour is a domain judgement about open, blocked or gone, and
 /// this module has no business knowing which.
 #[derive(Debug, Clone)]
 pub(crate) struct Header {

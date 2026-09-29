@@ -24,12 +24,12 @@
 //!                443/tcp  open      https  nginx 1.24
 //!                           tls     1.3            X25519  alpn h2, http/1.1
 //!                          cert     router.example  expires in 12d
-//!                5/tcp    filtered
+//!                5/tcp    no reply
 //!      risks     MED  443/tcp  the certificate is close to expiry
 //!
 //!   2  192.0.2.44
 //!
-//!   3  192.0.2.51                             Filtered
+//!   3  192.0.2.51                             Blocked
 //!      answered  ARP
 //!
 //! • 3 hosts up of 1024 addresses in 4.12s         <- stderr
@@ -220,7 +220,7 @@ fn verdict(style: Style, host: &Host) -> Option<String> {
     if !field::is_up(host) {
         let status = field::status(host);
         parts.push(match host.status() {
-            HostStatus::Filtered => style.caution(&status),
+            HostStatus::Blocked => style.caution(&status),
             _ => style.faint(&status),
         });
     }
@@ -617,7 +617,7 @@ fn state(style: Style, row: &field::PortRow) -> String {
 
     match row.verdict {
         PortState::Open => style.good(word),
-        PortState::Filtered | PortState::OpenFiltered => style.caution(word),
+        PortState::Blocked | PortState::NoReply | PortState::OpenOrNoReply => style.caution(word),
         _ => style.faint(word),
     }
 }
@@ -1587,7 +1587,7 @@ mod tests {
         let mut host = host(9);
         host.add_filtering(Filtering::StatefulFilter);
         host.record_ip_protocol(6, IpProtocolState::Open);
-        host.record_ip_protocol(132, IpProtocolState::Filtered);
+        host.record_ip_protocol(132, IpProtocolState::Blocked);
 
         let text = block(&host);
 
@@ -1596,7 +1596,7 @@ mod tests {
             "the filter conclusion is spelled for a person: {text}"
         );
         assert!(
-            text.contains("6 tcp  accepted") && text.contains("132 sctp  filtered"),
+            text.contains("6 tcp  accepted") && text.contains("132 sctp  blocked"),
             "each IP protocol reads as number, name and verdict: {text}"
         );
     }
@@ -2028,13 +2028,13 @@ mod tests {
     /// The status is a word on the header line, so nothing about a host's
     /// reachability rests on the paint.
     #[test]
-    fn a_filtered_host_says_so_without_colour() {
-        let mut filtered = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
-        filtered.set_status(zond_engine::HostStatus::Filtered);
+    fn a_blocked_host_says_so_without_colour() {
+        let mut blocked = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
+        blocked.set_status(zond_engine::HostStatus::Blocked);
 
-        let text = block(&filtered);
+        let text = block(&blocked);
         assert!(text.starts_with("  1  "), "{text}");
-        assert!(text.contains("Filtered"), "{text}");
+        assert!(text.contains("Blocked"), "{text}");
     }
 
     #[test]
@@ -2247,15 +2247,15 @@ mod tests {
 
     /// The two palettes never contend for one piece of text. An address says
     /// which machine this is; a verdict says how it answered. A host being
-    /// filtered must not repaint its address, or the colour stops meaning "this
+    /// blocked must not repaint its address, or the colour stops meaning "this
     /// is an address" and starts meaning nothing in particular.
     #[test]
     fn a_verdict_does_not_repaint_an_identifier() {
-        let mut filtered = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
-        filtered.set_status(HostStatus::Filtered);
-        filtered.set_hostname(Some("router.example".to_owned()));
+        let mut blocked = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
+        blocked.set_status(HostStatus::Blocked);
+        blocked.set_hostname(Some("router.example".to_owned()));
 
-        let text = painted(&filtered);
+        let text = painted(&blocked);
         assert!(
             text.contains(&format!("{}192.0.2.9", opener(Style::strong))),
             "{text:?}"
@@ -2265,7 +2265,7 @@ mod tests {
             "{text:?}"
         );
         assert!(
-            text.contains(&format!("{}Filtered", opener(Style::caution))),
+            text.contains(&format!("{}Blocked", opener(Style::caution))),
             "the verdict keeps its own colour: {text:?}"
         );
     }
@@ -2280,7 +2280,7 @@ mod tests {
             Port::new(22, Protocol::Tcp, PortState::Open)
                 .with_service(Service::new("ssh", 100).with_product("OpenSSH")),
         );
-        host.add_port(Port::new(5, Protocol::Tcp, PortState::Filtered));
+        host.add_port(Port::new(5, Protocol::Tcp, PortState::NoReply));
 
         let bare = block(&host);
         let coloured = painted(&host);

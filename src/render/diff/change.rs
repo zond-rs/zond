@@ -112,7 +112,7 @@ pub(super) fn state(port: &zond_engine::Port) -> String {
 /// second time in a second place, which on a comparison of a busy segment is
 /// half the lines on the screen.
 ///
-/// A host that was *filtered*, or that arrived with something open, is a
+/// A host that was *blocked*, or that arrived with something open, is a
 /// different matter: neither is what `arrived` on its own implies.
 pub(super) fn beyond_presence(host: &zond_engine::Host) -> Option<String> {
     let said = describe(host);

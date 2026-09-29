@@ -27,7 +27,7 @@
 //!   via:  arp
 //!   port: 22/tcp  open      ssh OpenSSH 9.6
 //!         80/tcp  open      http nginx 1.24
-//!         5/tcp   filtered
+//!         5/tcp   no reply
 //!         1000 probed, 996 closed
 //!
 //! * 2001:db8::4
@@ -144,7 +144,7 @@ impl MinimalRenderer {
 ///
 /// `silence_means_something` is what the *run* established rather than what this
 /// host did: false when the scan was outrun and its unanswered ports are ports
-/// it could not reach rather than ports something filtered. See
+/// it could not reach rather than ports a filter dropped probes to. See
 /// [`field::silence_means_something`].
 fn write_host(
     out: &mut dyn Write,
@@ -719,9 +719,9 @@ mod tests {
         // Built directly rather than through the `host` helper: the engine
         // promotes a status and never lowers one, so a host marked `Up` first
         // would stay `Up` and this test would be asserting nothing.
-        let mut filtered = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
-        filtered.set_status(HostStatus::Filtered);
-        assert!(block(&filtered).contains("status: Filtered"));
+        let mut blocked = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)));
+        blocked.set_status(HostStatus::Blocked);
+        assert!(block(&blocked).contains("status: Blocked"));
     }
 
     /// Every value begins in the same column, whatever the tag above it was.
