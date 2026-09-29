@@ -68,25 +68,25 @@ administrator rights.
 | `zond detections` | what a scan would check for, and compiling your own |
 
 ```bash
-sudo zond discover lan                              # sweep this host's own segment
-sudo zond scan 10.0.0.0/24 -d                       # ports, services, and findings
-sudo zond scan 10.0.0.1 -p- -O --tls-enum           # every port, the OS, and what TLS accepts
-sudo zond scan lan -F --pipe                        # a quick pass, one record per line
-sudo zond scan 10.0.0.0/16 -x 10.0.5.0/24
-sudo zond listen %en0 --for 10m                     # watch a link, send nothing
+zond discover lan                     # sweep this host's own segment
+zond scan 10.0.0.0/24 -d              # ports, services, and findings
+zond scan 10.0.0.1 -p- -O --tls-enum  # every port, the OS, and what TLS accepts
+zond scan lan -F --pipe               # a quick pass, one record per line
+zond scan 10.0.0.0/16 -x 10.0.5.0/24
+zond listen %en0 --for 10m            # watch a link, send nothing
 
-zond resume 06G3JC                                  # continue one that stopped
+zond resume 06G3JC                           # continue one that stopped
 zond journal prune --older-than 30d
 zond read latest -o report.html
-zond diff baseline.json latest                      # exits 4 if anything changed
+zond diff baseline.json latest               # exits 4 if anything changed
 zond merge chunk*.json -o all.xml
-zond detections --service http --sort class         # what a web port would be asked
+zond detections --service http --sort class  # what a web port would be asked
 ```
 
 ## Naming a target
 
 ```bash
-sudo zond discover 192.168.0.0/24
+zond discover 192.168.0.0/24
 ```
 
 | Written | Means |
@@ -113,10 +113,17 @@ ICMPv6 all-nodes echo and reads this host's neighbour table.
 A scan checks each target is alive before probing its ports. `--assume-up`
 skips that.
 
-### Why `sudo`
+### Raw sockets
 
-ARP, ICMPv6 and raw TCP need root. Without it a scan falls back to connect
-attempts and finds fewer hosts, and says which of the two ran.
+ARP, ICMPv6 and SYN probes need raw sockets. The packages grant them to the
+binary, so zond runs as you and the journals it writes are yours. Without them,
+a scan falls back to connect attempts, finds fewer hosts, and says so.
+
+Installed with `cargo`, on Linux, grant them once:
+
+```bash
+sudo setcap cap_net_raw,cap_net_admin+eip "$(command -v zond)"
+```
 
 ## What else it does
 

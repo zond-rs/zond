@@ -56,9 +56,9 @@ use crate::settings::Risk;
         open, what is listening behind each one, and which advisories name the \
         versions it read off the wire. Every run is recorded as it goes, so one \
         that stopped can be continued and two can be compared.\n\n\
-        Raw probes need root, or the cap_net_raw a package install grants. \
-        Without either, a scan falls back to ordinary TCP connections, which find \
-        less, and says so.",
+        ARP, ICMPv6 and SYN probes need raw sockets, which a package install \
+        grants to the user who runs it. Without them, a scan falls back to \
+        ordinary TCP connections, which find less, and says so.",
     after_help = GETTING_STARTED,
     after_long_help = top_long_help(),
     arg_required_else_help = true,
@@ -177,10 +177,10 @@ fn long_version() -> String {
 /// What `zond -h` ends with: the handful of commands a first run is made of.
 pub(crate) const GETTING_STARTED: &str = "\
 Getting started:
-  sudo zond discover lan            which hosts on this segment are alive
-  sudo zond scan 192.168.0.10       a host's open ports, and what is behind them
-  zond read latest                  the last scan, printed again
-  zond diff baseline.json latest    what changed since
+  zond discover lan               which hosts on this segment are alive
+  zond scan 192.168.0.10          a host's open ports, and what is behind them
+  zond read latest                the last scan, printed again
+  zond diff baseline.json latest  what changed since
 
 Every command has its own help: zond scan -h, or --help for all of it.
 zond help lists the topics several commands share: targets, ports, output,
@@ -802,10 +802,10 @@ fn examples_of(long: &str) -> String {
 fn read_help() -> String {
     "\
 Examples:
-  zond read latest              print what the last scan found
-  zond read merged.json         a folded report, and the documents it came from
-  zond read theirs.xml          an nmap file, drawn the way this tool draws one
-  zond read q1.xml -o q1.json   convert, since the writers are already there
+  zond read latest             print what the last scan found
+  zond read merged.json        a folded report, and the documents it came from
+  zond read theirs.xml         an nmap file, drawn the way this tool draws one
+  zond read q1.xml -o q1.json  convert, since the writers are already there
   zond read q1.json --redact -o client.json
                                 a masked copy of a report kept whole
 
@@ -954,9 +954,9 @@ Exit status: 0 when nothing changed, 4 when something did. --help says more."
 fn diff_help() -> String {
     "\
 Examples:
-  zond diff latest 20aa1f3c        two records on this machine
-  zond diff baseline.json latest   an archived report against tonight's scan
-  zond diff q1.xml q2.xml          two nmap files, neither written by zond
+  zond diff latest 20aa1f3c       two records on this machine
+  zond diff baseline.json latest  an archived report against tonight's scan
+  zond diff q1.xml q2.xml         two nmap files, neither written by zond
 
 Identity:
   Two scans of a network with DHCP on it will key the same machine under
@@ -1032,9 +1032,9 @@ pub(crate) struct ResumeArgs {
 /// What `zond resume -h` ends with.
 const RESUME_HELP: &str = "\
 Examples:
-  zond resume 06G3JC                  continue a scan that stopped
-  zond resume latest --max-rate 200   the newest record, more gently
-  zond journal                        what there is to continue
+  zond resume 06G3JC                 continue a scan that stopped
+  zond resume latest --max-rate 200  the newest record, more gently
+  zond journal                       what there is to continue
 
 A record whose lock names a process that has stopped writing is refused;
 --help says when --take-over is safe.";
@@ -1789,7 +1789,7 @@ pub(crate) struct ScanArgs {
     /// Which TCP segment a probe carries, and so what its answers mean.
     ///
     /// Only `syn` identifies an open port positively, and only `syn` has an
-    /// unprivileged fallback; the rest need root and are refused without it
+    /// unprivileged fallback; the rest need raw sockets and are refused without them
     /// rather than quietly substituted. `window` reads an ACK's reset for its
     /// window field, which some stacks set differently on an open port.
     ///
@@ -1824,7 +1824,7 @@ pub(crate) struct ScanArgs {
     ///
     /// `init` attempts an association and is the only one that confirms a
     /// listener positively; `cookie-echo` sends an unminted cookie, which a
-    /// closed port answers and an open one ignores. Both need root. Only the
+    /// closed port answers and an open one ignores. Both need raw sockets. Only the
     /// ports written as SCTP, `-p s:2905`, are probed this way.
     ///
     /// The setting for every run: `sctp_technique` in engine.toml.
@@ -1845,7 +1845,7 @@ pub(crate) struct ScanArgs {
     /// predictable counter and next to no other traffic. Name it as an address,
     /// or `IP:PORT` to say which of its ports to poll.
     ///
-    /// Needs root, and forges nothing the target can trace back here. A loud,
+    /// Needs raw sockets, and forges nothing the target can trace back here. A loud,
     /// slow scan whose whole point is that the target learns the zombie's
     /// address and not this one.
     #[arg(
@@ -1863,7 +1863,7 @@ pub(crate) struct ScanArgs {
     /// TCP, UDP and SCTP. Each host is sent one datagram per protocol and its
     /// answer — a reply, a protocol-unreachable, or silence — says whether the
     /// stack accepts it. Independent of the port scan: this asks what the host
-    /// speaks, not what listens on it. Needs root.
+    /// speaks, not what listens on it. Needs raw sockets.
     #[arg(
         help_heading = "Techniques",
         hide_short_help = true,
@@ -1878,7 +1878,7 @@ pub(crate) struct ScanArgs {
     /// A last pass against the hosts that answered, sending a bad-checksum probe
     /// to an open port and a comparative one to a port a SYN did not reach: what answers,
     /// and what it answers with, tells a stateful filter from a stateless one
-    /// and a middlebox from the host itself. Needs root. Records its conclusion
+    /// and a middlebox from the host itself. Needs raw sockets. Records its conclusion
     /// on the host rather than opening or closing any port.
     #[arg(
         help_heading = "Techniques",
@@ -2143,8 +2143,8 @@ fn scan_types(letters: &str) -> Result<ScanTypes, String> {
             'U' => Ok(ScanType::Udp),
             'V' => Ok(ScanType::Services),
             'T' => Err(String::from(
-                "there is no -sT: a run without root completes connections already, and one \
-                 with root sends SYNs",
+                "there is no -sT: a run without raw sockets completes connections already, \
+                 and one with them sends SYNs",
             )),
             'n' => Err(String::from(
                 "-sn is `zond discover`, which finds hosts without scanning their ports",
@@ -2392,9 +2392,9 @@ than after it.
 /// What `zond discover -h` ends with.
 const DISCOVER_SHORT_HELP: &str = "\
 Examples:
-  sudo zond discover lan
-  sudo zond d 192.168.0.0/24 --exclude 192.168.0.1
-  sudo zond d 10.0.0.1-50 -o hosts.json
+  zond discover lan
+  zond d 192.168.0.0/24 --exclude 192.168.0.1
+  zond d 10.0.0.1-50 -o hosts.json
 
 --help also lists the flags for tuning and evasion, every form a target takes,
 the report formats, and how to stop a run.";
@@ -2402,10 +2402,10 @@ the report formats, and how to stop a run.";
 /// What `zond scan -h` ends with.
 const SCAN_SHORT_HELP: &str = "\
 Examples:
-  sudo zond scan 192.168.0.0/24
-  sudo zond s 10.0.0.1 -p-                      every port there is
-  sudo zond s lan -F --pipe                     a quick pass, one record per line
-  sudo zond s 10.0.0.0/24 -p 22,443 -o report.html
+  zond scan 192.168.0.0/24
+  zond s 10.0.0.1 -p-   every port there is
+  zond s lan -F --pipe  a quick pass, one record per line
+  zond s 10.0.0.0/24 -p 22,443 -o report.html
 
 --help also lists the flags for tuning, techniques and evasion, every form a
 target takes, the report formats, and how to stop a run.";
@@ -2420,18 +2420,18 @@ fn discover_help() -> String {
         TARGET_FORMS,
         "
 Examples:
-  sudo zond discover 192.168.0.0/24
-  sudo zond d 192.168.0.1-50
-  sudo zond d lan
-  sudo zond d 2001:db8::1,2001:db8::2
-  sudo zond d one.one.one.one
-  sudo zond d 10.0.0.0/16 --exclude 10.0.5.0/24
-  sudo zond d lan -o hosts.json
+  zond discover 192.168.0.0/24
+  zond d 192.168.0.1-50
+  zond d lan
+  zond d 2001:db8::1,2001:db8::2
+  zond d one.one.one.one
+  zond d 10.0.0.0/16 --exclude 10.0.5.0/24
+  zond d lan -o hosts.json
 ",
         OUTPUT_FORMS,
         STOPPING,
         "
-Discovery uses raw sockets when it can. Without root it falls back to TCP
+Discovery uses raw sockets when it can. Without them it falls back to TCP
 connect attempts, which find fewer hosts; the summary says which one ran.",
     ]
     .concat()
@@ -2443,16 +2443,16 @@ fn scan_help() -> String {
         TARGET_FORMS,
         "
 Examples:
-  sudo zond scan 192.168.0.150 -p 22,80,443
-  sudo zond s 192.168.0.0/24 --top-ports 100
-  sudo zond s 10.0.0.1:8080 lan -p 80,443
-  sudo zond s 2001:db8::1 -p u:53
-  sudo zond s 192.168.0.150 --top-ports-udp 50
-  sudo zond s 192.168.0.150 -p-            every port there is
-  sudo zond s 192.168.0.150 -p 8000-       every port from 8000 up
-  sudo zond s 10.0.0.0/24 --exclude 10.0.0.7 -p 22
-  sudo zond s 192.168.0.150 -p 443 --traceroute
-  sudo zond s 10.0.0.0/24 -p 22,443 -oA engagement
+  zond scan 192.168.0.150 -p 22,80,443
+  zond s 192.168.0.0/24 --top-ports 100
+  zond s 10.0.0.1:8080 lan -p 80,443
+  zond s 2001:db8::1 -p u:53
+  zond s 192.168.0.150 --top-ports-udp 50
+  zond s 192.168.0.150 -p-       every port there is
+  zond s 192.168.0.150 -p 8000-  every port from 8000 up
+  zond s 10.0.0.0/24 --exclude 10.0.0.7 -p 22
+  zond s 192.168.0.150 -p 443 --traceroute
+  zond s 10.0.0.0/24 -p 22,443 -oA engagement
 
 Given no port flag, a scan probes the thousand TCP ports most likely to be
 listening, ranked by the engine rather than taken as a range. That is a
@@ -2465,10 +2465,10 @@ that answer nothing. --assume-up scans them anyway.
         OUTPUT_FORMS,
         STOPPING,
         "
-Port scanning uses raw SYN probes when it can. Without root a TCP port is tested
-by completing a connection, which is slower and more visible, and a technique
-only raw probes can send is refused rather than downgraded; the summary says
-which happened.",
+Port scanning uses raw SYN probes when it can. Without raw sockets a TCP port is
+tested by completing a connection, which is slower and more visible, and a
+technique only raw probes can send is refused rather than downgraded; the
+summary says which happened.",
     ]
     .concat()
 }
@@ -2806,7 +2806,7 @@ pub(crate) struct EngineArgs {
     /// its far end and the far end's distance is read out of a reply, so a host
     /// that answered nothing has no path to measure.
     ///
-    /// Needs root, like every other probe built by hand here.
+    /// Needs raw sockets, like every other probe built by hand here.
     #[arg(help_heading = "Identification", long)]
     pub traceroute: bool,
 

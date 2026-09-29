@@ -155,7 +155,7 @@ const TIPS: [&str; 30] = [
     "printer ports 9100-9107 are found and sent nothing",
     "a host is checked for life before its ports are asked",
     "hosts that answer nothing get their retries cut short",
-    "without root, SYN probes become full connections",
+    "without raw sockets, SYN probes become connections",
     "--min-risk info shows findings below medium too",
     // Scanning in general.
     "a SYN scan never completes the TCP handshake",
