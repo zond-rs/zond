@@ -232,6 +232,10 @@ What a scan puts on the wire.
 .TP
 /etc/zond/cli.toml, /etc/zond/engine.toml
 The same, for every user of the machine, beneath their own.
+.TP
+~/.local/state/zond/journals
+The record each scan, sweep and watch keeps, which zond journal lists and zond
+resume continues. Under $XDG_STATE_HOME when that is set.
 .SH ENVIRONMENT
 .TP
 NO_COLOR, CLICOLOR_FORCE, TERM
@@ -240,8 +244,8 @@ Read the way other tools read them, when --colour is auto.
 COLORTERM
 Whether the terminal takes a twenty-four bit accent colour.
 .TP
-XDG_CONFIG_HOME
-Where the settings files are, when it is an absolute path.
+XDG_CONFIG_HOME, XDG_STATE_HOME
+Where the settings files and the journal are, when each is an absolute path.
 .SH SEE ALSO
 zond-targets(7), zond-ports(7), zond-output(7), zond-settings(7),
 zond-exit-codes(7)
