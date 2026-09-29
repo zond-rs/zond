@@ -44,11 +44,15 @@ use crate::settings::Risk;
     version,
     about = "Find what is on a network.",
     long_about = "Find what is on a network.\n\n\
-        Zond discovers which hosts on a network are alive. Discovery uses ARP \
-        and ICMPv6 on the local segment and raw TCP elsewhere, which needs root; \
-        without it the scan falls back to ordinary TCP connect attempts and says \
-        so.",
-    propagate_version = true,
+        Zond finds which hosts on a network are alive, which of their ports are \
+        open, what is listening behind each one, and which advisories name the \
+        versions it read off the wire. Every run is recorded as it goes, so one \
+        that stopped can be continued and two can be compared.\n\n\
+        Raw probes need root, or the cap_net_raw a package install grants. \
+        Without either, a scan falls back to ordinary TCP connections, which find \
+        less, and says so.",
+    after_help = GETTING_STARTED,
+    after_long_help = top_long_help(),
     arg_required_else_help = true
 )]
 pub(crate) struct Cli {
@@ -59,6 +63,54 @@ pub(crate) struct Cli {
     /// What to do.
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// What `zond -h` ends with: the handful of commands a first run is made of.
+const GETTING_STARTED: &str = "\
+Getting started:
+  sudo zond discover lan            which hosts on this segment are alive
+  sudo zond scan 192.168.0.10       a host's open ports, and what is behind them
+  zond read latest                  the last scan, printed again
+  zond diff baseline.json latest    what changed since
+
+Every command has its own help: zond scan -h, or --help for all of it.";
+
+/// What `zond --help` ends with: the first steps, then what a script or a
+/// person looking for the settings needs to know.
+///
+/// The settings paths are this platform's, resolved when the help is drawn,
+/// because they differ between Unix and Windows and a person reading this is
+/// about to go and open one.
+fn top_long_help() -> String {
+    let path = |found: Option<std::path::PathBuf>, name: &str| {
+        found.map_or_else(
+            || format!("{name} (no home directory found)"),
+            |path| path.display().to_string(),
+        )
+    };
+    let cli = path(crate::settings::user_path(), "cli.toml");
+    let engine = path(zond_engine::import::settings::paths::user(), "engine.toml");
+
+    format!(
+        "{GETTING_STARTED}
+
+Exit status:
+  0    finished, and covered everything it was asked to
+  1    could not be carried out
+  2    what was asked for was not usable
+  3    finished, but something it was asked to cover was not covered
+  4    a comparison found changes (zond diff only)
+  130  interrupted with Ctrl-C
+
+Settings:
+  {cli}
+      how a run is shown
+  {engine}
+      what a scan puts on the wire
+
+  Both are written on the first run with every key commented out. A flag
+  overrides either one for a single run."
+    )
 }
 
 /// What `zond` was asked to do.
