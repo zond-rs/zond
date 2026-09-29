@@ -3784,6 +3784,7 @@ mod tests {
             window: Some(WindowSummary::new(1, 64, 9, true, at_floor)),
             segments_off_target: 0,
             replies_without_rtt: 0,
+            refusals_unattributed: 0,
             hosts_found: u64::try_from(targets - unanswered).expect("a small fixture"),
             answered_on: vec![0; ATTEMPTS_COUNTED],
             answered_unattributed: 0,
