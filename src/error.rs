@@ -329,17 +329,27 @@ pub(crate) enum Error {
         known: String,
     },
 
-    /// One of nmap's flags that zond has no counterpart for, or has not built
-    /// yet, named with what to write instead.
+    /// A flag zond does not take, or has not built yet, that is common enough
+    /// elsewhere to be typed here, named with what to write instead.
     ///
     /// Refused by name for the reason [`FormatNotBuilt`](Self::FormatNotBuilt)
     /// is: an unknown-flag error would send somebody looking for a typo.
-    #[error("{spelling} is nmap's, and zond does not take it: {instead}")]
-    NmapFlag {
+    #[error("{spelling} is not a zond flag: {instead}")]
+    UnbuiltFlag {
         /// The spelling that was given.
         spelling: String,
         /// What to write instead, or why there is nothing to.
         instead: &'static str,
+    },
+
+    /// `zond help` was asked about something that is neither a command nor
+    /// a topic.
+    #[error("'{asked}' is neither a command nor a topic: {known}")]
+    UnknownHelp {
+        /// What was asked about.
+        asked: String,
+        /// The commands and topics there are.
+        known: String,
     },
 
     /// A page was asked for that the listing does not have.
@@ -405,7 +415,8 @@ impl Error {
             | Error::MalformedOutputAs { .. }
             | Error::UnknownFormatName { .. }
             | Error::FormatNotBuilt { .. }
-            | Error::NmapFlag { .. }
+            | Error::UnbuiltFlag { .. }
+            | Error::UnknownHelp { .. }
             | Error::WrongPhase { .. }
             | Error::SpanOnAJob { .. }
             | Error::NotAFold { .. }

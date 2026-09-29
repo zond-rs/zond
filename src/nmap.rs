@@ -181,7 +181,7 @@ fn refused(token: &str) -> Option<&'static str> {
 /// Reads one token as an nmap spelling, if it is one.
 fn spelling(token: &str) -> Result<Option<Rewrite>, Error> {
     if let Some(instead) = refused(token) {
-        return Err(Error::NmapFlag {
+        return Err(Error::UnbuiltFlag {
             spelling: token.to_owned(),
             instead,
         });
@@ -338,7 +338,7 @@ mod tests {
     fn nmaps_flags_without_a_counterpart_are_refused_by_name() {
         for spelling in ["-T4", "-T", "-Tinsane", "-A", "-f", "-S"] {
             let refused = rewrite(["zond", "s", spelling].iter().map(OsString::from));
-            let Err(Error::NmapFlag {
+            let Err(Error::UnbuiltFlag {
                 spelling: named, ..
             }) = refused
             else {

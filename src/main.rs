@@ -38,6 +38,7 @@ mod cli;
 mod command;
 mod descriptors;
 mod diagnostics;
+mod docs;
 mod error;
 mod exit;
 mod export;
@@ -46,6 +47,7 @@ mod nmap;
 mod render;
 mod settings;
 mod target;
+mod topics;
 
 use std::process::ExitCode;
 
@@ -127,6 +129,15 @@ fn runtime() -> Result<tokio::runtime::Runtime, Error> {
 /// The one place the pieces are wired together: diagnostics are installed, a
 /// renderer is chosen, and the subcommand is handed both.
 async fn run(cli: Cli) -> Result<Outcome, Error> {
+    // Help and the files a package installs read nothing and write nothing a
+    // run would, so they come before the settings are provisioned.
+    match &cli.command {
+        Command::Help { topic } => return docs::help(topic),
+        Command::Completions { shell } => return docs::completions(*shell),
+        Command::Generate { directory } => return docs::generate(directory),
+        _ => {}
+    }
+
     let verbosity = cli.output.verbosity();
 
     // Before anything that might emit an event: a subscriber installed after
@@ -254,7 +265,11 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             }
             _ => command::detections::run(args, presentation, verbosity, palette),
         },
-        Command::Journal(_) | Command::Resume(_) => unreachable!("handled above"),
+        Command::Journal(_)
+        | Command::Resume(_)
+        | Command::Help { .. }
+        | Command::Completions { .. }
+        | Command::Generate { .. } => unreachable!("handled above"),
     }
 }
 

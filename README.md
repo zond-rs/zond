@@ -160,14 +160,6 @@ rather than being overridden.
 terse listing, or tab-separated records. `presentation` in `cli.toml` picks it
 for every run.
 
-## Coming from nmap
-
-The spellings your hands already know mostly work. `-p`, `-p-`, `-n`, `-F`,
-`-O`, `-Pn`, `-iL`, `-g`, `-D`, `-e`, `--max-rate`, `--reason`, `--badsum` and
-the `-o` family mean what they mean there, and `-sS`, `-sU` and `-sV` read as
-the zond flags they stand for. The ones zond has no counterpart for, such as
-`-sT` or `-T4`, are refused with what to write instead.
-
 ## Exit status
 
 | | |

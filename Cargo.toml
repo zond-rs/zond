@@ -101,6 +101,12 @@ zond-engine = { version = "0.19.0", path = "../zond-engine", features = [
 ] }
 
 clap = { version = "4.5", features = ["derive", "wrap_help", "string"] }
+# Shell completions and man pages, both generated from the same definition the
+# parser is, so neither can describe a flag the parser does not have. The
+# clap project's own, and the only way to get either without writing them by
+# hand and keeping them in step.
+clap_complete = "4.5"
+clap_mangen = "0.2"
 # Only the runtime and the signal handler. The engine brings the rest of tokio
 # with it; naming `full` here would say this crate needs it, and it does not.
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal"] }

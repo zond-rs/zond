@@ -60,7 +60,8 @@ use crate::settings::Risk;
         less, and says so.",
     after_help = GETTING_STARTED,
     after_long_help = top_long_help(),
-    arg_required_else_help = true
+    arg_required_else_help = true,
+    disable_help_subcommand = true
 )]
 pub(crate) struct Cli {
     /// How much to say while running.
@@ -74,8 +75,8 @@ pub(crate) struct Cli {
 
 impl Cli {
     /// Settles what the parser read into what the commands act on: the files
-    /// of targets and exclusions folded into the lists typed out, and nmap's
-    /// scan types into the flags they stand for.
+    /// of targets and exclusions folded into the lists typed out, and the scan
+    /// types `-s` names into the flags they stand for.
     ///
     /// A contradiction found here is a usage error like any the parser finds,
     /// told in its words and with its exit status.
@@ -146,14 +147,16 @@ fn target_list(path: &str) -> Result<TargetList, String> {
 }
 
 /// What `zond -h` ends with: the handful of commands a first run is made of.
-const GETTING_STARTED: &str = "\
+pub(crate) const GETTING_STARTED: &str = "\
 Getting started:
   sudo zond discover lan            which hosts on this segment are alive
   sudo zond scan 192.168.0.10       a host's open ports, and what is behind them
   zond read latest                  the last scan, printed again
   zond diff baseline.json latest    what changed since
 
-Every command has its own help: zond scan -h, or --help for all of it.";
+Every command has its own help: zond scan -h, or --help for all of it.
+zond help lists the topics several commands share: targets, ports, output,
+settings and exit-codes.";
 
 /// What `zond --help` ends with: the first steps, then what a script or a
 /// person looking for the settings needs to know.
@@ -232,7 +235,43 @@ pub(crate) enum Command {
 
     /// Check the detections a scan would run, without scanning.
     Detections(DetectionsArgs),
+
+    /// Print a script that completes zond's commands and flags in a shell.
+    #[command(after_help = COMPLETIONS_HELP)]
+    Completions {
+        /// The shell to complete in.
+        #[arg(value_name = "SHELL")]
+        shell: clap_complete::Shell,
+    },
+
+    /// Show the help for a command, or one of the topics below.
+    #[command(after_help = crate::topics::listed())]
+    Help {
+        /// A command, as `zond help journal prune`, or a topic, as
+        /// `zond help targets`. Nothing lists the commands and the topics.
+        #[arg(value_name = "COMMAND|TOPIC")]
+        topic: Vec<String>,
+    },
+
+    /// Write the man pages and the shell completions into a directory, for a
+    /// package to install.
+    #[command(name = "__generate", hide = true)]
+    Generate {
+        /// Where to write them: `man/` and `completions/` inside it.
+        #[arg(value_name = "DIR")]
+        directory: std::path::PathBuf,
+    },
 }
+
+/// What `zond completions -h` ends with.
+const COMPLETIONS_HELP: &str = "\
+Installing them:
+  bash        zond completions bash > ~/.local/share/bash-completion/completions/zond
+  zsh         zond completions zsh > ~/.zfunc/_zond   (with ~/.zfunc in fpath)
+  fish        zond completions fish > ~/.config/fish/completions/zond.fish
+  PowerShell  zond completions powershell >> $PROFILE
+
+A package install puts them where each shell looks already.";
 
 impl Command {
     /// Whether this command watches the network rather than reading what an
@@ -254,7 +293,12 @@ impl Command {
             Command::Read(args) => Some(&args.show),
             Command::Merge(args) => Some(&args.show),
             Command::Resume(args) => Some(&args.show),
-            Command::Journal(_) | Command::Diff(_) | Command::Detections(_) => None,
+            Command::Journal(_)
+            | Command::Diff(_)
+            | Command::Detections(_)
+            | Command::Completions { .. }
+            | Command::Help { .. }
+            | Command::Generate { .. } => None,
         }
     }
 
@@ -1483,7 +1527,7 @@ pub(crate) struct ScanArgs {
     /// Which ports to probe: `22,80,443`, `1-1024`, `u:53,161` for UDP,
     /// `s:2905` for SCTP.
     ///
-    /// A qualifier holds until the next one, as in nmap, and `t:` switches back
+    /// A qualifier holds until the next one, and `t:` switches back
     /// to TCP: `-p u:53,161,t:22`.
     ///
     /// A range may leave off either end. `-p-` is every port there is, `-p-1024`
@@ -1530,8 +1574,8 @@ pub(crate) struct ScanArgs {
     )]
     pub top_ports: Option<usize>,
 
-    /// Probe the hundred TCP ports most likely to be listening: `--top-ports
-    /// 100`, spelled the way nmap spells its fast scan.
+    /// Probe the hundred TCP ports most likely to be listening: a quick pass,
+    /// and `--top-ports 100` in one letter.
     #[arg(
         help_heading = "Ports",
         short = 'F',
@@ -1712,20 +1756,16 @@ pub(crate) struct ScanArgs {
     )]
     pub tcp_technique: Option<TcpScanTechnique>,
 
-    /// nmap's scan types, written the way nmap writes them: `-sS`, `-sU`,
-    /// `-sV`.
+    /// What kind of scan to run, by letter: `-sS` for SYN, `-sU` for UDP,
+    /// `-sV` for service detection.
     ///
     /// `S F N X A W M` are the TCP techniques `--tcp-technique` names, `syn`
     /// through `maimon`, and `Y` and `Z` the SCTP ones. `U` reads the `-p` list
     /// as UDP ports, or with no list probes the likeliest UDP ports, and beside
     /// a TCP letter scans both. `V` is service detection, which runs unless it
     /// was turned off. Letters combine, `-sSV`, and so do flags, `-sS -sU`.
-    ///
-    /// For the hands that type nmap's. The zond spellings above are the ones
-    /// the help and the documentation use.
     #[arg(
         help_heading = "Techniques",
-        hide_short_help = true,
         short = 's',
         long = "scan-type",
         value_name = "LETTERS",
@@ -2015,7 +2055,7 @@ pub(crate) fn join_detect_step(arguments: Vec<std::ffi::OsString>) -> Vec<std::f
         .collect()
 }
 
-/// One of nmap's scan types, as `-s` reads its letters.
+/// One scan type, as `-s` reads its letters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanType {
     /// A TCP technique: `S`, `F`, `N`, `X`, `A`, `W` or `M`.
@@ -2053,8 +2093,8 @@ fn scan_types(letters: &str) -> Result<ScanTypes, String> {
             'U' => Ok(ScanType::Udp),
             'V' => Ok(ScanType::Services),
             'T' => Err(String::from(
-                "-sT has no counterpart: a run without root completes connections already, \
-                 and one with root sends SYNs",
+                "there is no -sT: a run without root completes connections already, and one \
+                 with root sends SYNs",
             )),
             'n' => Err(String::from(
                 "-sn is `zond discover`, which finds hosts without scanning their ports",
@@ -2062,7 +2102,7 @@ fn scan_types(letters: &str) -> Result<ScanTypes, String> {
             'O' => Err(String::from(
                 "-sO is --ip-protocols, given the protocol numbers to ask about, as in 1,6,17,132",
             )),
-            'I' => Err(String::from("-sI is --idle-scan ZOMBIE")),
+            'I' => Err(String::from("an idle scan is --idle-scan ZOMBIE")),
             'C' => Err(String::from(
                 "-sC is -d, which runs the checks a scan makes against what it identified",
             )),
@@ -2259,7 +2299,7 @@ fn ip_protocols(text: &str) -> Result<std::collections::BTreeSet<u8>, String> {
 /// Written out rather than left to the engine's documentation, because a person
 /// who has just mistyped a range is not going to go and read a crate's docs, and
 /// the shortened range in particular is not a form anybody guesses.
-const TARGET_FORMS: &str = "\
+pub(crate) const TARGET_FORMS: &str = "\
 Target forms:
   192.168.0.1        one address
   192.168.0.1-50     a range; the end continues the start's octets
@@ -2274,7 +2314,7 @@ Target forms:
 ";
 
 /// How a run is stopped, shown under both subcommands.
-const STOPPING: &str = "
+pub(crate) const STOPPING: &str = "
 Stopping a run:
   q, or Ctrl-C, stops the scan and reports what was found so far. Either again
   leaves without waiting for the probes still in flight. Reading a keypress
@@ -2285,7 +2325,7 @@ Stopping a run:
 ///
 /// Shared rather than written twice: they take the same flags, and two copies
 /// of a format list is two lists to keep in step.
-const OUTPUT_FORMS: &str = "
+pub(crate) const OUTPUT_FORMS: &str = "
 Writing the report to a file:
   -o report.json          the extension names the format
   -o report.html -o r.csv  more than one file, one flag each
@@ -2293,8 +2333,8 @@ Writing the report to a file:
   --output-all engagement  every format, each under its own extension
 
 Formats: json, jsonl, csv, html, and xml, the last being nmap's, for the tools
-that already ingest it. Nmap's own spellings work too: -oX, -oJ, -oC, -oH, -oL
-and -oA. A file is written as well as the terminal output, never instead of it,
+that already ingest it. Each has a short spelling too: -oX, -oJ, -oC, -oH, -oL,
+and -oA for all of them. A file is written as well as the terminal output, never instead of it,
 and a destination that names no format is refused before the scan starts rather
 than after it.
 ";
@@ -2664,7 +2704,7 @@ pub(crate) struct EngineArgs {
     /// `-OO` as thoroughly as this engine can.
     ///
     /// `-O` is `--os-detection active`, the first level that sends probes of
-    /// its own, and the one nmap's `-O` asks for. `-OO` is `--os-detection
+    /// its own. `-OO` is `--os-detection
     /// aggressive`: a series of SYNs to every host with a TCP port, a ping to
     /// every host without, and twice the samples `active` takes. Reach for it
     /// when the machine's operating system is already known and the point is to

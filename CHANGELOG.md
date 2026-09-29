@@ -39,9 +39,11 @@ it. `listen` no longer accepts the probe, pace and evasion flags it ignored, and
   evidence and remedy together.
 - `--max-rate` and `--min-rate` as names for the probe rates, and the American
   spellings `--color`, `--characterize` and `--cve-catalog`.
-- nmap's `-sS`, `-sU`, `-sV` and the other scan types, `-Pn`, `-iL`, `-sI`,
-  `--excludefile`, `--max-retries` and `--version-all`. `-T`, `-A`, `-sT`, `-f`
-  and `-S` are refused with what to write instead.
+- `-s` for the scan type by letter: `-sS` for SYN, `-sU` for UDP, `-sV` for
+  service detection, and the rest of `--tcp-technique` and `--sctp-technique`.
+- `-Pn` for `--assume-up`, `-iL` for `--input-file`, `-sI` for `--idle-scan`,
+  and `--excludefile`, `--max-retries`, `--version-all` and `--version-light`.
+  `-T`, `-A`, `-f` and `-S` are refused with what to write instead.
 - `journal show latest`.
 
 ### Help
