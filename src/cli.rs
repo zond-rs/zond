@@ -223,7 +223,10 @@ pub(crate) struct DetectionArgs {
 
 /// Arguments to `zond detections`.
 #[derive(Debug, Args)]
-#[command(after_help = detections_help())]
+#[command(
+    after_help = examples_of(&detections_help()),
+    after_long_help = detections_help()
+)]
 pub(crate) struct DetectionsArgs {
     /// What to do with them. Listing what a scan would run, when nothing says.
     #[command(subcommand)]
@@ -564,7 +567,7 @@ Giving them to somebody else:
 
 /// Arguments to `zond read`.
 #[derive(Debug, Args)]
-#[command(after_help = read_help())]
+#[command(after_help = examples_of(&read_help()), after_long_help = read_help())]
 pub(crate) struct ReadArgs {
     /// The scan to print: a file, or a record as `zond journal` lists them.
     ///
@@ -582,6 +585,16 @@ pub(crate) struct ReadArgs {
     /// Where to write it, instead of the terminal.
     #[command(flatten)]
     pub export: ExportArgs,
+}
+
+/// What a command's `-h` ends with, given what its `--help` ends with: the
+/// examples, which open every one of them, and a pointer to the rest.
+///
+/// `-h` is for finding the flag you came for, and a page of prose under it
+/// pushes the flags off the screen.
+fn examples_of(long: &str) -> String {
+    let examples = long.split("\n\n").next().unwrap_or(long);
+    format!("{examples}\n\n--help says more.")
 }
 
 /// What `zond read --help` ends with.
@@ -613,7 +626,7 @@ A folded report says what went into it:
 
 /// Arguments to `zond merge`.
 #[derive(Debug, Args)]
-#[command(after_help = merge_help())]
+#[command(after_help = examples_of(&merge_help()), after_long_help = merge_help())]
 pub(crate) struct MergeArgs {
     /// The scans to fold together: files, or records as `zond journal` lists
     /// them.
@@ -679,7 +692,7 @@ Where it goes:
 
 /// Arguments to `zond diff`.
 #[derive(Debug, Args)]
-#[command(after_help = diff_help())]
+#[command(after_help = diff_short_help(), after_long_help = diff_help())]
 pub(crate) struct DiffArgs {
     /// The earlier scan: a file, or a record as `zond journal` lists them.
     ///
@@ -716,6 +729,18 @@ pub(crate) struct DiffArgs {
     /// Whether to mask the comparison on the way out.
     #[command(flatten)]
     pub redact: RedactArgs,
+}
+
+/// What `zond diff -h` ends with: the examples, and the exit status, which a
+/// script calling it is written against.
+fn diff_short_help() -> String {
+    let long = diff_help();
+    let examples = long.split("\n\n").next().unwrap_or(&long);
+    format!(
+        "{examples}
+
+Exit status: 0 when nothing changed, 4 when something did. --help says more."
+    )
 }
 
 /// What `zond diff --help` ends with.
@@ -1086,7 +1111,7 @@ pub(crate) fn parse_duration(text: &str) -> Result<std::time::Duration, String> 
 
 /// Arguments to `zond discover`.
 #[derive(Debug, Args)]
-#[command(after_help = discover_help())]
+#[command(after_help = DISCOVER_SHORT_HELP, after_long_help = discover_help())]
 pub(crate) struct DiscoverArgs {
     /// What to scan: an address, a range, a CIDR block, a hostname, or `lan`.
     ///
@@ -1157,7 +1182,7 @@ pub(crate) struct DiscoverArgs {
 // exactly these fields, the same shape [`EngineArgs`] carries.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
-#[command(after_help = scan_help())]
+#[command(after_help = SCAN_SHORT_HELP, after_long_help = scan_help())]
 pub(crate) struct ScanArgs {
     /// What to scan: an address, a range, a CIDR block, a hostname, or `lan`.
     ///
@@ -1703,6 +1728,27 @@ and -oA. A file is written as well as the terminal output, never instead of it,
 and a destination that names no format is refused before the scan starts rather
 than after it.
 ";
+
+/// What `zond discover -h` ends with.
+const DISCOVER_SHORT_HELP: &str = "\
+Examples:
+  sudo zond discover lan
+  sudo zond d 192.168.0.0/24 --exclude 192.168.0.1
+  sudo zond d 10.0.0.1-50 -o hosts.json
+
+--help lists every form a target takes, the report formats, and how to stop a
+run.";
+
+/// What `zond scan -h` ends with.
+const SCAN_SHORT_HELP: &str = "\
+Examples:
+  sudo zond scan 192.168.0.0/24
+  sudo zond s 10.0.0.1 -p-                      every port there is
+  sudo zond s lan --top-ports 100 --pipe        a quick pass, one record per line
+  sudo zond s 10.0.0.0/24 -p 22,443 -o report.html
+
+--help lists every form a target takes, the report formats, and how to stop a
+run.";
 
 /// What is shown under `zond discover --help`, below the flags.
 ///
