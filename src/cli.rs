@@ -446,7 +446,7 @@ pub(crate) struct TestArgs {
     /// triggers a weakness to confirm it actually fires. `zond scan` defaults to
     /// `passive`; a test is an explicit act against a chosen target, so it
     /// opens the ceiling instead of making you raise it.
-    #[arg(long, value_name = "CLASS")]
+    #[arg(long, value_name = "CLASS", value_parser = detection_ceiling())]
     pub detection: Option<DetectionEnvelope>,
 }
 
@@ -636,9 +636,7 @@ pub(crate) struct MergeArgs {
     /// DHCP lease, and is what a segment with phones on it wants. `primary`
     /// treats the address itself as the thing being recorded, which is what
     /// folding scans of a public range means.
-    ///
-    /// [possible values: any, hardware, primary]
-    #[arg(long, value_name = "HOW")]
+    #[arg(long, value_name = "HOW", value_parser = identity())]
     pub identity: Option<Identity>,
 
     /// Whether to mask it on the way out.
@@ -702,9 +700,7 @@ pub(crate) struct DiffArgs {
     /// is what a segment with phones on it wants. `primary` treats the address
     /// itself as the thing being watched, which is what an external scan of a
     /// public range means.
-    ///
-    /// [possible values: any, hardware, primary]
-    #[arg(long, value_name = "HOW")]
+    #[arg(long, value_name = "HOW", value_parser = identity())]
     pub identity: Option<Identity>,
 
     /// Write the comparison to FILE instead of printing it.
@@ -1311,9 +1307,7 @@ pub(crate) struct ScanArgs {
     /// unprivileged fallback; the rest need root and are refused without it
     /// rather than quietly substituted. `window` reads an ACK's reset for its
     /// window field, which some stacks set differently on an open port.
-    ///
-    /// [possible values: syn, fin, null, xmas, maimon, ack, window]
-    #[arg(long, value_name = "TECHNIQUE")]
+    #[arg(long, value_name = "TECHNIQUE", value_parser = tcp_technique())]
     pub tcp_technique: Option<TcpScanTechnique>,
 
     /// Which SCTP probe carries the scan, for the ports named `s:`.
@@ -1322,9 +1316,7 @@ pub(crate) struct ScanArgs {
     /// listener positively; `cookie-echo` sends an unminted cookie, which a
     /// closed port answers and an open one ignores. Both need root. Only the
     /// ports written as SCTP, `-p s:2905`, are probed this way.
-    ///
-    /// [possible values: init, cookie-echo]
-    #[arg(long, value_name = "TECHNIQUE")]
+    #[arg(long, value_name = "TECHNIQUE", value_parser = sctp_technique())]
     pub sctp_technique: Option<SctpScanTechnique>,
 
     /// Enumerate the TLS versions and cipher suites each TLS port accepts.
@@ -1396,9 +1388,7 @@ pub(crate) struct ScanArgs {
     /// run only when an operator names them here.
     ///
     /// Takes the step number as readily as the word, which is what `-d` passes.
-    ///
-    /// [possible values: off, passive, active-benign, active-mutating, exploit, dos]
-    #[arg(long, value_name = "CLASS")]
+    #[arg(long, value_name = "CLASS", value_parser = detection_ceiling())]
     pub detection: Option<DetectionEnvelope>,
 
     /// How far to go past reading what the scan gathered, as a step from 0 to 5.
@@ -1416,9 +1406,6 @@ pub(crate) struct ScanArgs {
     /// with an equals sign or against the letter, `-d=4` or `-d4`, but never
     /// apart: `zond scan -d 192.0.2.1` would otherwise read the address as a
     /// step and scan nothing.
-    ///
-    /// [possible values: 0 off, 1 passive, 2 active-benign, 3 active-mutating,
-    /// 4 exploit, 5 dos]
     #[arg(
         short = 'd',
         long = "detect",
@@ -1426,6 +1413,7 @@ pub(crate) struct ScanArgs {
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "active-benign",
+        value_parser = detection_ceiling(),
         conflicts_with = "detection"
     )]
     pub detect: Option<DetectionEnvelope>,
@@ -1832,9 +1820,7 @@ pub(crate) struct EngineArgs {
     pub redact: bool,
 
     /// How hard the scan tries before it accepts silence as an answer.
-    ///
-    /// [possible values: single, fast, balanced, thorough]
-    #[arg(long, value_name = "LEVEL")]
+    #[arg(long, value_name = "LEVEL", value_parser = effort())]
     pub effort: Option<ScanEffort>,
 
     /// Replace the attempt budget outright, whatever --effort implies.
@@ -1896,9 +1882,7 @@ pub(crate) struct EngineArgs {
     pub scan_timeout: Option<std::time::Duration>,
 
     /// How raw probes are placed on the wire.
-    ///
-    /// [possible values: auto, raw_socket, ethernet]
-    #[arg(long, value_name = "MODE")]
+    #[arg(long, value_name = "MODE", value_parser = send_mode())]
     pub send_mode: Option<SendMode>,
 
     /// Send probes to routed targets from this interface, whatever the
@@ -1925,9 +1909,7 @@ pub(crate) struct EngineArgs {
     ///
     /// `passive` sends nothing of its own. `active` and above send probes, and
     /// have to be asked for.
-    ///
-    /// [possible values: off, passive, active, aggressive]
-    #[arg(long, value_name = "LEVEL")]
+    #[arg(long, value_name = "LEVEL", value_parser = os_detection())]
     pub os_detection: Option<OsDetection>,
 
     /// Identify the system behind each host as thoroughly as this engine can.
@@ -1961,9 +1943,7 @@ pub(crate) struct EngineArgs {
     /// Turning it down does not make an unknown port faster to scan. Asking is
     /// how a port is finished with quickly, and the alternative is waiting out a
     /// greeting that never comes.
-    ///
-    /// [possible values: off, banner, probe, thorough]
-    #[arg(long, value_name = "LEVEL")]
+    #[arg(long, value_name = "LEVEL", value_parser = service_detection())]
     pub service_detection: Option<ServiceDetection>,
 
     /// Report port states and no service detail.
@@ -2190,6 +2170,134 @@ fn scan_flags(text: &str) -> Result<u8, String> {
     }
 
     Ok(flags)
+}
+
+/// Reads a value with the type's own parser, and names the words it takes, so
+/// `--help` lists them and a shell can complete them.
+///
+/// A type that only implements `FromStr` gives clap nothing to list. The list
+/// is for reading alone: what is accepted is still the parser's call, so a step
+/// number, another case, or an alternative spelling is taken as it always was.
+#[derive(Clone)]
+pub(crate) struct Words<T> {
+    /// The words to list, in the order the help shows them.
+    words: fn() -> Vec<String>,
+    /// What turns a word into a value, or says why it cannot.
+    parse: fn(&str) -> Result<T, String>,
+}
+
+impl<T: Clone + Send + Sync + 'static> clap::builder::TypedValueParser for Words<T> {
+    type Value = T;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<T, clap::Error> {
+        let parse = self.parse;
+        clap::builder::StringValueParser::new()
+            .try_map(move |text| parse(&text))
+            .parse_ref(cmd, arg, value)
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            (self.words)()
+                .into_iter()
+                .map(clap::builder::PossibleValue::new),
+        ))
+    }
+}
+
+/// [`Words`] for a type whose `FromStr` is the whole of its grammar.
+fn words<T>(words: fn() -> Vec<String>) -> Words<T>
+where
+    T: std::str::FromStr + Clone + Send + Sync + 'static,
+    T::Err: std::fmt::Display,
+{
+    Words {
+        words,
+        parse: |text| text.parse::<T>().map_err(|error| error.to_string()),
+    }
+}
+
+/// Each of `all`, by the name it is written under.
+fn named<T: Copy>(all: &[T], name: fn(T) -> &'static str) -> Vec<String> {
+    all.iter().map(|&value| name(value).to_owned()).collect()
+}
+
+fn effort() -> Words<ScanEffort> {
+    words(|| named(ScanEffort::ALL, ScanEffort::name))
+}
+
+fn os_detection() -> Words<OsDetection> {
+    words(|| named(OsDetection::ALL, OsDetection::name))
+}
+
+fn service_detection() -> Words<ServiceDetection> {
+    words(|| named(ServiceDetection::ALL, ServiceDetection::name))
+}
+
+fn tcp_technique() -> Words<TcpScanTechnique> {
+    words(|| named(TcpScanTechnique::ALL, TcpScanTechnique::name))
+}
+
+fn sctp_technique() -> Words<SctpScanTechnique> {
+    words(|| named(SctpScanTechnique::ALL, SctpScanTechnique::name))
+}
+
+fn identity() -> Words<Identity> {
+    words(|| named(&Identity::ALL, Identity::as_str))
+}
+
+fn presentation() -> Words<Presentation> {
+    words(|| named(&Presentation::ALL, Presentation::as_str))
+}
+
+fn colour() -> Words<ColourChoice> {
+    words(|| named(&ColourChoice::ALL, ColourChoice::as_str))
+}
+
+fn risk() -> Words<Risk> {
+    words(|| Risk::names().into_iter().map(str::to_owned).collect())
+}
+
+/// The detection ceiling by the words `--detection` and `-d` take: `off`, then
+/// each class in lower case, least intrusive first. The engine labels the top
+/// class `DoS` and reads it without regard to case, and a word a person types
+/// on a command line is written in lower case.
+fn detection_ceiling() -> Words<DetectionEnvelope> {
+    words(|| {
+        std::iter::once("off".to_owned())
+            .chain(
+                zond_engine::model::finding::DetectionClass::ALL
+                    .iter()
+                    .map(|class| class.label().to_ascii_lowercase()),
+            )
+            .collect()
+    })
+}
+
+/// How probes are placed on the wire, spelled `raw-socket` like every other
+/// word on the command line. The engine names that mode `raw_socket`, which
+/// is also taken, since it is the spelling `engine.toml` uses.
+fn send_mode() -> Words<SendMode> {
+    Words {
+        words: || {
+            SendMode::ALL
+                .iter()
+                .map(|mode| mode.name().replace('_', "-"))
+                .collect()
+        },
+        parse: |text| {
+            text.replace('-', "_")
+                .parse::<SendMode>()
+                .map_err(|error| error.to_string())
+        },
+    }
 }
 
 /// Reads a positive, finite multiplier into the engine's [`TimeoutScale`].
@@ -2439,9 +2547,7 @@ pub(crate) struct OutputArgs {
     ///
     /// `fancy` is a numbered tree per host and the default; `minimal` is the
     /// terse tagged form; `pipe` is tab-separated records for a program.
-    ///
-    /// [possible values: pipe, minimal, fancy]
-    #[arg(long, value_name = "MODE", global = true)]
+    #[arg(long, value_name = "MODE", global = true, value_parser = presentation())]
     pub presentation: Option<Presentation>,
 
     /// Shorthand for `--presentation pipe`.
@@ -2461,9 +2567,13 @@ pub(crate) struct OutputArgs {
     ///
     /// Box drawing is not on this switch. A file holds a box-drawing character
     /// perfectly well, so only `TERM=dumb` takes the tree away.
-    ///
-    /// [possible values: auto, always, never]
-    #[arg(long = "colour", alias = "color", value_name = "WHEN", global = true)]
+    #[arg(
+        long = "colour",
+        alias = "color",
+        value_name = "WHEN",
+        global = true,
+        value_parser = colour()
+    )]
     pub colour: Option<ColourChoice>,
 
     /// Show which packet settled each port, and who sent a refusal.
@@ -2506,9 +2616,7 @@ pub(crate) struct OutputArgs {
     ///
     /// `info` draws everything. Not on `--pipe` or the exports, which carry
     /// every finding whatever this says.
-    ///
-    /// [possible values: info, low, medium, high, critical]
-    #[arg(long = "risk", global = true, value_name = "GRADE")]
+    #[arg(long = "risk", global = true, value_name = "GRADE", value_parser = risk())]
     pub risk: Option<Risk>,
 
     /// Show what to do about each finding.
@@ -2611,6 +2719,60 @@ mod tests {
     #[test]
     fn the_command_definition_is_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    /// Every word a flag lists is one its parser takes. The list and the parser
+    /// are separate, so this is what keeps a completion from offering a value
+    /// that is then refused.
+    #[test]
+    fn every_listed_value_is_accepted_by_its_flag() {
+        use clap::builder::TypedValueParser;
+
+        fn check<T: Clone + Send + Sync + 'static>(name: &str, parser: &Words<T>) {
+            let command = Cli::command();
+            let listed: Vec<_> = parser.possible_values().expect("a list").collect();
+            assert!(!listed.is_empty(), "{name} lists nothing");
+            for value in listed {
+                parser
+                    .parse_ref(&command, None, std::ffi::OsStr::new(value.get_name()))
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{name} lists '{}' and refuses it: {error}",
+                            value.get_name()
+                        )
+                    });
+            }
+        }
+
+        check("effort", &effort());
+        check("os-detection", &os_detection());
+        check("service-detection", &service_detection());
+        check("tcp-technique", &tcp_technique());
+        check("sctp-technique", &sctp_technique());
+        check("identity", &identity());
+        check("presentation", &presentation());
+        check("colour", &colour());
+        check("risk", &risk());
+        check("detection", &detection_ceiling());
+        check("send-mode", &send_mode());
+    }
+
+    /// `raw-socket` is the command line's spelling, and `raw_socket`, which is
+    /// the engine's and the settings file's, is still taken.
+    #[test]
+    fn the_send_mode_takes_either_spelling() {
+        for spelling in ["raw-socket", "raw_socket"] {
+            let cli = Cli::try_parse_from(["zond", "d", "lan", "--send-mode", spelling])
+                .expect("should parse");
+            let Command::Discover(args) = cli.command else {
+                panic!("d is the discover alias");
+            };
+            assert_eq!(
+                args.engine.send_mode,
+                Some(SendMode::RawSocket),
+                "{spelling}"
+            );
+        }
     }
 
     /// An interface holding only IPv4 pins nothing for IPv6, so a run with a

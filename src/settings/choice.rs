@@ -132,6 +132,15 @@ impl Risk {
     pub(crate) fn as_str(self) -> &'static str {
         wire::severity_name(self.0)
     }
+    /// Every floor by name, weakest first.
+    #[must_use]
+    pub(crate) fn names() -> Vec<&'static str> {
+        Severity::ALL
+            .iter()
+            .copied()
+            .map(wire::severity_name)
+            .collect()
+    }
 }
 
 impl Risk {
@@ -188,11 +197,7 @@ impl FromStr for Risk {
             .map(Self)
             .ok_or_else(|| UnknownRisk {
                 written: written.to_owned(),
-                expected: Severity::ALL
-                    .iter()
-                    .copied()
-                    .map(wire::severity_name)
-                    .collect(),
+                expected: Self::names(),
             })
     }
 }

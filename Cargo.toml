@@ -100,7 +100,7 @@ zond-engine = { version = "0.19.0", path = "../zond-engine", features = [
     "import-nmap",
 ] }
 
-clap = { version = "4.5", features = ["derive", "wrap_help"] }
+clap = { version = "4.5", features = ["derive", "wrap_help", "string"] }
 # Only the runtime and the signal handler. The engine brings the rest of tokio
 # with it; naming `full` here would say this crate needs it, and it does not.
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal"] }
