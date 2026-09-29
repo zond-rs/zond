@@ -235,6 +235,19 @@ pub(crate) enum Error {
         known: usize,
     },
 
+    /// A journal was named that is on record and cannot be read.
+    ///
+    /// Apart from [`NoSuchJournal`](Self::NoSuchJournal) because the two send
+    /// a person different ways: one to check the id, the other to the reason,
+    /// a newer build's format or a file this process may not read.
+    #[error("scan '{id}' is on record and cannot be read: {reason}")]
+    UnreadableJournal {
+        /// The record, by the name it was written under.
+        id: String,
+        /// Why it cannot be read.
+        reason: String,
+    },
+
     /// The record named holds the other phase of a scan.
     ///
     /// A sweep counts addresses and a port scan counts address-and-port pairs,
@@ -358,6 +371,7 @@ impl Error {
             | Error::Link(_)
             | Error::Settings(_)
             | Error::NoSuchJournal { .. }
+            | Error::UnreadableJournal { .. }
             | Error::NoSuchPage { .. }
             | Error::UnknownExportFormat { .. }
             | Error::Unwritable { .. }

@@ -1276,6 +1276,7 @@ mod tests {
             window: None,
             segments_off_target: 0,
             replies_without_rtt: 0,
+            refusals_unattributed: 0,
             hosts_found: 0,
             answered_on: vec![0; ATTEMPTS_COUNTED],
             answered_unattributed: 0,

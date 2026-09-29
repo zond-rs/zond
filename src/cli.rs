@@ -1036,17 +1036,30 @@ pub(crate) enum JournalCommand {
     /// records go whatever their age. With no arguments at all, a finished scan
     /// is kept for a month and an unfinished one indefinitely, since an
     /// unfinished scan is the only copy of work you may still mean to continue.
+    ///
+    /// A record this build cannot read, such as one a newer zond wrote, goes
+    /// only when named or with `--unreadable` or `--all`.
     #[command(visible_alias = "rm")]
     Prune {
         /// Which to delete, as `zond journal` lists them.
         ///
         /// An id may be shortened to any prefix that names only one scan.
-        #[arg(value_name = "ID", conflicts_with_all = ["all", "completed", "older_than"])]
+        #[arg(
+            value_name = "ID",
+            conflicts_with_all = ["all", "completed", "older_than", "unreadable"]
+        )]
         ids: Vec<String>,
 
-        /// Delete every record, finished or not.
+        /// Delete every record, finished or not, including ones this build
+        /// cannot read.
         #[arg(long, conflicts_with_all = ["completed", "older_than"])]
         all: bool,
+
+        /// Delete the records this build cannot read, such as ones a newer
+        /// zond wrote. A link in the journal directory is never followed or
+        /// removed.
+        #[arg(long)]
+        unreadable: bool,
 
         /// Delete every finished record, whatever its age.
         #[arg(long, conflicts_with = "older_than")]

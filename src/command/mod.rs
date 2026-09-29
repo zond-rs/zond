@@ -80,8 +80,8 @@ pub(crate) fn scan_named(name: &str) -> Result<(String, ScanReport), Error> {
         return Ok((name.to_owned(), scan_in_file(path)?));
     }
 
-    let entries = journal::read()?;
-    let entry = journal::find(&entries, name)?;
+    let listing = journal::read()?;
+    let entry = journal::find_in(&listing, name)?;
 
     Ok((entry.manifest.id.clone(), store::report(&entry.directory)?))
 }
@@ -377,7 +377,7 @@ pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result
                 id: id.clone(),
                 known: paths::root()
                     .and_then(|root| store::list(&root).ok())
-                    .map_or(0, |entries| entries.len()),
+                    .map_or(0, |listing| listing.entries.len()),
             }
         }
         other => Error::JournalOpen(other),

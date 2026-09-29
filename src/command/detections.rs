@@ -567,8 +567,8 @@ fn journal_directory(scan: &str) -> Result<(PathBuf, String), Error> {
         return Ok((path.to_path_buf(), scan.to_string()));
     }
 
-    let entries = crate::command::journal::read()?;
-    let entry = crate::command::journal::find(&entries, scan)?;
+    let listing = crate::command::journal::read()?;
+    let entry = crate::command::journal::find_in(&listing, scan)?;
     Ok((entry.directory.clone(), entry.manifest.id.clone()))
 }
 
