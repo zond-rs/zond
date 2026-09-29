@@ -1940,7 +1940,7 @@ pub(crate) struct EvasionArgs {
     /// service, TLS and detection connections that follow leave from ports the
     /// system picks: one port cannot hold several connections to one target
     /// port at once.
-    #[arg(long = "source-port", visible_alias = "g", value_name = "PORT")]
+    #[arg(short = 'g', long = "source-port", value_name = "PORT")]
     pub source_port: Option<u16>,
 
     /// Mingle the real probes with decoys from these addresses.
@@ -2989,6 +2989,24 @@ mod tests {
         assert!(config.evasion.bad_tcp_checksum);
         // Nothing touched the source port, so it stays unset rather than zeroed.
         assert_eq!(config.evasion.source_port, None);
+    }
+
+    /// `-g 53` is nmap's spelling of a source port, and the one people arrive
+    /// with. It was once declared as a long alias, which took `--g 53` and
+    /// refused `-g 53`.
+    #[test]
+    fn the_source_port_takes_nmaps_short_flag() {
+        let cli =
+            Cli::try_parse_from(["zond", "s", "192.0.2.1", "-g", "53"]).expect("should parse");
+        let Command::Scan(args) = cli.command else {
+            panic!("s is the scan alias");
+        };
+        assert_eq!(args.engine.evasion.source_port, Some(53));
+
+        assert!(
+            Cli::try_parse_from(["zond", "s", "192.0.2.1", "--g", "53"]).is_err(),
+            "a one-letter long flag is not a spelling anybody means"
+        );
     }
 
     /// The scan-only knobs reach the config they name.
