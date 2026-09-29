@@ -97,9 +97,16 @@ jobs:
           fi
           echo "tag and crate agree on $crate"
 
+      # The man pages and completions are drawn from the binary's own command
+      # definition, so they are written by the binary this package ships, and
+      # dated by the commit so two builds of one release write the same pages.
       - name: Build the package
         working-directory: zond-cli
-        run: cargo deb
+        run: |
+          cargo build --release --locked
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" target/release/zond __generate target/assets
+          gzip -9n target/assets/man/*
+          cargo deb --no-build
 
       # What the package ended up claiming about itself, on the run rather than
       # only inside the file, so a dependency that resolved to an unexpected
@@ -248,6 +255,8 @@ jobs:
         working-directory: zond-cli
         run: |
           cargo build --release --locked
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" target/release/zond __generate target/assets
+          gzip -9n target/assets/man/*
           cargo generate-rpm
 
       # What the package requires, on the run, so a library that resolved to an

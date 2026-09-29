@@ -173,7 +173,12 @@ fn dated() -> String {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs())
         });
-    // Days since 1970 to a civil date, by Howard Hinnant's algorithm.
+    civil(seconds)
+}
+
+/// The date `seconds` after 1970 began, as `YYYY-MM-DD`: days to a civil date
+/// by Howard Hinnant's algorithm.
+fn civil(seconds: u64) -> String {
     let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
     let era = days.div_euclid(146_097);
     let of_era = days.rem_euclid(146_097);
@@ -239,3 +244,54 @@ Where the settings files are, when it is an absolute path.
 zond-targets(7), zond-ports(7), zond-output(7), zond-settings(7),
 zond-exit-codes(7)
 ";
+
+// ╔════════════════════════════════════════════╗
+// ║ ████████╗███████╗███████╗████████╗███████╗ ║
+// ║ ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝██╔════╝ ║
+// ║    ██║   █████╗  ███████╗   ██║   ███████╗ ║
+// ║    ██║   ██╔══╝  ╚════██║   ██║   ╚════██║ ║
+// ║    ██║   ███████╗███████║   ██║   ███████║ ║
+// ║    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚══════╝ ║
+// ╚════════════════════════════════════════════╝
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a package build installs is written without failing, and names
+    /// the files the package metadata lists. A page that did not render, or a
+    /// script written under another name, would otherwise surface only when a
+    /// release was cut.
+    #[test]
+    fn a_package_build_writes_every_page_and_script_it_installs() {
+        let directory =
+            std::env::temp_dir().join(format!("zond-cli-generate-{}", std::process::id()));
+        generate(&directory).expect("generated");
+
+        for page in [
+            "zond.1",
+            "zond-scan.1",
+            "zond-journal-prune.1",
+            "zond-ports.7",
+        ] {
+            assert!(directory.join("man").join(page).is_file(), "{page}");
+        }
+        for script in ["zond.bash", "_zond", "zond.fish"] {
+            assert!(
+                directory.join("completions").join(script).is_file(),
+                "{script}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// The dates a page is stamped with, at the edges of the calendar
+    /// arithmetic: the epoch, a leap day, and the last second of a year.
+    #[test]
+    fn a_page_is_dated_by_the_calendar() {
+        assert_eq!(civil(0), "1970-01-01");
+        assert_eq!(civil(951_782_400), "2000-02-29");
+        assert_eq!(civil(1_798_761_599), "2026-12-31");
+    }
+}
