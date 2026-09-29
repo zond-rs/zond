@@ -264,6 +264,10 @@ pub(crate) enum Command {
     /// Check the detections a scan would run, without scanning.
     Detections(DetectionsArgs),
 
+    /// Download the distributions' security feeds a scan judges versions by.
+    #[command(after_help = UPDATE_HELP)]
+    Update,
+
     /// Print a script that completes zond's commands and flags in a shell.
     #[command(after_help = COMPLETIONS_HELP)]
     Completions {
@@ -301,6 +305,15 @@ Installing them:
 
 A package install puts them where each shell looks already.";
 
+/// What `zond update --help` adds below the flags.
+const UPDATE_HELP: &str = "\
+Each feed says which distribution build fixed which vulnerability, so a host
+running a patched build of an old version is not reported for what it no
+longer has. Only what changed since the last update is downloaded.
+
+Kept in $XDG_CACHE_HOME/zond, else ~/.cache/zond (%LOCALAPPDATA%\\zond\\cache
+on Windows); under sudo, the invoking user's.";
+
 impl Command {
     /// Whether this command watches the network rather than reading what an
     /// earlier one wrote down.
@@ -326,7 +339,8 @@ impl Command {
             | Command::Detections(_)
             | Command::Completions { .. }
             | Command::Help { .. }
-            | Command::Generate { .. } => None,
+            | Command::Generate { .. }
+            | Command::Update => None,
         }
     }
 

@@ -386,6 +386,17 @@ pub(crate) enum Error {
     #[error("no directory to keep scan records in: this environment names no home")]
     NoJournalDirectory,
 
+    /// There is nowhere on this machine to keep downloaded feeds.
+    ///
+    /// The environment names no home at all, as for
+    /// [`NoJournalDirectory`](Self::NoJournalDirectory).
+    #[error("no directory to keep feeds in: this environment names no home")]
+    NoCacheDirectory,
+
+    /// The client that downloads feeds could not be set up.
+    #[error("{0}")]
+    Fetch(zond_engine::fetch::FetchError),
+
     /// The endpoint `zond detections test` was given was not a `host:port`.
     #[error(
         "'{target}' is not a host and port; name one as host:port, an IPv6 address bracketed as [::1]:443"
@@ -444,6 +455,8 @@ impl Error {
             | Error::Scan(_)
             | Error::Journal(_)
             | Error::NoJournalDirectory
+            | Error::NoCacheDirectory
+            | Error::Fetch(_)
             | Error::Runtime(_)
             | Error::MalformedTarget { .. } => Code::Failure,
             Error::Io(e) => {

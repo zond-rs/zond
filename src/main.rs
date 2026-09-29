@@ -265,6 +265,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             }
             _ => command::detections::run(args, presentation, verbosity, palette),
         },
+        Command::Update => command::update::run().await,
         Command::Journal(_)
         | Command::Resume(_)
         | Command::Help { .. }

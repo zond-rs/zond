@@ -30,6 +30,7 @@ pub(crate) mod page;
 pub(crate) mod read;
 pub(crate) mod resume;
 pub(crate) mod scan;
+pub(crate) mod update;
 
 use zond_engine::cve::Catalogue;
 use zond_engine::export::Redaction;

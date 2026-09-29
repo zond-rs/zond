@@ -66,6 +66,7 @@ administrator rights.
 | `zond diff` | what changed between two scans |
 | `zond merge` | several scans folded into one report |
 | `zond detections` | what a scan would check for, and compiling your own |
+| `zond update` | download the distributions' security feeds. The only command that fetches anything |
 
 ```bash
 zond discover lan                     # sweep this host's own segment

@@ -117,6 +117,13 @@ pub(crate) enum Outcome {
     /// The user stopped it. The results collected up to that point were still
     /// reported.
     Interrupted,
+    /// Nothing asked for was done, and each part that failed has already said
+    /// why.
+    ///
+    /// An error that ends a run says so itself; this is the run that went on
+    /// through every part, as an update tries every feed, and finished with
+    /// none of them done.
+    Failed,
     /// A comparison ran and found at least one confirmed change.
     ///
     /// Not a failure and not a partial result: the command did exactly what it
@@ -132,6 +139,7 @@ impl Outcome {
         match self {
             Outcome::Complete => Code::Success,
             Outcome::Partial => Code::Partial,
+            Outcome::Failed => Code::Failure,
             Outcome::Interrupted => Code::Interrupted,
             Outcome::Changed => Code::Changed,
         }
@@ -166,6 +174,7 @@ mod tests {
     fn every_outcome_has_the_status_it_claims() {
         assert_eq!(Outcome::Complete.code(), Code::Success);
         assert_eq!(Outcome::Partial.code(), Code::Partial);
+        assert_eq!(Outcome::Failed.code(), Code::Failure);
         assert_eq!(Outcome::Interrupted.code(), Code::Interrupted);
         assert_eq!(Outcome::Changed.code(), Code::Changed);
     }

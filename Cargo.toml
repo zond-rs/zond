@@ -102,10 +102,12 @@ libcap = "*"
 
 [dependencies]
 # Every format the engine can write, because a scanner nobody can get results
-# out of is not much of a scanner. `export-csv`, `export-html` and `export-nmap`
+# out of is not much of a scanner. `fetch` is what `zond update` downloads the
+# distributions' security feeds with; it runs only when that command is run. `export-csv`, `export-html` and `export-nmap`
 # add no dependencies at all; the JSON pair shares the `serde_json` the journal
 # already pulls in.
 zond-engine = { version = "0.19.0", path = "../zond-engine", features = [
+    "fetch",
     "import-settings",
     "export-all",
     "import-json",
