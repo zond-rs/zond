@@ -168,6 +168,19 @@ impl Command {
     /// scan carries its own provenance inside it, and a catalogue of detections
     /// is not a record of anything, so a build stamp on either is a line between
     /// the reader and what they asked for.
+    /// What this command was asked to show beside each verdict and finding,
+    /// for the commands that draw them.
+    pub(crate) const fn show(&self) -> Option<&ShowArgs> {
+        match self {
+            Command::Discover(args) => Some(&args.show),
+            Command::Scan(args) => Some(&args.show),
+            Command::Listen(args) => Some(&args.show),
+            Command::Read(args) => Some(&args.show),
+            Command::Merge(args) => Some(&args.show),
+            Command::Journal(_) | Command::Diff(_) | Command::Detections(_) => None,
+        }
+    }
+
     pub(crate) const fn watches_the_network(&self) -> bool {
         matches!(
             self,
@@ -609,6 +622,10 @@ pub(crate) struct ReadArgs {
     #[command(flatten)]
     pub redact: RedactArgs,
 
+    /// What to show beside each verdict and finding.
+    #[command(flatten)]
+    pub show: ShowArgs,
+
     /// Where to write it, instead of the terminal.
     #[command(flatten)]
     pub export: ExportArgs,
@@ -682,6 +699,10 @@ pub(crate) struct MergeArgs {
     /// Whether to mask it on the way out.
     #[command(flatten)]
     pub redact: RedactArgs,
+
+    /// What to show beside each verdict and finding.
+    #[command(flatten)]
+    pub show: ShowArgs,
 
     /// Where to write the merged report, instead of the terminal.
     #[command(flatten)]
@@ -821,7 +842,7 @@ pub(crate) struct RedactArgs {
     /// without it, so the copy sent to a client can be made from the one kept.
     /// `redact = true` in the engine's settings masks every output without the
     /// flag.
-    #[arg(long)]
+    #[arg(help_heading = "Output", display_order = 100, long)]
     pub redact: bool,
 }
 
@@ -1059,6 +1080,10 @@ pub(crate) struct ListenArgs {
     #[command(flatten)]
     pub scope: ScopeArgs,
 
+    /// What to show beside each verdict and finding.
+    #[command(flatten)]
+    pub show: ShowArgs,
+
     /// Where to write the report, besides the terminal.
     #[command(flatten)]
     pub export: ExportArgs,
@@ -1171,6 +1196,10 @@ pub(crate) struct DiscoverArgs {
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
     pub engine: EngineArgs,
+
+    /// What to show beside each verdict and finding.
+    #[command(flatten)]
+    pub show: ShowArgs,
 
     /// Where to write the report, besides the terminal.
     #[command(flatten)]
@@ -1566,6 +1595,10 @@ pub(crate) struct ScanArgs {
     /// Settings that change what the scan puts on the wire.
     #[command(flatten)]
     pub engine: EngineArgs,
+
+    /// What to show beside each verdict and finding.
+    #[command(flatten)]
+    pub show: ShowArgs,
 
     /// Where to write the report, besides the terminal.
     #[command(flatten)]
@@ -2024,7 +2057,7 @@ pub(crate) struct ScopeArgs {
     /// knowing which device is which: a client, an auditor, a screenshot in an
     /// issue. The scan still finds everything, and only what leaves this process
     /// is masked.
-    #[arg(help_heading = "Output", long)]
+    #[arg(help_heading = "Output", display_order = 100, long)]
     pub redact: bool,
 }
 
@@ -2761,14 +2794,93 @@ fn sendable_from(link: &zond_engine::system::interface::Link) -> Vec<std::net::I
     v4.into_iter().chain(v6).collect()
 }
 
+/// What a command that draws hosts shows beside each verdict and finding.
+///
+/// Attached to the commands that draw them, `discover`, `scan`, `listen`,
+/// `read` and `merge`, rather than to every command: on `journal` or `diff`
+/// these would be accepted and change nothing.
+#[derive(Debug, Args, Clone, Copy, Default)]
+pub(crate) struct ShowArgs {
+    /// Show which packet settled each port, and who sent a refusal.
+    ///
+    /// A port says which packet settled it, `SYN/ACK`, `RST`, `ICMP prohibited`
+    /// or `no reply`, with the TTL it carried and the round trip it took. A host
+    /// says what was observed and, where an ICMP error came from a router rather
+    /// than the host itself, which router.
+    ///
+    /// The verdict already says whether a refusal arrived: `blocked` is
+    /// somebody's policy, `no-reply` is an absence. This says which refusal it
+    /// was, a prohibition from the host or an unreachable from a router on the
+    /// way, and how far away whatever sent it stood.
+    ///
+    /// On a live SYN scan it also makes sure the capture keeps ICMP errors,
+    /// even where the settings turned that off. A SYN scan finds open and
+    /// closed ports without them, and a port a firewall refused then reads
+    /// `no-reply`. An ICMP error names no ports, so the kernel filter cannot
+    /// narrow it and every ICMP packet on every captured link is copied into
+    /// userspace. That is the cost of telling a refusal from a silence.
+    ///
+    /// Works on a scan, on a record, and on a file, including one nmap wrote,
+    /// whose own reasons are read back. Not on `--pipe`, whose fields are a
+    /// stable interface; a program reads the JSON, which carries all of it
+    /// unconditionally.
+    #[arg(help_heading = "Output", display_order = 101, long = "reason")]
+    pub reason: bool,
+
+    /// The lowest grade of finding to draw.
+    ///
+    /// A scan turns up more than most runs want to read. `missing HTTP security
+    /// headers` is true of most web servers and says the same thing on each, so
+    /// a sweep of forty of them is forty rows nobody reads. The floor is
+    /// `medium` unless this or `risk` in `cli.toml` says otherwise.
+    ///
+    /// The count beside a host is never filtered. A host with five findings and
+    /// a floor that draws three still says `5 risks`, and the block says how
+    /// many it held back: a finding out of sight must not also be out of the
+    /// total.
+    ///
+    /// `info` draws everything. Not on `--pipe` or the exports, which carry
+    /// every finding whatever this says.
+    #[arg(
+        help_heading = "Output",
+        display_order = 102,
+        long = "risk",
+        value_name = "GRADE",
+        value_parser = risk()
+    )]
+    pub risk: Option<Risk>,
+
+    /// Show what to do about each finding.
+    ///
+    /// A detection that carries advice hangs it under the finding: which
+    /// version to upgrade to, which setting to turn off. Off by default because
+    /// it is the one line in a scan addressed to somebody who has stopped
+    /// reading and started working, and most of a scan is read before anything
+    /// is done about it.
+    ///
+    /// Spelled `remedy` rather than `fix`, which on a scanner reads as an offer
+    /// to make the change rather than to describe it. This tool sends probes and
+    /// nothing else.
+    #[arg(help_heading = "Output", display_order = 103, long = "remedy")]
+    pub remedy: bool,
+
+    /// Show the bytes each finding was drawn from.
+    ///
+    /// A finding hangs the bytes it was drawn from underneath it: which headers
+    /// were absent, which version the banner gave back. It is what separates a
+    /// finding worth acting on from one worth arguing with.
+    ///
+    /// Its own flag rather than part of `--reason`, which answers the same
+    /// question about a port's verdict: somebody triaging findings does not want
+    /// every port's packet along with them.
+    #[arg(help_heading = "Output", display_order = 104, long = "evidence")]
+    pub evidence: bool,
+}
+
 /// How much a run says about itself while it happens.
 ///
 /// Global, so `zond -v discover lan` and `zond discover -v lan` mean the same
 /// thing.
-// Several independent on/off switches, so the count trips the bool-heavy-struct
-// lint for the reason [`ScanArgs`] does: each is one flag a caller sets in any
-// combination, and clap derives the parser from exactly these fields.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Output")]
 pub(crate) struct OutputArgs {
@@ -2812,75 +2924,6 @@ pub(crate) struct OutputArgs {
         value_parser = colour()
     )]
     pub colour: Option<ColourChoice>,
-
-    /// Show which packet settled each port, and who sent a refusal.
-    ///
-    /// A port says which packet settled it, `SYN/ACK`, `RST`, `ICMP prohibited`
-    /// or `no reply`, with the TTL it carried and the round trip it took. A host
-    /// says what was observed and, where an ICMP error came from a router rather
-    /// than the host itself, which router.
-    ///
-    /// The verdict already says whether a refusal arrived: `blocked` is
-    /// somebody's policy, `no-reply` is an absence. This says which refusal it
-    /// was, a prohibition from the host or an unreachable from a router on the
-    /// way, and how far away whatever sent it stood.
-    ///
-    /// On a live SYN scan it also makes sure the capture keeps ICMP errors,
-    /// even where the settings turned that off. A SYN scan finds open and
-    /// closed ports without them, and a port a firewall refused then reads
-    /// `no-reply`. An ICMP error names no ports, so the kernel filter cannot
-    /// narrow it and every ICMP packet on every captured link is copied into
-    /// userspace. That is the cost of telling a refusal from a silence.
-    ///
-    /// Works on a scan, on a record, and on a file, including one nmap wrote,
-    /// whose own reasons are read back. Not on `--pipe`, whose fields are a
-    /// stable interface; a program reads the JSON, which carries all of it
-    /// unconditionally.
-    #[arg(long = "reason", global = true)]
-    pub reason: bool,
-
-    /// The lowest grade of finding to draw.
-    ///
-    /// A scan turns up more than most runs want to read. `missing HTTP security
-    /// headers` is true of most web servers and says the same thing on each, so
-    /// a sweep of forty of them is forty rows nobody reads. The floor is
-    /// `medium` unless this or `risk` in `cli.toml` says otherwise.
-    ///
-    /// The count beside a host is never filtered. A host with five findings and
-    /// a floor that draws three still says `5 risks`, and the block says how
-    /// many it held back: a finding out of sight must not also be out of the
-    /// total.
-    ///
-    /// `info` draws everything. Not on `--pipe` or the exports, which carry
-    /// every finding whatever this says.
-    #[arg(long = "risk", global = true, value_name = "GRADE", value_parser = risk())]
-    pub risk: Option<Risk>,
-
-    /// Show what to do about each finding.
-    ///
-    /// A detection that carries advice hangs it under the finding: which
-    /// version to upgrade to, which setting to turn off. Off by default because
-    /// it is the one line in a scan addressed to somebody who has stopped
-    /// reading and started working, and most of a scan is read before anything
-    /// is done about it.
-    ///
-    /// Spelled `remedy` rather than `fix`, which on a scanner reads as an offer
-    /// to make the change rather than to describe it. This tool sends probes and
-    /// nothing else.
-    #[arg(long = "remedy", global = true)]
-    pub remedy: bool,
-
-    /// Show the bytes each finding was drawn from.
-    ///
-    /// A finding hangs the bytes it was drawn from underneath it: which headers
-    /// were absent, which version the banner gave back. It is what separates a
-    /// finding worth acting on from one worth arguing with.
-    ///
-    /// Its own flag rather than part of `--reason`, which answers the same
-    /// question about a port's verdict: somebody triaging findings does not want
-    /// every port's packet along with them.
-    #[arg(long = "evidence", global = true)]
-    pub evidence: bool,
 }
 
 impl OutputArgs {
@@ -3023,6 +3066,11 @@ mod tests {
                 "discover took {flag:?}"
             );
         }
+
+        // The finding display belongs to the commands that draw findings.
+        assert!(Cli::try_parse_from(["zond", "journal", "--reason"]).is_err());
+        assert!(Cli::try_parse_from(["zond", "diff", "a", "b", "--risk", "high"]).is_err());
+        assert!(Cli::try_parse_from(["zond", "read", "latest", "--risk", "high"]).is_ok());
 
         // What a watch does act on is still there.
         assert!(

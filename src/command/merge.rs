@@ -202,6 +202,7 @@ mod tests {
             identity,
             export: ExportArgs::default(),
             redact: crate::cli::RedactArgs::default(),
+            show: crate::cli::ShowArgs::default(),
         }
     }
 
