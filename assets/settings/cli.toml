@@ -157,10 +157,10 @@
 # floor that draws three still says `5 risks`, and the block says how many it
 # held back: a finding out of sight must not also be out of the total.
 #
-# `--risk` sets it for one run. Not applied to `--pipe` or the exports, which
+# `--min-risk` sets it for one run. Not applied to `--pipe` or the exports, which
 # carry every finding whatever this says.
 #
-# risk = "medium"
+# min_risk = "medium"
 
 
 # What makes two records, in two different scans, the same host.

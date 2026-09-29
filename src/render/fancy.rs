@@ -458,7 +458,7 @@ fn findings(
     // how many of that total are not drawn below.
     if listing.withheld > 0 {
         rows.push(Row::plain(style.faint(&format!(
-            "{} below {}, --risk {} to see {}",
+            "{} below {}, --min-risk {} to see {}",
             listing.withheld,
             showing.risk,
             wire::severity_name(Severity::Info),

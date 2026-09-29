@@ -1161,7 +1161,7 @@ pub(crate) struct Showing {
     pub(crate) excerpts: bool,
     /// What to do about a finding. From `--remedy`.
     pub(crate) remedies: bool,
-    /// The lowest grade of finding a listing draws. From `--risk`, or `risk` in
+    /// The lowest grade of finding a listing draws. From `--min-risk`, or `min_risk` in
     /// `cli.toml`.
     ///
     /// Apart from the four beside it in kind: those are switches and this is a

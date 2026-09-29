@@ -96,7 +96,7 @@ pub(crate) enum UnusableValue {
     /// `accent_colour` was neither a named accent nor a colour.
     #[error(transparent)]
     Accent(#[from] UnknownAccent),
-    /// `risk` named something that is not a grade.
+    /// `min_risk` named something that is not a grade.
     #[error(transparent)]
     Risk(#[from] UnknownRisk),
 }
@@ -367,6 +367,7 @@ struct Document {
     // message for anything else should be able to quote what was there.
     journal_entry_limit: Option<toml::Value>,
     page_size: Option<usize>,
+    #[serde(rename = "min_risk")]
     risk: Option<String>,
     #[serde(flatten)]
     unknown: BTreeMap<String, toml::Value>,
@@ -896,7 +897,8 @@ mod tests {
              identity = \"hardware\"\n\
              journal = false\n\
              journal_entry_limit = 7\n\
-             page_size = 3\n",
+             page_size = 3\n\
+             min_risk = \"high\"\n",
         )
         .expect("a usable document");
 
@@ -907,6 +909,7 @@ mod tests {
         assert_eq!(settings.journal(), Some(false));
         assert_eq!(settings.journal_entry_limit(), Some(EntryLimit::AtMost(7)));
         assert_eq!(settings.page_size(), Some(3));
+        assert_eq!(settings.risk().map(Risk::as_str), Some("high"));
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 

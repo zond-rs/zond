@@ -2982,7 +2982,7 @@ pub(crate) struct ShowArgs {
     /// A scan turns up more than most runs want to read. `missing HTTP security
     /// headers` is true of most web servers and says the same thing on each, so
     /// a sweep of forty of them is forty rows nobody reads. The floor is
-    /// `medium` unless this or `risk` in `cli.toml` says otherwise.
+    /// `medium` unless this or `min_risk` in `cli.toml` says otherwise.
     ///
     /// The count beside a host is never filtered. A host with five findings and
     /// a floor that draws three still says `5 risks`, and the block says how
@@ -2994,7 +2994,7 @@ pub(crate) struct ShowArgs {
     #[arg(
         help_heading = "Output",
         display_order = 102,
-        long = "risk",
+        long = "min-risk",
         value_name = "GRADE",
         value_parser = risk()
     )]
@@ -3219,8 +3219,8 @@ mod tests {
 
         // The finding display belongs to the commands that draw findings.
         assert!(Cli::try_parse_from(["zond", "journal", "--reason"]).is_err());
-        assert!(Cli::try_parse_from(["zond", "diff", "a", "b", "--risk", "high"]).is_err());
-        assert!(Cli::try_parse_from(["zond", "read", "latest", "--risk", "high"]).is_ok());
+        assert!(Cli::try_parse_from(["zond", "diff", "a", "b", "--min-risk", "high"]).is_err());
+        assert!(Cli::try_parse_from(["zond", "read", "latest", "--min-risk", "high"]).is_ok());
 
         // What a watch does act on is still there.
         assert!(

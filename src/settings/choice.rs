@@ -146,7 +146,7 @@ impl Risk {
 impl Risk {
     /// The floor that draws every finding, however it is graded.
     ///
-    /// A run reaches it by name, through `--risk info`. This is the same floor
+    /// A run reaches it by name, through `--min-risk info`. This is the same floor
     /// for the tests that measure a listing's shape rather than the floor.
     #[cfg(test)]
     #[must_use]
