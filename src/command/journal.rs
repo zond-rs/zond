@@ -319,7 +319,7 @@ pub(crate) const LATEST: &str = "latest";
 /// Resolves [`LATEST`] to the id of the most recent record, and leaves anything
 /// else as it was written.
 ///
-/// For `--resume`, which reaches a journal by its directory rather than through
+/// For `zond resume`, which reaches a journal by its directory rather than through
 /// a listing and so cannot use [`find`]. Prefixes are not resolved here: a
 /// resume takes a lock and scans a network, and the id it was given is checked
 /// against the record it opens.

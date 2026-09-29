@@ -28,6 +28,7 @@ pub(crate) mod listen;
 pub(crate) mod merge;
 pub(crate) mod page;
 pub(crate) mod read;
+pub(crate) mod resume;
 pub(crate) mod scan;
 
 use zond_engine::cve::Catalogue;
@@ -297,7 +298,7 @@ fn enforce(root: &std::path::Path, limit: settings::EntryLimit) {
 
 /// A record reopened so the scan it holds can be continued.
 ///
-/// Both subcommands take `--resume`, and both want the same three things back:
+/// `zond resume` continues every phase, and each wants the same three things back:
 /// somewhere to keep writing, the plan the earlier sittings were walking, and
 /// how much of it is left.
 pub(crate) struct Resumed {

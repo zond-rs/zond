@@ -212,7 +212,7 @@ async fn continued(
         return Err(Error::WrongPhase {
             id: resumed.id,
             held: "a sweep",
-            remedy: "zond discover --resume",
+            remedy: "zond resume",
         });
     };
 

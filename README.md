@@ -60,7 +60,8 @@ administrator rights.
 | `zond discover` | which hosts on a network are alive. `d` for short |
 | `zond scan` | which of a host's ports are open, and what is behind them. `s` |
 | `zond listen` | watch a link and record what it carries. Sends nothing. `l` |
-| `zond journal` | the scans this machine has a record of, and continuing one that stopped |
+| `zond resume` | continue a scan, a sweep or a watch that stopped |
+| `zond journal` | the scans this machine has a record of |
 | `zond read` | print a scan that is already written down |
 | `zond diff` | what changed between two scans |
 | `zond merge` | several scans folded into one report |
@@ -74,7 +75,7 @@ sudo zond scan lan -F --pipe                        # a quick pass, one record p
 sudo zond scan 10.0.0.0/16 -x 10.0.5.0/24
 sudo zond listen %en0 --for 10m                     # watch a link, send nothing
 
-zond scan --resume 06G3JC                           # continue one that stopped
+zond resume 06G3JC                                  # continue one that stopped
 zond journal prune --older-than 30d
 zond read latest -o report.html
 zond diff baseline.json latest                      # exits 4 if anything changed
@@ -118,7 +119,8 @@ attempts and finds fewer hosts, and says which of the two ran.
 ## What else it does
 
 **Keeps a record, without being asked.** `zond journal` lists them,
-`zond scan --resume 06G3JC` continues one from a prefix of its id.
+`zond resume 06G3JC` continues one from a prefix of its id, whether it was
+a scan, a sweep or a watch.
 
 **Compares two scans, whoever ran them.** `zond diff baseline.json latest`
 takes a file or a record id on either side, and nmap XML as readily as its own

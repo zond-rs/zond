@@ -143,7 +143,7 @@ fn continued(id: &str, take_over: bool) -> Result<(Vec<Zone>, Option<Journal>), 
         return Err(Error::WrongPhase {
             id: resumed.id,
             held: "a scan",
-            remedy: "zond discover --resume or zond scan --resume",
+            remedy: "zond resume",
         });
     };
 

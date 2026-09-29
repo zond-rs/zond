@@ -197,6 +197,9 @@ pub(crate) enum Command {
     #[command(visible_alias = "l")]
     Listen(ListenArgs),
 
+    /// Continue a scan, a sweep or a watch that stopped.
+    Resume(ResumeArgs),
+
     /// Look at the scans this machine has a record of.
     #[command(visible_alias = "j")]
     Journal(JournalArgs),
@@ -233,6 +236,7 @@ impl Command {
             Command::Listen(args) => Some(&args.show),
             Command::Read(args) => Some(&args.show),
             Command::Merge(args) => Some(&args.show),
+            Command::Resume(args) => Some(&args.show),
             Command::Journal(_) | Command::Diff(_) | Command::Detections(_) => None,
         }
     }
@@ -240,7 +244,7 @@ impl Command {
     pub(crate) const fn watches_the_network(&self) -> bool {
         matches!(
             self,
-            Command::Discover(_) | Command::Scan(_) | Command::Listen(_)
+            Command::Discover(_) | Command::Scan(_) | Command::Listen(_) | Command::Resume(_)
         )
     }
 }
@@ -251,7 +255,7 @@ impl Command {
 /// which compiles them and stops. Declared once so an author's `--load`
 /// means the same in the command that checks their work and the command that
 /// uses it.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 #[command(group = clap::ArgGroup::new("named_detections")
     .multiple(true)
     .args(["paths", "detections_bundle"]))]
@@ -879,6 +883,126 @@ Exit status:
         .to_string()
 }
 
+/// Arguments to `zond resume`.
+#[derive(Debug, Args)]
+#[command(after_help = RESUME_HELP)]
+pub(crate) struct ResumeArgs {
+    /// The record to continue, as `zond journal` lists it: its id, any prefix
+    /// of it that names only one record, or `latest`.
+    ///
+    /// A scan, a sweep and a watch are all continued this way, since the
+    /// record says which it was. The targets, ports and options come from it
+    /// too, so there is nothing to type but the id: a scan continues asking
+    /// only about what it did not settle, a sweep likewise, and a watch adds
+    /// another sitting to the same record.
+    ///
+    /// What may change is this sitting's pace and budget, how the hosts it
+    /// finds are named, and what is shown and written. Everything else would
+    /// change what the job asks, and a job asks one thing across every sitting.
+    #[arg(value_name = "ID")]
+    pub id: String,
+
+    /// Continue the record even though its lock names a process that has
+    /// stopped checkpointing.
+    ///
+    /// A record is locked while a run writes it, so two runs never write one.
+    /// A lock whose process is gone is released on its own. One naming a
+    /// process that is alive and silent is refused, because a hung run and a
+    /// crashed one whose process number was handed to something else look
+    /// the same from here. Once the process it names is known not to be the
+    /// run, this takes the record over. A lock its run is still beating is
+    /// refused whatever is passed.
+    #[arg(help_heading = "Journal", hide_short_help = true, long)]
+    pub take_over: bool,
+
+    /// Stop a watch after this long, rather than waiting to be told.
+    ///
+    /// For a watch alone, which runs until stopped. A scan or a sweep stops
+    /// when what it has left is done, and is refused this.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub r#for: Option<std::time::Duration>,
+
+    /// How fast this sitting may go, and how long it may take.
+    #[command(flatten)]
+    pub pace: PaceArgs,
+
+    /// How this sitting names the hosts it finds.
+    #[command(flatten)]
+    pub naming: NamingArgs,
+
+    /// What to show beside each verdict and finding.
+    #[command(flatten)]
+    pub show: ShowArgs,
+
+    /// Where to write the report, besides the terminal.
+    #[command(flatten)]
+    pub export: ExportArgs,
+}
+
+/// What `zond resume -h` ends with.
+const RESUME_HELP: &str = "\
+Examples:
+  zond resume 06G3JC                  continue a scan that stopped
+  zond resume latest --max-rate 200   the newest record, more gently
+  zond journal                        what there is to continue
+
+A record whose lock names a process that has stopped writing is refused;
+--help says when --take-over is safe.";
+
+impl ResumeArgs {
+    /// This sitting as a port scan continuing `id`.
+    pub(crate) fn into_scan(self, id: String) -> ScanArgs {
+        ScanArgs {
+            resume: Some(id),
+            take_over: self.take_over,
+            engine: self.engine(),
+            show: self.show,
+            export: self.export,
+            ..ScanArgs::default()
+        }
+    }
+
+    /// This sitting as a sweep continuing `id`.
+    pub(crate) fn into_discover(self, id: String) -> DiscoverArgs {
+        DiscoverArgs {
+            resume: Some(id),
+            take_over: self.take_over,
+            engine: self.engine(),
+            show: self.show,
+            export: self.export,
+            ..DiscoverArgs::default()
+        }
+    }
+
+    /// This sitting as a watch continuing `id`.
+    pub(crate) fn into_listen(self, id: String) -> ListenArgs {
+        ListenArgs {
+            resume: Some(id),
+            take_over: self.take_over,
+            r#for: self.r#for,
+            scope: ScopeArgs {
+                naming: self.naming,
+                ..ScopeArgs::default()
+            },
+            show: self.show,
+            export: self.export,
+            ..ListenArgs::default()
+        }
+    }
+
+    /// The engine settings this sitting may set, and nothing else.
+    fn engine(&self) -> EngineArgs {
+        EngineArgs {
+            pace: self.pace,
+            scope: ScopeArgs {
+                naming: self.naming,
+                ..ScopeArgs::default()
+            },
+            ..EngineArgs::default()
+        }
+    }
+}
+
 /// Arguments to `zond journal`.
 #[derive(Debug, Args)]
 pub(crate) struct JournalArgs {
@@ -1125,7 +1249,7 @@ fn age(input: &str) -> Result<std::time::Duration, String> {
 }
 
 /// Arguments to `zond listen`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 pub(crate) struct ListenArgs {
     /// Which link to listen on: an interface name, `%en0`, or `lan`.
     ///
@@ -1171,39 +1295,16 @@ pub(crate) struct ListenArgs {
     /// A watch is recorded by default, on the same reasoning a scan is: the
     /// moment you want what it heard is after it stopped. A watch's record is
     /// appended to rather than resumed — there is no progress to continue, so
-    /// `--resume` adds another sitting to the same record.
-    #[arg(help_heading = "Journal", long, conflicts_with = "resume")]
+    /// `zond resume` adds another sitting to the same record.
+    #[arg(help_heading = "Journal", long)]
     pub no_journal: bool,
 
-    /// Add a sitting to the watch with this id.
-    ///
-    /// The links come from the record. Nothing is skipped, because a watch
-    /// settles nothing: what this buys is that the earlier sittings' findings
-    /// are restored first, so the report describes the whole watch.
-    #[arg(
-        help_heading = "Journal",
-        long,
-        value_name = "ID",
-        conflicts_with = "links"
-    )]
+    /// The record this run continues, set by `zond resume` rather than typed.
+    #[arg(skip)]
     pub resume: Option<String>,
 
-    /// Continue the record even though its lock names a process that has
-    /// stopped checkpointing.
-    ///
-    /// A record is locked while a run writes it, so two runs never write one.
-    /// A lock whose process is gone is released on its own. One naming a
-    /// process that is alive and silent is refused, because a hung run and a
-    /// crashed one whose process number was handed to something else look
-    /// the same from here. Once the process it names is known not to be the
-    /// run, this takes the record over. A lock its run is still beating is
-    /// refused whatever is passed.
-    #[arg(
-        help_heading = "Journal",
-        hide_short_help = true,
-        long,
-        requires = "resume"
-    )]
+    /// Whether `zond resume --take-over` asked to take a stale lock over.
+    #[arg(skip)]
     pub take_over: bool,
 }
 
@@ -1253,20 +1354,17 @@ pub(crate) fn parse_duration(text: &str) -> Result<std::time::Duration, String> 
 }
 
 /// Arguments to `zond discover`.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 #[command(after_help = DISCOVER_SHORT_HELP, after_long_help = discover_help())]
 pub(crate) struct DiscoverArgs {
     /// What to scan: an address, a range, a CIDR block, a hostname, or `lan`.
     ///
     /// Several may be given, and each may itself be a comma-separated list.
-    ///
-    /// Not needed with `--resume`, which sweeps what the recorded run was
-    /// sweeping.
     #[arg(
         help_heading = "Targets",
         display_order = 0,
         value_name = "TARGET",
-        required_unless_present_any = ["resume", "input_file"],
+        required_unless_present = "input_file",
         num_args = 1..
     )]
     pub targets: Vec<String>,
@@ -1312,46 +1410,15 @@ pub(crate) struct DiscoverArgs {
     /// A record holds the addresses you swept and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one
     /// run; `journal = false` in `cli.toml` turns it off for all of them.
-    #[arg(help_heading = "Journal", long, conflicts_with = "resume")]
+    #[arg(help_heading = "Journal", long)]
     pub no_journal: bool,
 
-    /// Continue the sweep with this id, asking only about what it did not settle.
-    ///
-    /// The addresses come from the record, so there is nothing to type but the
-    /// id. An address that answered, or that was asked as many times as it was
-    /// going to be, is not asked again; one whose probes were cut off mid-way is.
-    ///
-    /// So do the options it ran under. A flag that changes what the sweep asks,
-    /// such as `--effort`, is refused; one that changes its pace, such as
-    /// `--max-probe-rate`, applies to this sitting.
-    ///
-    /// `zond journal` lists what can be continued. A record's scope is fixed,
-    /// so `--exclude` cannot be added to one: withholding an address the record
-    /// counted would renumber every address after it.
-    #[arg(
-        help_heading = "Journal",
-        long,
-        value_name = "ID",
-        conflicts_with_all = ["targets", "input_file", "exclude", "exclude_file"]
-    )]
+    /// The record this run continues, set by `zond resume` rather than typed.
+    #[arg(skip)]
     pub resume: Option<String>,
 
-    /// Continue the record even though its lock names a process that has
-    /// stopped checkpointing.
-    ///
-    /// A record is locked while a run writes it, so two runs never write one.
-    /// A lock whose process is gone is released on its own. One naming a
-    /// process that is alive and silent is refused, because a hung run and a
-    /// crashed one whose process number was handed to something else look
-    /// the same from here. Once the process it names is known not to be the
-    /// run, this takes the record over. A lock its run is still beating is
-    /// refused whatever is passed.
-    #[arg(
-        help_heading = "Journal",
-        hide_short_help = true,
-        long,
-        requires = "resume"
-    )]
+    /// Whether `zond resume --take-over` asked to take a stale lock over.
+    #[arg(skip)]
     pub take_over: bool,
 }
 
@@ -1362,22 +1429,18 @@ pub(crate) struct DiscoverArgs {
 // switch a caller sets in any combination, and clap derives the parser from
 // exactly these fields, the same shape [`EngineArgs`] carries.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 #[command(after_help = SCAN_SHORT_HELP, after_long_help = scan_help())]
 pub(crate) struct ScanArgs {
     /// What to scan: an address, a range, a CIDR block, a hostname, or `lan`.
     ///
     /// A target may carry its own ports, as in `10.0.0.1:8080` or
     /// `[2001:db8::1]:443`, and keeps them. `--ports` supplies the rest.
-    ///
-    /// Not needed with `--resume`, which scans what the recorded scan was
-    /// scanning. Given anyway, they must describe the same scan, or the resume
-    /// is refused rather than continuing something else.
     #[arg(
         help_heading = "Targets",
         display_order = 0,
         value_name = "TARGET",
-        required_unless_present_any = ["resume", "input_file"],
+        required_unless_present = "input_file",
         num_args = 1..
     )]
     pub targets: Vec<String>,
@@ -1730,47 +1793,15 @@ pub(crate) struct ScanArgs {
     /// A record holds the addresses you scanned and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one
     /// run; `journal = false` in `cli.toml` turns it off for all of them.
-    #[arg(help_heading = "Journal", long, conflicts_with = "resume")]
+    #[arg(help_heading = "Journal", long)]
     pub no_journal: bool,
 
-    /// Continue the scan with this id, asking only about what it did not settle.
-    ///
-    /// The targets and ports come from the record, so there is nothing to type
-    /// but the id. Naming them anyway is allowed and checked: a position in a
-    /// record means nothing against a different plan, so a mismatch is refused
-    /// rather than quietly scanning something else.
-    ///
-    /// So do the options it ran under. A flag that changes what the scan asks,
-    /// such as `--assume-up` or `--effort`, is refused; one that changes its
-    /// pace, such as `--max-probe-rate`, applies to this sitting.
-    ///
-    /// `zond journal` lists what can be continued. A record's scope is fixed,
-    /// so `--exclude` cannot be added to one: withholding an address the record
-    /// counted would renumber every target after it.
-    #[arg(
-        help_heading = "Journal",
-        long,
-        value_name = "ID",
-        conflicts_with_all = ["exclude", "exclude_file"]
-    )]
+    /// The record this run continues, set by `zond resume` rather than typed.
+    #[arg(skip)]
     pub resume: Option<String>,
 
-    /// Continue the record even though its lock names a process that has
-    /// stopped checkpointing.
-    ///
-    /// A record is locked while a run writes it, so two runs never write one.
-    /// A lock whose process is gone is released on its own. One naming a
-    /// process that is alive and silent is refused, because a hung run and a
-    /// crashed one whose process number was handed to something else look
-    /// the same from here. Once the process it names is known not to be the
-    /// run, this takes the record over. A lock its run is still beating is
-    /// refused whatever is passed.
-    #[arg(
-        help_heading = "Journal",
-        hide_short_help = true,
-        long,
-        requires = "resume"
-    )]
+    /// Whether `zond resume --take-over` asked to take a stale lock over.
+    #[arg(skip)]
     pub take_over: bool,
 }
 
@@ -2134,141 +2165,13 @@ which happened.",
     .concat()
 }
 
-/// Which addresses a run may touch, how the hosts it finds are named, and
-/// which settings profile it runs under.
+/// How fast a run may put probes on the wire, and how long it may take.
 ///
-/// The part of the engine's settings every command that runs the engine takes,
-/// `listen` included. The rest of [`EngineArgs`] shapes the probes a run sends,
-/// and a watch sends none.
-#[derive(Debug, Args)]
-pub(crate) struct ScopeArgs {
-    /// Addresses this run may not probe, whatever the targets say.
-    ///
-    /// The same grammar targets take, meaning an address, a range, a CIDR
-    /// block, a hostname, or `lan`, so a scope document transcribes the same way
-    /// on either side. Repeat the flag, or write a comma-separated list.
-    ///
-    /// Nothing is addressed to an excluded host and nothing about one is
-    /// reported, including a neighbour a segment sweep would otherwise learn
-    /// about from an ARP reply. What it cannot promise is that an excluded
-    /// machine on your own segment never sees a broadcast probe. Do not sweep
-    /// the segment if that matters.
-    ///
-    /// Adds to `exclude` in engine.toml rather than replacing it.
-    #[arg(
-        help_heading = "Targets",
-        short = 'x',
-        long,
-        value_name = "TARGET",
-        action = ArgAction::Append
-    )]
-    pub exclude: Vec<String>,
-
-    /// Read addresses this run may not probe from FILE, in the form `-i` reads
-    /// targets in.
-    #[arg(
-        help_heading = "Targets",
-        hide_short_help = true,
-        long,
-        value_name = "FILE",
-        value_parser = target_list,
-        action = ArgAction::Append
-    )]
-    pub exclude_file: Vec<TargetList>,
-
-    /// Send no DNS traffic, and name hosts from the hosts file alone.
-    ///
-    /// Discovered hosts are normally resolved to names in the background. A
-    /// lookup goes to a resolver somebody operates, so on an engagement it can
-    /// be the thing that announces the scan. The hosts file sends nothing, so
-    /// it is still read: a host the scan finds is named from it, and a
-    /// hostname written as a target is resolved from it, and refused rather
-    /// than dropped when the file does not list it.
-    #[arg(help_heading = "Targets", short = 'n', long)]
-    pub no_dns: bool,
-
-    /// Use a named profile from the engine's settings file.
-    ///
-    /// Profiles are defined in `engine.toml` and layer on top of its defaults.
-    #[arg(help_heading = "Settings", long, value_name = "NAME")]
-    pub profile: Option<String>,
-
-    /// Mask host and domain names, hardware addresses and IPv6 host parts in
-    /// the output.
-    ///
-    /// For results going somewhere that needs the shape of a network without
-    /// knowing which device is which: a client, an auditor, a screenshot in an
-    /// issue. The scan still finds everything, and only what leaves this process
-    /// is masked.
-    #[arg(help_heading = "Output", display_order = 100, long)]
-    pub redact: bool,
-}
-
-impl ScopeArgs {
-    /// Folds what `--exclude-file` read into `--exclude`, so what follows reads
-    /// one list whichever way an address was given.
-    fn fold_files(&mut self) {
-        for list in self.exclude_file.drain(..) {
-            self.exclude.extend(list.0);
-        }
-    }
-
-    /// Lays these flags over a configuration the settings files produced, on
-    /// the terms [`EngineArgs::apply_to`] gives.
-    pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
-        if self.no_dns {
-            config.no_dns = true;
-        }
-        if self.redact {
-            config.redact = true;
-        }
-    }
-}
-
-/// The settings that change what a scan does, as opposed to how it is shown.
-///
-/// Flattened into `scan` and `discover`, the two commands that send probes, so
-/// a setting means the same thing wherever it is written. The split follows the engine's own:
-/// [`ZondConfig`] holds only what changes packets or timing, and anything about
-/// rendering belongs to [`OutputArgs`] instead.
-#[derive(Debug, Args)]
-// A command-line flag *is* a bool, and there are more than three of them
-// because this engine has more than three switches. The lint is aimed at a
-// domain type whose bools should have been an enum; here they are independent
-// options a caller sets in any combination, and clap derives the parser from
-// exactly these fields.
-#[allow(clippy::struct_excessive_bools)]
-pub(crate) struct EngineArgs {
-    /// How hard the scan tries before it accepts silence as an answer.
-    #[arg(help_heading = "Speed", long, value_name = "LEVEL", value_parser = effort())]
-    pub effort: Option<ScanEffort>,
-
-    /// Replace the attempt budget outright, whatever --effort implies.
-    ///
-    /// 1 disables retransmission.
-    #[arg(help_heading = "Speed", hide_short_help = true, long, value_name = "N")]
-    pub max_attempts: Option<NonZeroU8>,
-
-    /// Multiply how long the scan is willing to wait.
-    ///
-    /// Does not touch the shortest timeout a protocol allows. That floor is not
-    /// a preference, it is what the protocol costs.
-    #[arg(
-        help_heading = "Speed",
-        hide_short_help = true,
-        long,
-        value_name = "FACTOR",
-        value_parser = timeout_scale
-    )]
-    pub timeout_scale: Option<TimeoutScale>,
-
-    /// Spend the full probe budget on hosts that answer nothing at all.
-    ///
-    /// Thorough and expensive. Normally a silent host has its remaining budget
-    /// cut so the scan can spend it somewhere that is answering.
-    #[arg(help_heading = "Speed", hide_short_help = true, long)]
-    pub no_dampen: bool,
-
+/// Apart from the rest of [`EngineArgs`] because these are what a resumed
+/// sitting may change: they set this sitting's pace and budget, where every
+/// other setting changes what the job asks and is held to the record.
+#[derive(Debug, Args, Clone, Copy, Default)]
+pub(crate) struct PaceArgs {
     /// The fastest the scan may put probes on the wire, in probes per second.
     ///
     /// A coverage control before it is a politeness one: on a policed path a
@@ -2317,6 +2220,185 @@ pub(crate) struct EngineArgs {
     /// a suffix: `30s`, `10m`, `4h`.
     #[arg(help_heading = "Speed", long, value_name = "DURATION", value_parser = parse_duration)]
     pub scan_timeout: Option<std::time::Duration>,
+}
+
+impl PaceArgs {
+    /// Lays these flags over a configuration, on the terms
+    /// [`EngineArgs::apply_to`] gives.
+    pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
+        if let Some(rate) = self.max_probe_rate {
+            config.max_probe_rate = Some(rate);
+        }
+        if let Some(rate) = self.min_probe_rate {
+            config.min_probe_rate = Some(rate);
+        }
+        if let Some(budget) = self.host_timeout {
+            config.host_timeout = Some(budget);
+        }
+        if let Some(budget) = self.scan_timeout {
+            config.scan_timeout = Some(budget);
+        }
+    }
+}
+
+/// How the hosts a run finds are named: by what DNS says, or not, and in the
+/// clear, or masked.
+///
+/// Apart from [`ScopeArgs`] because a resumed sitting may set these for itself:
+/// neither changes what the job asks.
+#[derive(Debug, Args, Clone, Copy, Default)]
+pub(crate) struct NamingArgs {
+    /// Send no DNS traffic, and name hosts from the hosts file alone.
+    ///
+    /// Discovered hosts are normally resolved to names in the background. A
+    /// lookup goes to a resolver somebody operates, so on an engagement it can
+    /// be the thing that announces the scan. The hosts file sends nothing, so
+    /// it is still read: a host the scan finds is named from it, and a
+    /// hostname written as a target is resolved from it, and refused rather
+    /// than dropped when the file does not list it.
+    #[arg(help_heading = "Targets", short = 'n', long)]
+    pub no_dns: bool,
+
+    /// Mask host and domain names, hardware addresses and IPv6 host parts in
+    /// the output.
+    ///
+    /// For results going somewhere that needs the shape of a network without
+    /// knowing which device is which: a client, an auditor, a screenshot in an
+    /// issue. The scan still finds everything, and only what leaves this process
+    /// is masked.
+    #[arg(help_heading = "Output", display_order = 100, long)]
+    pub redact: bool,
+}
+
+impl NamingArgs {
+    /// Lays these flags over a configuration, on the terms
+    /// [`EngineArgs::apply_to`] gives.
+    pub(crate) fn apply_to(self, config: &mut ZondConfig) {
+        if self.no_dns {
+            config.no_dns = true;
+        }
+        if self.redact {
+            config.redact = true;
+        }
+    }
+}
+
+/// Which addresses a run may touch, how the hosts it finds are named, and
+/// which settings profile it runs under.
+///
+/// The part of the engine's settings every command that runs the engine takes,
+/// `listen` included. The rest of [`EngineArgs`] shapes the probes a run sends,
+/// and a watch sends none.
+#[derive(Debug, Args, Default)]
+pub(crate) struct ScopeArgs {
+    /// Addresses this run may not probe, whatever the targets say.
+    ///
+    /// The same grammar targets take, meaning an address, a range, a CIDR
+    /// block, a hostname, or `lan`, so a scope document transcribes the same way
+    /// on either side. Repeat the flag, or write a comma-separated list.
+    ///
+    /// Nothing is addressed to an excluded host and nothing about one is
+    /// reported, including a neighbour a segment sweep would otherwise learn
+    /// about from an ARP reply. What it cannot promise is that an excluded
+    /// machine on your own segment never sees a broadcast probe. Do not sweep
+    /// the segment if that matters.
+    ///
+    /// Adds to `exclude` in engine.toml rather than replacing it.
+    #[arg(
+        help_heading = "Targets",
+        short = 'x',
+        long,
+        value_name = "TARGET",
+        action = ArgAction::Append
+    )]
+    pub exclude: Vec<String>,
+
+    /// Read addresses this run may not probe from FILE, in the form `-i` reads
+    /// targets in.
+    #[arg(
+        help_heading = "Targets",
+        hide_short_help = true,
+        long,
+        value_name = "FILE",
+        value_parser = target_list,
+        action = ArgAction::Append
+    )]
+    pub exclude_file: Vec<TargetList>,
+
+    /// Use a named profile from the engine's settings file.
+    ///
+    /// Profiles are defined in `engine.toml` and layer on top of its defaults.
+    #[arg(help_heading = "Settings", long, value_name = "NAME")]
+    pub profile: Option<String>,
+
+    /// How the hosts the run finds are named in what it prints and writes.
+    #[command(flatten)]
+    pub naming: NamingArgs,
+}
+
+impl ScopeArgs {
+    /// Folds what `--exclude-file` read into `--exclude`, so what follows reads
+    /// one list whichever way an address was given.
+    fn fold_files(&mut self) {
+        for list in self.exclude_file.drain(..) {
+            self.exclude.extend(list.0);
+        }
+    }
+
+    /// Lays these flags over a configuration the settings files produced, on
+    /// the terms [`EngineArgs::apply_to`] gives.
+    pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
+        self.naming.apply_to(config);
+    }
+}
+
+/// The settings that change what a scan does, as opposed to how it is shown.
+///
+/// Flattened into `scan` and `discover`, the two commands that send probes, so
+/// a setting means the same thing wherever it is written. The split follows the engine's own:
+/// [`ZondConfig`] holds only what changes packets or timing, and anything about
+/// rendering belongs to [`OutputArgs`] instead.
+#[derive(Debug, Args, Default)]
+// A command-line flag *is* a bool, and there are more than three of them
+// because this engine has more than three switches. The lint is aimed at a
+// domain type whose bools should have been an enum; here they are independent
+// options a caller sets in any combination, and clap derives the parser from
+// exactly these fields.
+#[allow(clippy::struct_excessive_bools)]
+pub(crate) struct EngineArgs {
+    /// How hard the scan tries before it accepts silence as an answer.
+    #[arg(help_heading = "Speed", long, value_name = "LEVEL", value_parser = effort())]
+    pub effort: Option<ScanEffort>,
+
+    /// Replace the attempt budget outright, whatever --effort implies.
+    ///
+    /// 1 disables retransmission.
+    #[arg(help_heading = "Speed", hide_short_help = true, long, value_name = "N")]
+    pub max_attempts: Option<NonZeroU8>,
+
+    /// Multiply how long the scan is willing to wait.
+    ///
+    /// Does not touch the shortest timeout a protocol allows. That floor is not
+    /// a preference, it is what the protocol costs.
+    #[arg(
+        help_heading = "Speed",
+        hide_short_help = true,
+        long,
+        value_name = "FACTOR",
+        value_parser = timeout_scale
+    )]
+    pub timeout_scale: Option<TimeoutScale>,
+
+    /// Spend the full probe budget on hosts that answer nothing at all.
+    ///
+    /// Thorough and expensive. Normally a silent host has its remaining budget
+    /// cut so the scan can spend it somewhere that is answering.
+    #[arg(help_heading = "Speed", hide_short_help = true, long)]
+    pub no_dampen: bool,
+
+    /// How fast the run may go, and how long it may take.
+    #[command(flatten)]
+    pub pace: PaceArgs,
 
     /// How raw probes are placed on the wire.
     #[arg(
@@ -2418,7 +2500,7 @@ pub(crate) struct EngineArgs {
 ///
 /// Layered onto the profile the settings produced, each flag speaking only about
 /// what was written, the way [`EngineArgs`] is.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 #[command(next_help_heading = "Evasion")]
 pub(crate) struct EvasionArgs {
     /// Set the probes' hop limit, rather than this host's default.
@@ -2794,18 +2876,7 @@ impl EngineArgs {
         if let Some(scale) = self.timeout_scale {
             config.retry.timeout_scale = Some(scale);
         }
-        if let Some(rate) = self.max_probe_rate {
-            config.max_probe_rate = Some(rate);
-        }
-        if let Some(rate) = self.min_probe_rate {
-            config.min_probe_rate = Some(rate);
-        }
-        if let Some(budget) = self.host_timeout {
-            config.host_timeout = Some(budget);
-        }
-        if let Some(budget) = self.scan_timeout {
-            config.scan_timeout = Some(budget);
-        }
+        self.pace.apply_to(config);
         if let Some(mode) = self.send_mode {
             config.send_mode = mode;
         }
@@ -3866,8 +3937,14 @@ mod tests {
         assert_eq!(args.engine.scope.exclude, ["192.0.2.9"]);
         assert_eq!(args.engine.send_interface.as_deref(), Some("en0"));
         assert_eq!(args.engine.evasion.decoys.len(), 1);
-        assert_eq!(args.engine.max_probe_rate.map(NonZeroU32::get), Some(50));
-        assert_eq!(args.engine.min_probe_rate.map(NonZeroU32::get), Some(5));
+        assert_eq!(
+            args.engine.pace.max_probe_rate.map(NonZeroU32::get),
+            Some(50)
+        );
+        assert_eq!(
+            args.engine.pace.min_probe_rate.map(NonZeroU32::get),
+            Some(5)
+        );
         assert_eq!(args.top_tcp_ports(), Some(FAST_TOP_PORTS));
 
         assert!(
@@ -3929,6 +4006,49 @@ mod tests {
         assert!(Cli::try_parse_from(["zond", "d", "-i", &path(&dir.join("absent"))]).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A record is continued by `zond resume` and its id alone. What it takes
+    /// reaches the sitting it becomes, whichever phase that is, and the flag
+    /// the commands once took for it is gone.
+    #[test]
+    fn a_record_is_continued_by_resume_and_its_id() {
+        let cli = Cli::try_parse_from([
+            "zond",
+            "resume",
+            "06G3JC",
+            "--take-over",
+            "--max-rate",
+            "5",
+            "-n",
+            "-o",
+            "r.json",
+        ])
+        .expect("should parse");
+        let Command::Resume(args) = cli.command else {
+            panic!("resume is its own command");
+        };
+        let scan = args.into_scan("06G3JC0000000000".to_owned());
+        assert_eq!(scan.resume.as_deref(), Some("06G3JC0000000000"));
+        assert!(scan.take_over);
+        assert_eq!(
+            scan.engine.pace.max_probe_rate.map(NonZeroU32::get),
+            Some(5)
+        );
+        assert!(scan.engine.scope.naming.no_dns);
+        assert_eq!(scan.export.output.len(), 1);
+        assert!(scan.targets.is_empty(), "the record supplies the targets");
+
+        for command in ["scan", "discover", "listen"] {
+            assert!(
+                Cli::try_parse_from(["zond", command, "--resume", "06G3JC"]).is_err(),
+                "{command} still takes --resume"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["zond", "resume", "06G3JC", "--assume-up"]).is_err(),
+            "a flag that changes what the job asks is not a resume's to give"
+        );
     }
 
     /// `-g 53` is nmap's spelling of a source port, and the one people arrive

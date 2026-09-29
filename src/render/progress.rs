@@ -136,7 +136,7 @@ const TIPS: [&str; 7] = [
     "--assume-up scans a host that never answers",
     "-n runs without a single DNS query",
     "zond journal lists what is on record",
-    "--resume continues a scan that stopped",
+    "zond resume continues a scan that stopped",
     "zond diff compares two records",
     "accent_colour in cli.toml sets the hue",
 ];

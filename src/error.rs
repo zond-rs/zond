@@ -207,11 +207,11 @@ pub(crate) enum Error {
         silent: u64,
     },
 
-    /// Targets were named alongside `--resume` that describe a different scan.
+    /// Targets were named alongside a resume that describe a different scan.
     #[error("{0}; drop the targets to continue the scan as it was recorded")]
     PlanChanged(#[from] zond_engine::journal::manifest::PlanChanged),
 
-    /// A flag was given alongside `--resume` that changes what the recorded
+    /// A flag was given alongside a resume that changes what the recorded
     /// scan asks, which would put two scans' answers in one record.
     #[error("{flag} differs from the record (drop it to resume)")]
     OptionChanged {
@@ -246,6 +246,18 @@ pub(crate) enum Error {
         id: String,
         /// Why it cannot be read.
         reason: String,
+    },
+
+    /// `zond resume --for` was given for a record that is not a watch.
+    ///
+    /// A scan or a sweep stops when what it has left is done, so a span given
+    /// to one would be ignored or would cut the job short without saying so.
+    #[error("--for bounds a watch, and {id} records {held}, which stops when it is done")]
+    SpanOnAJob {
+        /// The record that was named.
+        id: String,
+        /// What it holds, as a phrase that reads after "records".
+        held: &'static str,
     },
 
     /// The record named holds the other phase of a scan.
@@ -381,6 +393,7 @@ impl Error {
             | Error::UnknownFormatName { .. }
             | Error::FormatNotBuilt { .. }
             | Error::WrongPhase { .. }
+            | Error::SpanOnAJob { .. }
             | Error::NotAFold { .. }
             | Error::AmbiguousJournal { .. }
             | Error::DetectionPath { .. }

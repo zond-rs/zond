@@ -502,10 +502,7 @@ fn the_engines_settings_file_is_honoured() {
 /// far is itself the proof the span parsed.
 #[test]
 fn a_watch_may_be_asked_for_days() {
-    let refused = zond(
-        "listen-days",
-        &["l", "--for", "2d", "--resume", "nosuchrecord"],
-    );
+    let refused = zond("listen-days", &["resume", "nosuchrecord", "--for", "2d"]);
 
     assert!(
         !stderr(&refused).contains("not a length of time"),
@@ -535,17 +532,16 @@ fn a_span_that_is_not_a_span_is_a_usage_error() {
     }
 }
 
-/// The links come from the record, so naming both says two different things
-/// about what to watch. Likewise a run that asks to continue a record while
-/// refusing to keep one.
+/// The links come from the record, so a resume names none. Likewise it cannot
+/// decline to keep the record it continues.
 #[test]
-fn resuming_a_watch_conflicts_with_naming_links_or_declining_a_record() {
-    let with_links = zond("listen-resume-links", &["l", "en0", "--resume", "abc"]);
+fn resuming_takes_neither_links_nor_declining_a_record() {
+    let with_links = zond("listen-resume-links", &["resume", "abc", "en0"]);
     assert_eq!(status(&with_links), 2, "{}", stderr(&with_links));
 
     let without_journal = zond(
         "listen-resume-nojournal",
-        &["l", "--resume", "abc", "--no-journal"],
+        &["resume", "abc", "--no-journal"],
     );
     assert_eq!(status(&without_journal), 2, "{}", stderr(&without_journal));
 }
@@ -554,7 +550,7 @@ fn resuming_a_watch_conflicts_with_naming_links_or_declining_a_record() {
 /// have, not a failed watch.
 #[test]
 fn resuming_a_watch_that_is_not_on_record_says_so() {
-    let refused = zond("listen-resume-missing", &["l", "--resume", "nosuchrecord"]);
+    let refused = zond("listen-resume-missing", &["resume", "nosuchrecord"]);
 
     assert_eq!(status(&refused), 2, "{}", stderr(&refused));
     assert!(
@@ -910,36 +906,6 @@ fn a_settings_file_can_decline_for_good() {
     assert!(stdout(&listed).is_empty(), "{}", stdout(&listed));
 }
 
-/// Resuming a scan whose plan has changed is refused, and says what moved.
-#[test]
-fn resuming_a_different_plan_is_refused() {
-    let home = config_home("journal-mismatch");
-
-    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1,2"]);
-    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
-
-    let listed = zond_in(&home, &["--pipe", "journal"]);
-    let id = stdout(&listed)
-        .lines()
-        .next()
-        .and_then(|line| line.split('\t').next().map(str::to_owned))
-        .expect("a listed scan");
-
-    // One more port than the record was written against.
-    let resumed = zond_in(&home, &["-q", "s", "::1", "-p", "1,2,3", "--resume", &id]);
-
-    assert_eq!(status(&resumed), 2, "a usage error, not a failed scan");
-    assert!(
-        stderr(&resumed).contains("different plan"),
-        "{}",
-        stderr(&resumed)
-    );
-    assert!(
-        stdout(&resumed).is_empty(),
-        "nothing was scanned, so nothing should be reported"
-    );
-}
-
 /// An id nothing on record matches is a usage error that says how to look.
 #[test]
 fn an_unknown_id_says_where_to_look() {
@@ -1006,7 +972,7 @@ fn a_scan_is_continued_by_its_id_alone() {
 
     // No target, no ports: the id is the whole of it. Not quiet, because what
     // is being continued is the thing worth saying.
-    let resumed = zond_in(&home, &["s", "--resume", &id]);
+    let resumed = zond_in(&home, &["resume", &id]);
 
     assert_eq!(status(&resumed), 0, "{}", stderr(&resumed));
     assert!(
@@ -1070,14 +1036,7 @@ fn a_scan_continued_by_its_id_alone_keeps_the_options_it_ran_under() {
 
     let resumed = zond_in(
         &home,
-        &[
-            "-q",
-            "s",
-            "--resume",
-            &id,
-            "-o",
-            second.to_str().expect("a path"),
-        ],
+        &["-q", "resume", &id, "-o", second.to_str().expect("a path")],
     );
     assert_ne!(status(&resumed), 2, "{}", stderr(&resumed));
 
@@ -1088,8 +1047,8 @@ fn a_scan_continued_by_its_id_alone_keeps_the_options_it_ran_under() {
     );
 }
 
-/// A flag given with `--resume` that changes what the recorded scan asks is
-/// refused and named, rather than continuing one job as two.
+/// A flag that changes what the recorded scan asks is not one `zond resume`
+/// takes, and is refused by name, rather than continuing one job as two.
 #[test]
 fn a_flag_that_changes_what_a_record_asks_is_refused_on_resume() {
     let home = config_home("journal-resume-option-changed");
@@ -1101,19 +1060,16 @@ fn a_flag_that_changes_what_a_record_asks_is_refused_on_resume() {
         .next()
         .expect("a listed scan");
 
-    let changed = zond_in(&home, &["-q", "s", "--resume", &id, "--assume-up"]);
+    let changed = zond_in(&home, &["-q", "resume", &id, "--assume-up"]);
     assert_eq!(status(&changed), 2, "{}", stderr(&changed));
     assert!(
-        stderr(&changed).contains("--assume-up differs from the record"),
+        stderr(&changed).contains("--assume-up"),
         "{}",
         stderr(&changed)
     );
 
     // Pace is this sitting's to set.
-    let slower = zond_in(
-        &home,
-        &["-q", "s", "--resume", &id, "--max-probe-rate", "50"],
-    );
+    let slower = zond_in(&home, &["-q", "resume", &id, "--max-probe-rate", "50"]);
     assert_eq!(status(&slower), 0, "{}", stderr(&slower));
 }
 
@@ -1148,42 +1104,6 @@ fn a_record_that_cannot_be_read_is_named_where_a_listing_passes_over_it() {
     }
 }
 
-/// Ports named alongside `--resume` without targets are held to the ports on
-/// record: the same ports continue the scan, and any others are refused and
-/// named rather than ignored, since the sitting asks what the record planned
-/// whatever this one was told.
-#[test]
-fn ports_named_with_resume_must_be_the_ports_on_record() {
-    let home = config_home("journal-resume-ports");
-
-    let scan = zond_in(&home, &["-q", "s", "::1", "-n", "-p", "1,2"]);
-    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
-    let id = recorded_ids(&home)
-        .into_iter()
-        .next()
-        .expect("a listed scan");
-
-    let narrower = zond_in(&home, &["-q", "s", "--resume", &id, "-p", "2"]);
-    assert_eq!(status(&narrower), 2, "{}", stderr(&narrower));
-    assert!(
-        stderr(&narrower).contains("--ports differs from the record"),
-        "{}",
-        stderr(&narrower)
-    );
-
-    let ranked = zond_in(&home, &["-q", "s", "--resume", &id, "--top-ports", "2"]);
-    assert_eq!(status(&ranked), 2, "{}", stderr(&ranked));
-    assert!(
-        stderr(&ranked).contains("--top-ports differs from the record"),
-        "{}",
-        stderr(&ranked)
-    );
-
-    // The same ports, however they are spelt.
-    let same = zond_in(&home, &["-q", "s", "--resume", &id, "-p", "1-2"]);
-    assert_eq!(status(&same), 0, "{}", stderr(&same));
-}
-
 /// A resume refused says why and nothing else. A line saying the job is
 /// continuing, above the refusal, reads as a resume that began and then
 /// failed, when the job was never touched.
@@ -1198,10 +1118,10 @@ fn a_refused_resume_says_only_why() {
         .next()
         .expect("a listed scan");
 
-    let refused = zond_in(&home, &["s", "--resume", &id, "-n", "-p", "2"]);
+    let refused = zond_in(&home, &["resume", &id, "-n", "--for", "1s"]);
     assert_eq!(status(&refused), 2, "{}", stderr(&refused));
     assert!(
-        stderr(&refused).contains("--ports differs from the record"),
+        stderr(&refused).contains("--for bounds a watch"),
         "{}",
         stderr(&refused)
     );
@@ -1226,7 +1146,7 @@ fn a_resumed_job_names_the_record_apart_from_what_it_scans() {
         .next()
         .expect("a listed scan");
 
-    let resumed = zond_in(&home, &["s", "--resume", &id, "-n"]);
+    let resumed = zond_in(&home, &["resume", &id, "-n"]);
     assert_eq!(status(&resumed), 0, "{}", stderr(&resumed));
     let said = stderr(&resumed);
     assert!(
@@ -1238,39 +1158,6 @@ fn a_resumed_job_names_the_record_apart_from_what_it_scans() {
         "{said}"
     );
     assert_eq!(said.matches(id.as_str()).count(), 1, "{said}");
-}
-
-/// Targets named alongside `--resume` are checked, and refused when they
-/// describe something else.
-#[test]
-fn targets_given_with_resume_must_agree_with_the_record() {
-    let home = config_home("journal-resume-checked");
-
-    let scan = zond_in(&home, &["-q", "s", "::1", "-p", "1,2"]);
-    assert_eq!(status(&scan), 0, "{}", stderr(&scan));
-
-    let listed = zond_in(&home, &["--pipe", "journal"]);
-    let id = stdout(&listed)
-        .lines()
-        .next()
-        .and_then(|line| line.split('\t').next().map(str::to_owned))
-        .expect("a listed scan");
-
-    let agreeing = zond_in(&home, &["-q", "s", "::1", "-p", "1,2", "--resume", &id]);
-    assert_eq!(status(&agreeing), 0, "{}", stderr(&agreeing));
-
-    // Named without ports, a target is taken at the ports every target on
-    // record was asked, not at a default the record never ran.
-    let portless = zond_in(&home, &["-q", "s", "::1", "-n", "--resume", &id]);
-    assert_eq!(status(&portless), 0, "{}", stderr(&portless));
-
-    let disagreeing = zond_in(&home, &["-q", "s", "::1", "-p", "1,2,3", "--resume", &id]);
-    assert_eq!(status(&disagreeing), 2, "{}", stderr(&disagreeing));
-    assert!(
-        stderr(&disagreeing).contains("drop the targets"),
-        "the message should say how to proceed: {}",
-        stderr(&disagreeing)
-    );
 }
 
 /// One scan can be deleted by name, shortened to any prefix that names only it.

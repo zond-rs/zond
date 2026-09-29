@@ -167,7 +167,7 @@ fn continued(
         return Err(Error::WrongPhase {
             id: resumed.id,
             held: "a port scan",
-            remedy: "zond scan --resume",
+            remedy: "zond resume",
         });
     };
 

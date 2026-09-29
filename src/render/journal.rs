@@ -23,7 +23,7 @@
 //!
 //! | | Field | |
 //! |---|---|---|
-//! | 1 | `ID` | what `show`, `report` and `--resume` take |
+//! | 1 | `ID` | what `show`, `read` and `zond resume` take |
 //! | 2 | `STATE` | `running`, `resumable`, `complete`, `locked`, or `unreadable` |
 //! | 3 | `STARTED` | when the first sitting began, RFC 3339 |
 //! | 4 | `PROGRESS` | `settled/total`, in whatever the phase counts |
@@ -244,7 +244,7 @@ fn tagged(entry: &Entry, out: &mut dyn Write) -> io::Result<()> {
 
 /// One record as a block, in the shape a scan draws a host.
 ///
-/// The identifier opens it, because that is what `show`, `report` and `--resume`
+/// The identifier opens it, because that is what `show`, `read` and `zond resume`
 /// all take, and it is the one thing on the block a reader is going to copy.
 fn drawn(entry: &Entry, out: &mut dyn Write, style: Style) -> io::Result<()> {
     // Named in the unit the phase counts, since "targets" reads as
@@ -298,7 +298,7 @@ fn drawn(entry: &Entry, out: &mut dyn Write, style: Style) -> io::Result<()> {
     // No handle: this is one record, so there is nothing to count it among, and
     // a listing where nothing is numbered reserves no column for numbering. The
     // identifier is the whole of what opens it, and it is what `show`, `report`
-    // and `--resume` all take, so it is this block's identity and takes the
+    // and `zond resume` all take, so it is this block's identity and takes the
     // weight an identity takes.
     let blocks = [Block {
         header: Header::alone(entry.manifest.id.clone()),

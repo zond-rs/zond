@@ -284,7 +284,7 @@ pub(crate) enum EntryLimit {
     /// Keep at most this many, oldest out first.
     ///
     /// Zero keeps none. The record of the run in flight is still written, since
-    /// `--resume` is the reason a journal exists at all, and it goes when the
+    /// `zond resume` is the reason a journal exists at all, and it goes when the
     /// next run claims one.
     AtMost(usize),
     /// Keep every record, however many there are.

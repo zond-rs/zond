@@ -216,6 +216,12 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             .unwrap_or(EntryLimit::DEFAULT),
     };
 
+    // Taken by value, since the sitting it becomes is built from its parts.
+    if let Command::Resume(args) = cli.command {
+        return command::resume::run(args, recording(false), showing.reasons, renderer.as_mut())
+            .await;
+    }
+
     match &cli.command {
         Command::Discover(args) => {
             command::discover::run(args, recording(args.no_journal), renderer.as_mut()).await
@@ -246,7 +252,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             }
             _ => command::detections::run(args, presentation, verbosity, palette),
         },
-        Command::Journal(_) => unreachable!("handled above"),
+        Command::Journal(_) | Command::Resume(_) => unreachable!("handled above"),
     }
 }
 
