@@ -120,7 +120,13 @@ pub(crate) async fn run(
     // `--load` named more, and every one of them compiled before the scan
     // starts: a detection that will not build is a mistake made before the run
     // and the end of one is the worst moment to be told.
-    let detections = command::detections::corpus(&args.detections)?;
+    //
+    // With the distributions' own security data beside it, from the cache
+    // `zond update` fills, so a distribution's build is judged by what its
+    // distributor fixed rather than by its upstream version.
+    let advisories = command::advisories::load();
+    let detections =
+        command::detections::corpus(&args.detections)?.with_advisories(advisories.clone());
 
     // Read before the scan starts, for the reason the export destinations are:
     // a catalogue that will not parse is a mistake made in the first second of a
@@ -155,7 +161,9 @@ pub(crate) async fn run(
         redaction,
         // A plan half-walked: stopping leaves ground uncovered.
         Stopping::CutsShort,
-        catalogue.as_ref(),
+        catalogue.as_ref().map(|catalogue| {
+            zond_engine::cve::Correlator::new(catalogue).with_advisories(&advisories)
+        }),
         renderer,
     )
     .await

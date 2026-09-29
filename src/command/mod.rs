@@ -19,6 +19,7 @@
 //! Nothing here formats anything, and nothing here decides an exit code. Those
 //! belong to [`render`](crate::render) and [`exit`](crate::exit).
 
+pub(crate) mod advisories;
 pub(crate) mod catalogue;
 pub(crate) mod detections;
 pub(crate) mod diff;
@@ -524,10 +525,11 @@ pub(crate) enum Stopping {
 /// amounted to. See [`input`] for what counts as asking, and [`Stopping`] for
 /// what this run takes that to mean.
 ///
-/// `catalogue` is a vulnerability dataset the operator supplied, correlated over
-/// the finished report before anything renders or is written. [`None`] leaves the
-/// scan's own correlation — against the catalogue the engine ships — as the only
-/// one, which is what a run that named no dataset asked for.
+/// `catalogue` is a correlation against a vulnerability dataset the operator
+/// supplied, run over the finished report before anything renders or is
+/// written. [`None`] leaves the scan's own correlation — against the catalogue
+/// the engine ships — as the only one, which is what a run that named no
+/// dataset asked for.
 ///
 /// Here rather than inside the engine because a catalogue is not a scan setting:
 /// it changes no packet and no timing, and the engine says so where it runs its
@@ -539,7 +541,7 @@ async fn drive(
     destinations: &[ReportFile],
     redaction: Redaction,
     stopping: Stopping,
-    catalogue: Option<&Catalogue>,
+    catalogue: Option<zond_engine::cve::Correlator<'_>>,
     renderer: &mut dyn Renderer,
 ) -> Result<Outcome, Error> {
     // Taken apart because holding the whole session would borrow it twice in
@@ -602,7 +604,7 @@ async fn drive(
     // additional to the engine's own pass rather than instead of it: findings
     // deduplicate by claim, so an entry both catalogues carry records once.
     if let Some(catalogue) = catalogue {
-        zond_engine::cve::correlate_report(&mut report, catalogue);
+        catalogue.correlate_report(&mut report);
     }
 
     // The files first, then the terminal. A file that could not be written
