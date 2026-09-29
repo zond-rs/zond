@@ -85,7 +85,7 @@ pub(crate) async fn run(
     }
 
     // A SYN scan hears a refusal only where its capture keeps ICMP errors, and
-    // reads one it did not hear as `no reply`. The settings may turn that off;
+    // reads one it did not hear as `no-reply`. The settings may turn that off;
     // `--reason`, which shows the refusal, turns it back on.
     if reasons {
         config.icmp_evidence = true;

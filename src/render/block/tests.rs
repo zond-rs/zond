@@ -188,7 +188,7 @@ fn a_scan_puts_its_ports_in_the_value_column() {
                                 .noted("expires in 12d".to_owned(), Urgency::Caution),
                         ],
                     ),
-                    Row::plain(port("5/tcp", "no reply", None)),
+                    Row::plain(port("5/tcp", "no-reply", None)),
                     Row::plain(bare().faint("996 closed ports not listed")),
                 ],
             ),
@@ -205,7 +205,7 @@ fn a_scan_puts_its_ports_in_the_value_column() {
                443/tcp  open      https  nginx 1.24
                   tls  1.3  X25519  alpn h2
                  cert  router.example  expires in 12d
-               5/tcp    no reply
+               5/tcp    no-reply
                996 closed ports not listed
 "
     );

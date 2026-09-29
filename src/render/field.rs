@@ -850,7 +850,7 @@ const NO_SERVICE: &str = "???";
 
 /// Whether a port's verdict is worth a line of its own.
 ///
-/// The most ports of one unreached state, `blocked` or `no reply`, listed one
+/// The most ports of one unreached state, `blocked` or `no-reply`, listed one
 /// per line before the rest are counted.
 ///
 /// Enough that an ordinary firewall policy, meaning a handful of refused
@@ -1185,7 +1185,7 @@ pub(crate) struct PortListing {
 /// Which ports a listing shows, and what it says about the rest.
 ///
 /// The selection rules live here, once, because they are the part that carries
-/// judgement: what a wall of `no reply` means, and what an outrun scan is
+/// judgement: what a wall of `no-reply` means, and what an outrun scan is
 /// allowed to claim. Two presentations disagreeing about that would be two
 /// different answers to the same scan.
 struct Selection<'a> {
@@ -1259,7 +1259,7 @@ fn select(host: &Host, silence_means_something: bool) -> Option<Selection<'_>> {
 
     if silent_over_limit > 0 {
         notes.push(format!(
-            "{silent_over_limit} more {} with no reply not listed",
+            "{silent_over_limit} more no-reply {} not listed",
             plural(silent_over_limit as u128, "port")
         ));
     }
@@ -2328,7 +2328,7 @@ fn protocol(protocol: Protocol) -> String {
 ///
 /// `open|no-reply` is one verdict, meaning "no answer, and for this technique
 /// an open port would not have answered either". It is not two states to pick
-/// between. `no reply` names only what was seen; `blocked` is kept for a
+/// between. `no-reply` names only what was seen; `blocked` is kept for a
 /// refusal that arrived. A state a newer engine records and this build has no
 /// word for falls back to the wire spelling.
 fn state(state: PortState) -> String {
@@ -2336,7 +2336,7 @@ fn state(state: PortState) -> String {
         PortState::Open => "open",
         PortState::Closed => "closed",
         PortState::Blocked => "blocked",
-        PortState::NoReply => "no reply",
+        PortState::NoReply => "no-reply",
         PortState::Reachable => "reachable",
         PortState::OpenOrNoReply => "open|no-reply",
         PortState::ClosedOrNoReply => "closed|no-reply",
@@ -2357,7 +2357,7 @@ const UNREACHED_IN: u128 = 10;
 
 /// Whether this report's silence is a finding.
 ///
-/// A port reported `no reply` reads as a claim: something dropped a probe that
+/// A port reported `no-reply` reads as a claim: something dropped a probe that
 /// a live host would have answered. That claim rests entirely on the scan
 /// having *asked properly*. A scan whose own pacing was cut back as far as it
 /// goes and which still left most of its probes unanswered did not ask properly;
@@ -3903,13 +3903,13 @@ mod tests {
 
         let trusted = ports(Reader::default(), &host, true, Showing::default());
         assert!(
-            trusted.iter().any(|line| line.contains("no reply")),
+            trusted.iter().any(|line| line.contains("no-reply")),
             "a scan that could ask reports what it found: {trusted:?}"
         );
 
         let outrun = ports(Reader::default(), &host, false, Showing::default());
         assert!(
-            outrun.iter().all(|line| !line.contains("no reply")),
+            outrun.iter().all(|line| !line.contains("no-reply")),
             "and one that could not makes no claim at all: {outrun:?}"
         );
         assert!(
@@ -4295,7 +4295,7 @@ mod tests {
                 "22/tcp   open      ssh OpenSSH 9.6",
                 "53/udp   open",
                 "443/tcp  open",
-                "21/tcp   no reply",
+                "21/tcp   no-reply",
                 "5 probed, 1 closed",
             ]
         );
@@ -4326,7 +4326,7 @@ mod tests {
         );
         assert_eq!(
             lines.last().map(String::as_str),
-            Some("28 more ports with no reply not listed")
+            Some("28 more no-reply ports not listed")
         );
     }
 
@@ -4351,7 +4351,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line == "8 more ports with no reply not listed")
+                .any(|line| line == "8 more no-reply ports not listed")
         );
     }
 
@@ -4513,7 +4513,7 @@ mod tests {
     fn packed_ports_carry_number_protocol_state_and_service() {
         assert_eq!(
             packed_ports(Reader::default(), &scanned()).as_deref(),
-            Some("21/tcp/no reply/-,22/tcp/open/ssh,443/tcp/open/-,53/udp/open/-"),
+            Some("21/tcp/no-reply/-,22/tcp/open/ssh,443/tcp/open/-,53/udp/open/-"),
             "grouped by protocol, then by number, which is a different order from the listing"
         );
         assert_eq!(closed_ports(&scanned()).as_deref(), Some("1"));
@@ -4548,7 +4548,7 @@ mod tests {
         assert_eq!(state(PortState::Open), "open");
         assert_eq!(state(PortState::Closed), "closed");
         assert_eq!(state(PortState::Blocked), "blocked");
-        assert_eq!(state(PortState::NoReply), "no reply");
+        assert_eq!(state(PortState::NoReply), "no-reply");
         assert_eq!(state(PortState::Reachable), "reachable");
         assert_eq!(state(PortState::OpenOrNoReply), "open|no-reply");
         assert_eq!(state(PortState::ClosedOrNoReply), "closed|no-reply");

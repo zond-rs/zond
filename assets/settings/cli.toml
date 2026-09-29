@@ -130,7 +130,7 @@
 # prohibited, no reply — with the TTL it carried and the round trip it took.
 #
 # The verdict already says whether a refusal arrived: `blocked` is somebody's
-# policy, `no reply` is an absence. This says which refusal it was, a
+# policy, `no-reply` is an absence. This says which refusal it was, a
 # prohibition from the host or an unreachable from a router on the way, and
 # how far away whatever sent it stood.
 #

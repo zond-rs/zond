@@ -24,7 +24,7 @@
 //!                443/tcp  open      https  nginx 1.24
 //!                           tls     1.3            X25519  alpn h2, http/1.1
 //!                          cert     router.example  expires in 12d
-//!                5/tcp    no reply
+//!                5/tcp    no-reply
 //!      risks     MED  443/tcp  the certificate is close to expiry
 //!
 //!   2  192.0.2.44

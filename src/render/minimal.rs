@@ -27,7 +27,7 @@
 //!   via:  arp
 //!   port: 22/tcp  open      ssh OpenSSH 9.6
 //!         80/tcp  open      http nginx 1.24
-//!         5/tcp   no reply
+//!         5/tcp   no-reply
 //!         1000 probed, 996 closed
 //!
 //! * 2001:db8::4
