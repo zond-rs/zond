@@ -189,9 +189,9 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
     let asked = cli.command.show().copied().unwrap_or_default();
     let showing = render::field::Showing {
         certificates: verbosity.explains(),
-        reasons: asked.reason || settings.reason().unwrap_or(false),
-        excerpts: asked.evidence || settings.evidence().unwrap_or(false),
-        remedies: asked.remedy || settings.remedy().unwrap_or(false),
+        reasons: asked.reason || asked.explain || settings.reason().unwrap_or(false),
+        excerpts: asked.evidence || asked.explain || settings.evidence().unwrap_or(false),
+        remedies: asked.remedy || asked.explain || settings.remedy().unwrap_or(false),
         // The flag, then the file, then the built-in floor, which is the order
         // every other setting layers in.
         risk: asked.risk.or_else(|| settings.risk()).unwrap_or_default(),

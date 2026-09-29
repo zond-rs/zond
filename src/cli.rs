@@ -2949,8 +2949,18 @@ fn sendable_from(link: &zond_engine::system::interface::Link) -> Vec<std::net::I
 /// Attached to the commands that draw them, `discover`, `scan`, `listen`,
 /// `read` and `merge`, rather than to every command: on `journal` or `diff`
 /// these would be accepted and change nothing.
+// Independent switches a caller sets in any combination, as on [`ScanArgs`].
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args, Clone, Copy, Default)]
 pub(crate) struct ShowArgs {
+    /// Show the working behind everything: `--reason`, `--evidence` and
+    /// `--remedy` at once.
+    ///
+    /// For reading one host closely, or a finding somebody is about to argue
+    /// with. Each of the three can still be given alone.
+    #[arg(help_heading = "Output", display_order = 100, long)]
+    pub explain: bool,
+
     /// Show which packet settled each port, and who sent a refusal.
     ///
     /// A port says which packet settled it, `SYN/ACK`, `RST`, `ICMP prohibited`
@@ -3031,6 +3041,8 @@ pub(crate) struct ShowArgs {
 ///
 /// Global, so `zond -v discover lan` and `zond discover -v lan` mean the same
 /// thing.
+// Independent switches a caller sets in any combination, as on [`ScanArgs`].
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Output")]
 pub(crate) struct OutputArgs {
@@ -3053,8 +3065,20 @@ pub(crate) struct OutputArgs {
     ///
     /// Tab-separated records with every field a scan established, no padding and
     /// no heading.
-    #[arg(long, global = true, conflicts_with = "presentation")]
+    #[arg(long, global = true, conflicts_with_all = ["presentation", "minimal", "fancy"])]
     pub pipe: bool,
+
+    /// Shorthand for `--presentation minimal`.
+    ///
+    /// A tagged block per host in abbreviated tags and no colour, for a narrow
+    /// terminal or a long sweep.
+    #[arg(long, global = true, conflicts_with_all = ["presentation", "fancy"])]
+    pub minimal: bool,
+
+    /// Shorthand for `--presentation fancy`, the default, for a run whose
+    /// settings file says otherwise.
+    #[arg(long, global = true, conflicts_with = "presentation")]
+    pub fancy: bool,
 
     /// Whether to colour the output.
     ///
@@ -3100,6 +3124,12 @@ impl OutputArgs {
     pub(crate) fn presentation(&self, configured: Option<Presentation>) -> Presentation {
         if self.pipe {
             return Presentation::Pipe;
+        }
+        if self.minimal {
+            return Presentation::Minimal;
+        }
+        if self.fancy {
+            return Presentation::Fancy;
         }
         self.presentation.or(configured).unwrap_or_default()
     }
@@ -3381,6 +3411,20 @@ mod tests {
                 .is_err(),
             "two ways of naming a mode at once has no coherent meaning"
         );
+
+        for (flag, mode) in [
+            ("--minimal", Presentation::Minimal),
+            ("--fancy", Presentation::Fancy),
+        ] {
+            let cli = Cli::try_parse_from(["zond", flag, "d", "lan"]).expect("should parse");
+            assert_eq!(
+                cli.output.presentation(Some(Presentation::Pipe)),
+                mode,
+                "{flag}"
+            );
+        }
+        assert!(Cli::try_parse_from(["zond", "--pipe", "--minimal", "d", "lan"]).is_err());
+        assert!(Cli::try_parse_from(["zond", "--minimal", "--fancy", "d", "lan"]).is_err());
     }
 
     #[test]
