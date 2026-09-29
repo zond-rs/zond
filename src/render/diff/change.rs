@@ -380,6 +380,7 @@ pub(super) fn label(kind: &'static str) -> &'static str {
         "service_version" => "version",
         "service_vendor" => "service vendor",
         "service_extrainfo" => "detail",
+        "service_build" => "build",
         "cpe_gained" => "platform gained",
         "cpe_lost" => "platform lost",
         "tls_version" => "TLS",
