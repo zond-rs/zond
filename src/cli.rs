@@ -918,6 +918,8 @@ pub(crate) struct DiffArgs {
     /// is what a segment with phones on it wants. `primary` treats the address
     /// itself as the thing being watched, which is what an external scan of a
     /// public range means.
+    ///
+    /// The setting for every run: `identity` in cli.toml.
     #[arg(long, value_name = "HOW", value_parser = identity())]
     pub identity: Option<Identity>,
 
@@ -1119,6 +1121,8 @@ pub(crate) struct RedactArgs {
     /// without it, so the copy sent to a client can be made from the one kept.
     /// `redact = true` in the engine's settings masks every output without the
     /// flag.
+    ///
+    /// The setting for every run: `redact` in engine.toml.
     #[arg(help_heading = "Output", display_order = 100, long)]
     pub redact: bool,
 }
@@ -1206,9 +1210,10 @@ impl ExportArgs {
 pub(crate) struct PageArgs {
     /// How many rows to list at once.
     ///
-    /// Ten by default, which is the handful anybody is usually looking for.
-    /// `page_size` in `cli.toml` changes that for every run, and 0 means no
-    /// limit.
+    /// Ten by default, which is the handful anybody is usually looking for,
+    /// and 0 means no limit.
+    ///
+    /// The setting for every run: `page_size` in cli.toml.
     #[arg(long, short = 'n', value_name = "COUNT", conflicts_with = "all")]
     pub limit: Option<usize>,
 
@@ -1385,6 +1390,8 @@ pub(crate) struct ListenArgs {
     /// moment you want what it heard is after it stopped. A watch's record is
     /// appended to rather than resumed — there is no progress to continue, so
     /// `zond resume` adds another sitting to the same record.
+    ///
+    /// The setting for every run: `journal = false` in cli.toml.
     #[arg(help_heading = "Journal", long)]
     pub no_journal: bool,
 
@@ -1498,7 +1505,9 @@ pub(crate) struct DiscoverArgs {
     ///
     /// A record holds the addresses you swept and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one
-    /// run; `journal = false` in `cli.toml` turns it off for all of them.
+    /// run.
+    ///
+    /// The setting for every run: `journal = false` in cli.toml.
     #[arg(help_heading = "Journal", long)]
     pub no_journal: bool,
 
@@ -1564,6 +1573,8 @@ pub(crate) struct ScanArgs {
     ///
     /// Defaults to `default_ports` in the settings file, and to the thousand
     /// ports most likely to be listening when that says nothing either.
+    ///
+    /// With no port flag, `default_ports` in engine.toml.
     #[arg(
         help_heading = "Ports",
         short = 'p',
@@ -1641,7 +1652,10 @@ pub(crate) struct ScanArgs {
     ///
     /// A printer's raw-print ports are already sent nothing but the probe
     /// that finds them open; exclude them to skip that too, and not find the
-    /// printers. Adds to `exclude_ports` in engine.toml.
+    /// printers.
+    ///
+    /// The setting for every run: `exclude_ports` in engine.toml, which this
+    /// adds to rather than replaces.
     #[arg(
         help_heading = "Ports",
         long,
@@ -1740,6 +1754,8 @@ pub(crate) struct ScanArgs {
     /// accepts everything. --host-timeout bounds it. A deprecated version
     /// or a weak suite is reported as a finding against the port, and a version
     /// whose walk was cut short is marked unfinished.
+    ///
+    /// The setting for every run: `tls_enumeration` in engine.toml.
     #[arg(help_heading = "Identification", long)]
     pub tls_enum: bool,
 
@@ -1776,6 +1792,8 @@ pub(crate) struct ScanArgs {
     /// unprivileged fallback; the rest need root and are refused without it
     /// rather than quietly substituted. `window` reads an ACK's reset for its
     /// window field, which some stacks set differently on an open port.
+    ///
+    /// The setting for every run: `tcp_technique` in engine.toml.
     #[arg(
         help_heading = "Techniques",
         long,
@@ -1808,6 +1826,8 @@ pub(crate) struct ScanArgs {
     /// listener positively; `cookie-echo` sends an unminted cookie, which a
     /// closed port answers and an open one ignores. Both need root. Only the
     /// ports written as SCTP, `-p s:2905`, are probed this way.
+    ///
+    /// The setting for every run: `sctp_technique` in engine.toml.
     #[arg(
         help_heading = "Techniques",
         hide_short_help = true,
@@ -1899,7 +1919,9 @@ pub(crate) struct ScanArgs {
     ///
     /// A record holds the addresses you scanned and what answered. It is written
     /// under your own home, readable only by you. This turns that off for one
-    /// run; `journal = false` in `cli.toml` turns it off for all of them.
+    /// run.
+    ///
+    /// The setting for every run: `journal = false` in cli.toml.
     #[arg(help_heading = "Journal", long)]
     pub no_journal: bool,
 
@@ -2466,6 +2488,8 @@ pub(crate) struct PaceArgs {
     /// The discovery sweep and a UDP port scan run at this pace. A TCP port scan
     /// paces itself on how fast its targets answer, and this is only its
     /// ceiling.
+    ///
+    /// The setting for every run: `max_probe_rate` in engine.toml.
     #[arg(
         help_heading = "Speed",
         long,
@@ -2480,6 +2504,8 @@ pub(crate) struct PaceArgs {
     /// and never speeds one past what `--max-probe-rate` allows. For a link whose
     /// round trips are long enough that the adaptive window crawls, where the
     /// operator would rather spend packets than wait.
+    ///
+    /// The setting for every run: `min_probe_rate` in engine.toml.
     #[arg(
         help_heading = "Speed",
         hide_short_help = true,
@@ -2495,6 +2521,8 @@ pub(crate) struct PaceArgs {
     /// that reaches it is left where it stands and named in the report as one
     /// the budget cut short, so a slow host cannot hold a scan open. Accepts a
     /// plain number of seconds or a suffix: `30s`, `10m`, `4h`.
+    ///
+    /// The setting for every run: `host_timeout` in engine.toml.
     #[arg(help_heading = "Speed", long, value_name = "DURATION", value_parser = parse_duration)]
     pub host_timeout: Option<std::time::Duration>,
 
@@ -2504,6 +2532,8 @@ pub(crate) struct PaceArgs {
     /// it expires is left where it stands and named in the report, and the run
     /// exits 3 rather than as interrupted. Accepts a plain number of seconds or
     /// a suffix: `30s`, `10m`, `4h`.
+    ///
+    /// The setting for every run: `scan_timeout` in engine.toml.
     #[arg(help_heading = "Speed", long, value_name = "DURATION", value_parser = parse_duration)]
     pub scan_timeout: Option<std::time::Duration>,
 }
@@ -2542,6 +2572,8 @@ pub(crate) struct NamingArgs {
     /// it is still read: a host the scan finds is named from it, and a
     /// hostname written as a target is resolved from it, and refused rather
     /// than dropped when the file does not list it.
+    ///
+    /// The setting for every run: `no_dns` in engine.toml.
     #[arg(help_heading = "Targets", short = 'n', long)]
     pub no_dns: bool,
 
@@ -2552,6 +2584,8 @@ pub(crate) struct NamingArgs {
     /// knowing which device is which: a client, an auditor, a screenshot in an
     /// issue. The scan still finds everything, and only what leaves this process
     /// is masked.
+    ///
+    /// The setting for every run: `redact` in engine.toml.
     #[arg(help_heading = "Output", display_order = 100, long)]
     pub redact: bool,
 }
@@ -2589,7 +2623,8 @@ pub(crate) struct ScopeArgs {
     /// machine on your own segment never sees a broadcast probe. Do not sweep
     /// the segment if that matters.
     ///
-    /// Adds to `exclude` in engine.toml rather than replacing it.
+    /// The setting for every run: `exclude` in engine.toml, which this adds
+    /// to rather than replaces.
     #[arg(
         help_heading = "Targets",
         short = 'x',
@@ -2653,12 +2688,16 @@ impl ScopeArgs {
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct EngineArgs {
     /// How hard the scan tries before it accepts silence as an answer.
+    ///
+    /// The setting for every run: `effort` in engine.toml.
     #[arg(help_heading = "Speed", long, value_name = "LEVEL", value_parser = effort())]
     pub effort: Option<ScanEffort>,
 
     /// Replace the attempt budget outright, whatever --effort implies.
     ///
     /// 1 disables retransmission.
+    ///
+    /// The setting for every run: `max_attempts` in engine.toml.
     #[arg(help_heading = "Speed", hide_short_help = true, long, value_name = "N")]
     pub max_attempts: Option<NonZeroU8>,
 
@@ -2666,6 +2705,8 @@ pub(crate) struct EngineArgs {
     ///
     /// Does not touch the shortest timeout a protocol allows. That floor is not
     /// a preference, it is what the protocol costs.
+    ///
+    /// The setting for every run: `timeout_scale` in engine.toml.
     #[arg(
         help_heading = "Speed",
         hide_short_help = true,
@@ -2679,6 +2720,8 @@ pub(crate) struct EngineArgs {
     ///
     /// Thorough and expensive. Normally a silent host has its remaining budget
     /// cut so the scan can spend it somewhere that is answering.
+    ///
+    /// The setting for every run: `dampen_silent_hosts = false` in engine.toml.
     #[arg(help_heading = "Speed", hide_short_help = true, long)]
     pub no_dampen: bool,
 
@@ -2687,6 +2730,8 @@ pub(crate) struct EngineArgs {
     pub pace: PaceArgs,
 
     /// How raw probes are placed on the wire.
+    ///
+    /// The setting for every run: `send_mode` in engine.toml.
     #[arg(
         help_heading = "Techniques",
         hide_short_help = true,
@@ -3354,6 +3399,8 @@ pub(crate) struct ShowArgs {
     /// whose own reasons are read back. Not on `--pipe`, whose fields are a
     /// stable interface; a program reads the JSON, which carries all of it
     /// unconditionally.
+    ///
+    /// The setting for every run: `reason` in cli.toml.
     #[arg(help_heading = "Output", display_order = 101, long = "reason")]
     pub reason: bool,
 
@@ -3362,7 +3409,7 @@ pub(crate) struct ShowArgs {
     /// A scan turns up more than most runs want to read. `missing HTTP security
     /// headers` is true of most web servers and says the same thing on each, so
     /// a sweep of forty of them is forty rows nobody reads. The floor is
-    /// `medium` unless this or `min_risk` in `cli.toml` says otherwise.
+    /// `medium` unless this says otherwise.
     ///
     /// The count beside a host is never filtered. A host with five findings and
     /// a floor that draws three still says `5 risks`, and the block says how
@@ -3371,6 +3418,8 @@ pub(crate) struct ShowArgs {
     ///
     /// `info` draws everything. Not on `--pipe` or the exports, which carry
     /// every finding whatever this says.
+    ///
+    /// The setting for every run: `min_risk` in cli.toml.
     #[arg(
         help_heading = "Output",
         display_order = 102,
@@ -3391,6 +3440,8 @@ pub(crate) struct ShowArgs {
     /// Spelled `remedy` rather than `fix`, which on a scanner reads as an offer
     /// to make the change rather than to describe it. This tool sends probes and
     /// nothing else.
+    ///
+    /// The setting for every run: `remedy` in cli.toml.
     #[arg(help_heading = "Output", display_order = 103, long = "remedy")]
     pub remedy: bool,
 
@@ -3403,6 +3454,8 @@ pub(crate) struct ShowArgs {
     /// Its own flag rather than part of `--reason`, which answers the same
     /// question about a port's verdict: somebody triaging findings does not want
     /// every port's packet along with them.
+    ///
+    /// The setting for every run: `evidence` in cli.toml.
     #[arg(help_heading = "Output", display_order = 104, long = "evidence")]
     pub evidence: bool,
 }
@@ -3428,6 +3481,8 @@ pub(crate) struct OutputArgs {
     ///
     /// `fancy` is a numbered tree per host and the default; `minimal` is the
     /// terse tagged form; `pipe` is tab-separated records for a program.
+    ///
+    /// The setting for every run: `presentation` in cli.toml.
     #[arg(long, value_name = "MODE", global = true, value_parser = presentation())]
     pub presentation: Option<Presentation>,
 
@@ -3460,6 +3515,8 @@ pub(crate) struct OutputArgs {
     ///
     /// Box drawing is not on this switch. A file holds a box-drawing character
     /// perfectly well, so only `TERM=dumb` takes the tree away.
+    ///
+    /// The setting for every run: `colour` in cli.toml.
     #[arg(
         long = "colour",
         visible_alias = "color",
