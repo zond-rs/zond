@@ -264,7 +264,7 @@ pub(crate) enum Command {
     /// Check the detections a scan would run, without scanning.
     Detections(DetectionsArgs),
 
-    /// Download the distributions' security feeds a scan judges versions by.
+    /// Download the distributions' security data into the cache.
     #[command(after_help = UPDATE_HELP)]
     Update,
 
@@ -307,9 +307,9 @@ A package install puts them where each shell looks already.";
 
 /// What `zond update --help` adds below the flags.
 const UPDATE_HELP: &str = "\
-Each feed says which distribution build fixed which vulnerability, so a host
-running a patched build of an old version is not reported for what it no
-longer has. Only what changed since the last update is downloaded.
+Fetches the Ubuntu and Debian security feeds, which say which package build
+fixed which vulnerability. Only what changed since the last update is
+downloaded.
 
 Kept in $XDG_CACHE_HOME/zond, else ~/.cache/zond (%LOCALAPPDATA%\\zond\\cache
 on Windows); under sudo, the invoking user's.";
