@@ -2199,23 +2199,26 @@ pub(crate) struct EngineArgs {
     )]
     pub os_detection: Option<OsDetection>,
 
-    /// Identify the system behind each host as thoroughly as this engine can.
+    /// Identify the system behind each host by probing it: `-O` actively,
+    /// `-OO` as thoroughly as this engine can.
     ///
-    /// Shorthand for `--os-detection aggressive`: a series of SYNs to every host
-    /// with a TCP port, a ping to every host without, and twice the samples
-    /// `active` takes. Reach for it when the machine's operating system is
-    /// already known and the point is to measure the stack.
+    /// `-O` is `--os-detection active`, the first level that sends probes of
+    /// its own, and the one nmap's `-O` asks for. `-OO` is `--os-detection
+    /// aggressive`: a series of SYNs to every host with a TCP port, a ping to
+    /// every host without, and twice the samples `active` takes. Reach for it
+    /// when the machine's operating system is already known and the point is to
+    /// measure the stack.
     ///
-    /// A separate flag rather than an optional value on `--os-detection`. An
-    /// option that may or may not take a value would read
-    /// `zond scan -O 192.0.2.1` as a level of `192.0.2.1` and scan nothing.
+    /// Counted rather than given a value, as `-v` is. An option that may or may
+    /// not take a value would read `zond scan -O 192.0.2.1` as a level of
+    /// `192.0.2.1` and scan nothing.
     #[arg(
         help_heading = "Identification",
         short = 'O',
-        long,
+        action = ArgAction::Count,
         conflicts_with = "os_detection"
     )]
-    pub os_aggressive: bool,
+    pub os_probing: u8,
 
     /// Measure the route to each host that answered.
     ///
@@ -2653,8 +2656,10 @@ impl EngineArgs {
         // Mutually exclusive at the parser, so there is no precedence to settle
         // here: a caller who writes both is told, rather than served whichever
         // this happens to check second.
-        if self.os_aggressive {
-            config.os_detection = OsDetection::Aggressive;
+        match self.os_probing {
+            0 => {}
+            1 => config.os_detection = OsDetection::Active,
+            _ => config.os_detection = OsDetection::Aggressive,
         }
         if let Some(detection) = self.os_detection {
             config.os_detection = detection;
@@ -3254,24 +3259,28 @@ mod tests {
         assert!(config.no_dns);
     }
 
-    /// `-O` reaches the engine as the top level. The part worth pinning is that
-    /// it does **not** eat the target that follows it.
+    /// `-O` is the active level and `-OO` the aggressive one, as nmap's `-O`
+    /// and the repeated `-v` read. The part worth pinning is that neither eats
+    /// the target that follows it.
     ///
-    /// A flag rather than an option with an optional value, precisely so that
-    /// cannot happen: turned into the latter, `zond scan -O 192.0.2.1` would
-    /// read the address as a detection level, fail or scan nothing, and look
-    /// like a bug somewhere else entirely.
+    /// Counted rather than given an optional value, precisely so that cannot
+    /// happen: turned into the latter, `zond scan -O 192.0.2.1` would read the
+    /// address as a level, fail or scan nothing, and look like a bug somewhere
+    /// else entirely.
     #[test]
-    fn the_aggressive_shorthand_sets_the_level_without_eating_the_target() {
-        let cli = Cli::try_parse_from(["zond", "s", "-O", "192.0.2.1"]).expect("should parse");
-        let Command::Scan(args) = cli.command else {
-            panic!("s is the scan alias");
+    fn the_os_shorthand_counts_up_the_levels_without_eating_the_target() {
+        let level = |flag: &str| {
+            let cli = Cli::try_parse_from(["zond", "s", flag, "192.0.2.1"]).expect("should parse");
+            let Command::Scan(args) = cli.command else {
+                panic!("s is the scan alias");
+            };
+            assert_eq!(args.targets, ["192.0.2.1"], "the target was eaten");
+            let mut config = ZondConfig::default();
+            args.engine.apply_to(&mut config);
+            config.os_detection
         };
-        assert_eq!(args.targets, ["192.0.2.1"]);
-
-        let mut config = ZondConfig::default();
-        args.engine.apply_to(&mut config);
-        assert_eq!(config.os_detection, OsDetection::Aggressive);
+        assert_eq!(level("-O"), OsDetection::Active);
+        assert_eq!(level("-OO"), OsDetection::Aggressive);
     }
 
     /// `-d` takes a step along the scale as readily as its word, and bare it is
@@ -3382,7 +3391,7 @@ mod tests {
             scan.detect,
             Some(DetectionEnvelope::up_to(DetectionClass::ActiveBenign))
         );
-        assert!(scan.engine.os_aggressive, "-dO is two flags");
+        assert_eq!(scan.engine.os_probing, 1, "-dO is two flags");
 
         let untouched = join_detect_step(
             ["zond", "s", "--", "-d4"]
