@@ -1413,8 +1413,9 @@ pub(crate) struct ScanArgs {
     /// The steps are the same scale `--detection` names in words, `0` off
     /// through `5` dos, so `-d=4` is `--detection exploit` and `-d=0` turns
     /// detections off entirely and leaves a scan its ports and services. Written
-    /// with an equals sign: without one, `zond scan -d 192.0.2.1` would read the
-    /// address as a step and scan nothing.
+    /// with an equals sign or against the letter, `-d=4` or `-d4`, but never
+    /// apart: `zond scan -d 192.0.2.1` would otherwise read the address as a
+    /// step and scan nothing.
     ///
     /// [possible values: 0 off, 1 passive, 2 active-benign, 3 active-mutating,
     /// 4 exploit, 5 dos]
@@ -1494,6 +1495,36 @@ impl ScanArgs {
             config.idle_scan = Some(idle);
         }
     }
+}
+
+/// Joins a step written against `-d`, as in `-d4`, to the flag with the equals
+/// sign it requires.
+///
+/// `-d` requires one so that a target after it is never read as a step, and
+/// the parser then reads the `4` of `-d4` as a flag of its own and refuses a
+/// `-4` nobody typed. Only digits are joined: `-dO` is `-d` beside `-O`, and a
+/// step is never spelled as a word against the letter. Nothing after `--` is
+/// touched.
+pub(crate) fn join_detect_step(arguments: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let mut verbatim = false;
+    arguments
+        .into_iter()
+        .map(|argument| {
+            if verbatim {
+                return argument;
+            }
+            if argument == "--" {
+                verbatim = true;
+                return argument;
+            }
+            match argument.to_str().and_then(|token| token.strip_prefix("-d")) {
+                Some(step) if !step.is_empty() && step.bytes().all(|b| b.is_ascii_digit()) => {
+                    format!("-d={step}").into()
+                }
+                _ => argument,
+            }
+        })
+        .collect()
 }
 
 /// Reads a zombie for the idle scan: an address, or `IP:PORT`.
@@ -2811,6 +2842,56 @@ mod tests {
         assert!(
             Cli::try_parse_from(["zond", "s", "-d=9", "192.0.2.1"]).is_err(),
             "a step past the top of the scale was accepted"
+        );
+    }
+
+    /// `-d4` is `-d=4`. A letter after `-d` is another flag, as it always was,
+    /// and a token after `--` is left as it was typed.
+    #[test]
+    fn a_step_written_against_the_detect_flag_is_joined_to_it() {
+        use zond_engine::model::finding::DetectionClass;
+
+        let parse = |args: &[&str]| {
+            let joined = join_detect_step(args.iter().map(std::ffi::OsString::from).collect());
+            Cli::try_parse_from(joined)
+        };
+        let ceiling = |args: &[&str]| {
+            let Command::Scan(scan) = parse(args).expect("should parse").command else {
+                panic!("s is the scan alias");
+            };
+            scan.detect
+        };
+
+        assert_eq!(
+            ceiling(&["zond", "s", "-d4", "192.0.2.1"]),
+            Some(DetectionEnvelope::up_to(DetectionClass::Exploit))
+        );
+        assert_eq!(
+            ceiling(&["zond", "s", "-d0", "192.0.2.1"]),
+            Some(DetectionEnvelope::none())
+        );
+
+        let Command::Scan(scan) = parse(&["zond", "s", "-dO", "192.0.2.1"])
+            .expect("should parse")
+            .command
+        else {
+            panic!("s is the scan alias");
+        };
+        assert_eq!(
+            scan.detect,
+            Some(DetectionEnvelope::up_to(DetectionClass::ActiveBenign))
+        );
+        assert!(scan.engine.os_aggressive, "-dO is two flags");
+
+        let untouched = join_detect_step(
+            ["zond", "s", "--", "-d4"]
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect(),
+        );
+        assert_eq!(
+            untouched.last().map(|a| a.to_string_lossy().into_owned()),
+            Some("-d4".into())
         );
     }
 
