@@ -29,10 +29,11 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use std::num::{NonZeroU8, NonZeroU32};
 
 use zond_engine::config::{
-    DetectionEnvelope, IdleScan, OsDetection, RAW_PRINT_PORTS, ScanEffort, ServiceDetection,
-    TimeoutScale,
+    DetectionEnvelope, IdleScan, OsDetection, RAW_PRINT_PORTS, ScanEffort, ScanPace,
+    ServiceDetection, TimeoutScale,
 };
 use zond_engine::evasion::EvasionProfile;
+use zond_engine::model::finding::DetectionClass;
 use zond_engine::model::mac::MacAddr;
 use zond_engine::model::port::PortSetParseError;
 use zond_engine::model::technique::{SctpScanTechnique, TcpScanTechnique};
@@ -1740,6 +1741,22 @@ pub(crate) struct ScanArgs {
     )]
     pub detect: Option<DetectionEnvelope>,
 
+    /// Identify all this can without changing anything on the target: `-O`,
+    /// `-d` and `--traceroute` together.
+    ///
+    /// Probes each host's operating system, runs the detections that ask a
+    /// service something of their own, and measures the route to each host
+    /// that answered. Nothing it sends alters, exploits or degrades a target;
+    /// those detection classes still have to be named with `-d`. Any of the
+    /// three flags given as well replaces what this set, so `-A -d=passive`
+    /// keeps the detections to what the scan already read.
+    ///
+    /// It costs more traffic and more time than a plain scan: a series of
+    /// probes per host for its operating system, a connection per detection
+    /// that asks, and a probe per router on each route.
+    #[arg(help_heading = "Identification", short = 'A', long)]
+    pub aggressive: bool,
+
     /// How far to go to identify what is listening behind each open port.
     ///
     /// `off` never connects: ports come back with a state and whatever name
@@ -2061,6 +2078,13 @@ impl ScanArgs {
 
     /// Lays these flags over a configuration the settings files produced.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
+        // Before every flag it stands for, so one of them typed beside it
+        // replaces what it set rather than being replaced by it.
+        if self.aggressive {
+            config.os_detection = OsDetection::Active;
+            config.detection = DetectionEnvelope::up_to(DetectionClass::ActiveBenign);
+            config.traceroute = true;
+        }
         self.engine.apply_to(config);
 
         // Mutually exclusive at the parser, as `-O` and `--os-detection` are.
@@ -2483,6 +2507,8 @@ Examples:
   zond s 192.168.0.150 -p 8000-  every port from 8000 up
   zond s 10.0.0.0/24 --exclude 10.0.0.7 -p 22
   zond s 192.168.0.150 -p 443 --traceroute
+  zond s 192.168.0.150 -A        identify all that changes nothing there
+  zond s 10.0.0.0/24 -T2         gently, for a network with fragile devices
   zond s 10.0.0.0/24 -p 22,443 -oA engagement
 
 Given no port flag, a scan probes the thousand TCP ports most likely to be
@@ -2567,6 +2593,40 @@ pub(crate) struct PaceArgs {
     /// The setting for every run: `scan_timeout` in engine.toml.
     #[arg(help_heading = "Speed", long, value_name = "DURATION", value_parser = parse_duration)]
     pub scan_timeout: Option<std::time::Duration>,
+
+    /// Keep at least this long between any two probes the scan sends, whatever
+    /// host each is aimed at.
+    ///
+    /// The one bound every part of the scan shares, for a thin link or a
+    /// network whose owner asked for a few packets a second. A plain number is
+    /// milliseconds; `ms`, `s` and `m` are taken too. Probes are held rather
+    /// than dropped, so the scan takes longer instead of asking less.
+    ///
+    /// The setting for every run: `probe_interval` in engine.toml.
+    #[arg(
+        help_heading = "Speed",
+        hide_short_help = true,
+        long,
+        value_name = "GAP",
+        value_parser = parse_gap
+    )]
+    pub probe_interval: Option<std::time::Duration>,
+
+    /// Keep at least this long between two probes aimed at one host.
+    ///
+    /// For a device known to fall over under a burst: twenty probes a second
+    /// is `--host-probe-interval 50`. Other hosts are not held back by it. A
+    /// plain number is milliseconds; `ms`, `s` and `m` are taken too.
+    ///
+    /// The setting for every run: `host_probe_interval` in engine.toml.
+    #[arg(
+        help_heading = "Speed",
+        hide_short_help = true,
+        long,
+        value_name = "GAP",
+        value_parser = parse_gap
+    )]
+    pub host_probe_interval: Option<std::time::Duration>,
 }
 
 impl PaceArgs {
@@ -2585,7 +2645,47 @@ impl PaceArgs {
         if let Some(budget) = self.scan_timeout {
             config.scan_timeout = Some(budget);
         }
+        if let Some(gap) = self.probe_interval {
+            config.probe_interval = Some(gap);
+        }
+        if let Some(gap) = self.host_probe_interval {
+            config.host_probe_interval = Some(gap);
+        }
     }
+}
+
+/// A gap between probes, as it is written on the command line.
+///
+/// Milliseconds by default, unlike [`parse_duration`], because the gaps worth
+/// keeping are mostly shorter than a second and `engine.toml` writes them in
+/// milliseconds too: one spelling for one setting wherever it is written.
+/// Zero is refused, since a gap of no time is what leaving the flag out says.
+fn parse_gap(text: &str) -> Result<std::time::Duration, String> {
+    let text = text.trim();
+    let (digits, unit) = match text.find(|c: char| !c.is_ascii_digit()) {
+        Some(at) => (&text[..at], &text[at..]),
+        None => (text, ""),
+    };
+    let value: u64 = digits
+        .parse()
+        .map_err(|_| format!("'{text}' is not a gap: try 50, 250ms or 2s"))?;
+    if value == 0 {
+        return Err(String::from(
+            "a gap of no time is no gap: leave the flag out, or try 50, 250ms or 2s",
+        ));
+    }
+    let millis = match unit {
+        "" | "ms" => Some(value),
+        "s" => value.checked_mul(1_000),
+        "m" => value.checked_mul(60_000),
+        other => {
+            return Err(format!(
+                "'{other}' is not one of ms, s, m: try 50, 250ms or 2s"
+            ));
+        }
+    }
+    .ok_or_else(|| format!("'{text}' is longer than this program can count"))?;
+    Ok(std::time::Duration::from_millis(millis))
 }
 
 /// How the hosts a run finds are named: by what DNS says, or not, and in the
@@ -2718,6 +2818,37 @@ impl ScopeArgs {
 // exactly these fields.
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct EngineArgs {
+    /// How gently to treat the network: `-T0` gentlest to `-T5` fastest.
+    ///
+    /// A dial over the gaps between probes and how long each waits for an
+    /// answer, for when you know what the network can take and not which of
+    /// the flags below say it. Any of those flags given as well replaces what
+    /// the level set.
+    ///
+    /// `trickle`, 0, sends one probe a second across the whole scan, and
+    /// `sparing`, 1, ten; both hold each host to the same. `gentle`, 2, allows
+    /// two hundred a second across the scan and twenty at any one host, for a
+    /// network with fragile devices on it. `normal`, 3, changes nothing.
+    /// `brisk`, 4, is `--effort fast`, and `hurried`, 5, halves that patience
+    /// again.
+    ///
+    /// The slow levels defer probes rather than drop them, so they take as long
+    /// as their spacing says: a thousand ports at `-T1` is over a hundred
+    /// seconds, at `-T0` a quarter of an hour. The fast ones wait less for an
+    /// answer and never push a host harder than it is answering, so a slow
+    /// host's ports may come back as no-reply. Takes the name as readily as the
+    /// number: `-T gentle`, `--pace 2`.
+    ///
+    /// The setting for every run: `pace` in engine.toml.
+    #[arg(
+        help_heading = "Speed",
+        short = 'T',
+        long = "pace",
+        value_name = "LEVEL",
+        value_parser = pace()
+    )]
+    pub pace_level: Option<ScanPace>,
+
     /// How hard the scan tries before it accepts silence as an answer.
     ///
     /// The setting for every run: `effort` in engine.toml.
@@ -3119,6 +3250,10 @@ fn effort() -> Words<ScanEffort> {
     words(|| named(ScanEffort::ALL, ScanEffort::name))
 }
 
+fn pace() -> Words<ScanPace> {
+    words(|| named(ScanPace::ALL, ScanPace::name))
+}
+
 fn os_detection() -> Words<OsDetection> {
     words(|| named(OsDetection::ALL, OsDetection::name))
 }
@@ -3222,6 +3357,12 @@ impl EngineArgs {
     /// written by the same `apply_to`, so the two halves of one grammar are
     /// parsed by one module rather than by two that could disagree.
     pub(crate) fn apply_to(&self, config: &mut ZondConfig) {
+        // First, so every flag below that sets the same thing replaces what
+        // the level wrote: the level is where a run starts, and a flag typed
+        // beside it is the correction.
+        if let Some(pace) = self.pace_level {
+            pace.apply_to(config);
+        }
         self.scope.apply_to(config);
         if self.no_dampen {
             config.retry.dampen_silent_hosts = false;
@@ -3679,6 +3820,7 @@ mod tests {
         }
 
         check("effort", &effort());
+        check("pace", &pace());
         check("os-detection", &os_detection());
         check("service-detection", &service_detection());
         check("tcp-technique", &tcp_technique());
@@ -3704,6 +3846,8 @@ mod tests {
             &["--max-probe-rate", "10"],
             &["--traceroute"],
             &["-O"],
+            &["-T2"],
+            &["--probe-interval", "50"],
         ] {
             let mut args = vec!["zond", "listen", "lan"];
             args.extend_from_slice(flag);
@@ -3712,6 +3856,7 @@ mod tests {
         for flag in [
             &["--service-detection", "off"][..],
             &["--no-service-detection"],
+            &["-A"],
         ] {
             let mut args = vec!["zond", "discover", "lan"];
             args.extend_from_slice(flag);
@@ -3948,6 +4093,119 @@ mod tests {
         };
         assert_eq!(level("-O"), OsDetection::Active);
         assert_eq!(level("-OO"), OsDetection::Aggressive);
+    }
+
+    /// The pace is written against the letter, by name, or long, and all
+    /// three are one level; a level the engine does not offer is refused
+    /// rather than rounded to the nearest one.
+    #[test]
+    fn the_pace_takes_a_step_or_a_name_and_writes_its_gaps() {
+        let paced = |flags: &[&str]| {
+            let mut line = vec!["zond", "s"];
+            line.extend_from_slice(flags);
+            line.push("192.0.2.1");
+            let cli = Cli::try_parse_from(&line).expect("should parse");
+            let Command::Scan(args) = cli.command else {
+                panic!("s is the scan alias");
+            };
+            assert_eq!(args.targets, ["192.0.2.1"], "the target was eaten");
+            let mut config = ZondConfig::default();
+            args.apply_to(&mut config);
+            config
+        };
+
+        for spelling in [&["-T2"][..], &["-T", "gentle"], &["--pace", "2"]] {
+            let config = paced(spelling);
+            assert_eq!(
+                config.probe_interval,
+                Some(std::time::Duration::from_millis(5)),
+                "{spelling:?}"
+            );
+            assert_eq!(
+                config.host_probe_interval,
+                Some(std::time::Duration::from_millis(50)),
+                "{spelling:?}"
+            );
+        }
+        assert_eq!(paced(&["-T4"]).retry.effort, ScanEffort::Fast);
+        assert!(Cli::try_parse_from(["zond", "s", "-T6", "192.0.2.1"]).is_err());
+        assert!(Cli::try_parse_from(["zond", "d", "-T1", "192.0.2.0/24"]).is_ok());
+    }
+
+    /// A flag typed beside a pace is the correction and the pace the starting
+    /// point, whichever order they are written in.
+    #[test]
+    fn a_flag_beside_the_pace_replaces_what_the_pace_set() {
+        let cli = Cli::try_parse_from([
+            "zond",
+            "s",
+            "--probe-interval",
+            "250",
+            "-T0",
+            "--effort",
+            "thorough",
+            "192.0.2.1",
+        ])
+        .expect("should parse");
+        let Command::Scan(args) = cli.command else {
+            panic!("s is the scan alias");
+        };
+        let mut config = ZondConfig::default();
+        args.apply_to(&mut config);
+
+        assert_eq!(
+            config.probe_interval,
+            Some(std::time::Duration::from_millis(250))
+        );
+        assert_eq!(
+            config.host_probe_interval,
+            Some(std::time::Duration::from_secs(1)),
+            "what the flags left alone is still the level's"
+        );
+        assert_eq!(config.retry.effort, ScanEffort::Thorough);
+    }
+
+    /// A gap is milliseconds unless it says otherwise, as it is in engine.toml.
+    #[test]
+    fn a_gap_reads_as_milliseconds_unless_it_names_a_unit() {
+        use std::time::Duration;
+        assert_eq!(parse_gap("50"), Ok(Duration::from_millis(50)));
+        assert_eq!(parse_gap("250ms"), Ok(Duration::from_millis(250)));
+        assert_eq!(parse_gap("2s"), Ok(Duration::from_secs(2)));
+        assert_eq!(parse_gap("1m"), Ok(Duration::from_secs(60)));
+        assert!(parse_gap("0").is_err(), "a gap of no time is no gap");
+        assert!(parse_gap("5h").is_err());
+        assert!(parse_gap("fast").is_err());
+    }
+
+    /// `-A` asks for the three kinds of identification that change nothing on
+    /// the target, and any of their own flags beside it has the last word.
+    #[test]
+    fn the_aggressive_shorthand_is_three_flags_that_their_own_flags_override() {
+        let identified = |flags: &[&str]| {
+            let mut line = vec!["zond", "s"];
+            line.extend_from_slice(flags);
+            line.push("192.0.2.1");
+            let cli = Cli::try_parse_from(&line).expect("should parse");
+            let Command::Scan(args) = cli.command else {
+                panic!("s is the scan alias");
+            };
+            assert_eq!(args.targets, ["192.0.2.1"], "the target was eaten");
+            let mut config = ZondConfig::default();
+            args.apply_to(&mut config);
+            config
+        };
+
+        let all = identified(&["-A"]);
+        assert_eq!(all.os_detection, OsDetection::Active);
+        assert!(all.detection.permits(DetectionClass::ActiveBenign));
+        assert!(!all.detection.permits(DetectionClass::ActiveMutating));
+        assert!(all.traceroute);
+
+        let corrected = identified(&["-A", "--os-detection", "passive", "-d=passive"]);
+        assert_eq!(corrected.os_detection, OsDetection::Passive);
+        assert!(!corrected.detection.permits(DetectionClass::ActiveBenign));
+        assert!(corrected.traceroute);
     }
 
     /// `-d` takes a step along the scale as readily as its word, and bare it is

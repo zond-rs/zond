@@ -30,13 +30,19 @@
 //! The same table carries the handful of nmap's other flags that no parser
 //! can take as written, because each is a short flag of two letters or takes
 //! its value in a shape of its own: `-Pn`, `-iL FILE`, `-sI ZOMBIE`,
-//! `--excludefile`, `--max-retries` and the `--version-*` pair. The scan types
+//! `--excludefile`, `--max-retries`, the `--version-*` pair and the timing
+//! templates written as words, `-Tsneaky` and the rest, which become the level
+//! of the pace in the same place on its scale. The scan types
 //! written `-sS`, `-sU` and so on need none of this: `-s` is a flag like any
 //! other, and `S` its value. See [`ScanType`](crate::cli::ScanType).
 //!
+//! `-T0` to `-T5` and `-A` need no rewrite either: they are this program's own
+//! flags, spelled the same. What they do here is described in their own terms,
+//! and a pace's levels are not nmap's templates number for number.
+//!
 //! Where zond has nothing that means what nmap's flag means, the flag is
-//! refused by name with what to write instead: `-T4` and `-A`, which are not
-//! built yet, and `-f` and `-S`, which are spelled another way here.
+//! refused by name with what to write instead: `-f` and `-S`, which are spelled
+//! another way here.
 //!
 //! ## The ones that are not built
 //!
@@ -150,28 +156,7 @@ fn one_more(count: OsString) -> OsString {
 /// What to write instead of an nmap flag zond has no counterpart for, or
 /// `None` for a token that is not one.
 fn refused(token: &str) -> Option<&'static str> {
-    // `-T4`, `-T 4` and `-Tinsane` alike, and nothing longer that merely
-    // begins with the letter.
-    let timing = token.strip_prefix("-T").is_some_and(|rest| {
-        rest.is_empty()
-            || (rest.len() == 1 && rest.bytes().all(|b| (b'0'..=b'5').contains(&b)))
-            || [
-                "paranoid",
-                "sneaky",
-                "polite",
-                "normal",
-                "aggressive",
-                "insane",
-            ]
-            .contains(&rest)
-    });
-    if timing {
-        return Some(
-            "timing templates are not built yet; pace a scan with --effort and --max-rate",
-        );
-    }
     match token {
-        "-A" => Some("it is not built yet; ask for its parts with -O -d --traceroute"),
         "-f" => Some("fragment probes with --mtu, a multiple of eight"),
         "-S" => Some("a probe leaves from its interface's own address; pick the interface with -e"),
         _ => None,
@@ -193,6 +178,14 @@ fn spelling(token: &str) -> Result<Option<Rewrite>, Error> {
         "--excludefile" => Some(&["--exclude-file"]),
         "--version-all" => Some(&["--service-detection", "thorough"]),
         "--version-light" => Some(&["--service-detection", "banner"]),
+        // The template names, by their place on the scale. Only the words:
+        // `-T0` to `-T5` are this program's own spelling already.
+        "-Tparanoid" => Some(&["-T0"]),
+        "-Tsneaky" => Some(&["-T1"]),
+        "-Tpolite" => Some(&["-T2"]),
+        "-Tnormal" => Some(&["-T3"]),
+        "-Taggressive" => Some(&["-T4"]),
+        "-Tinsane" => Some(&["-T5"]),
         _ => None,
     };
     if let Some(tokens) = own {
@@ -336,7 +329,7 @@ mod tests {
     /// merely begins with the same letter is left alone.
     #[test]
     fn nmaps_flags_without_a_counterpart_are_refused_by_name() {
-        for spelling in ["-T4", "-T", "-Tinsane", "-A", "-f", "-S"] {
+        for spelling in ["-f", "-S"] {
             let refused = rewrite(["zond", "s", spelling].iter().map(OsString::from));
             let Err(Error::UnbuiltFlag {
                 spelling: named, ..
@@ -347,6 +340,18 @@ mod tests {
             assert_eq!(named, spelling);
         }
         assert_eq!(rewritten(&["zond", "s", "-T9x"]), ["zond", "s", "-T9x"]);
+    }
+
+    /// The timing templates written as words become the level in the same
+    /// place on the pace's scale, and the numbered spelling and `-A`, which are
+    /// this program's own, pass through as written.
+    #[test]
+    fn timing_words_become_the_pace_and_the_own_spellings_pass_through() {
+        assert_eq!(rewritten(&["zond", "s", "-Tsneaky"]), ["zond", "s", "-T1"]);
+        assert_eq!(rewritten(&["zond", "s", "-Tinsane"]), ["zond", "s", "-T5"]);
+        for own in ["-T4", "-T", "-A"] {
+            assert_eq!(rewritten(&["zond", "s", own]), ["zond", "s", own]);
+        }
     }
 
     /// Nothing after `--` is ours to read, whatever it looks like.
