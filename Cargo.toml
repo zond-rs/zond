@@ -17,8 +17,9 @@ license = "AGPL-3.0-or-later"
 repository = "https://github.com/zond-rs/zond"
 homepage = "https://zond.rs"
 # None of these is code, and each would otherwise ride along in every
-# published tarball.
-exclude = ["audit/", ".github/", "public/", "windows/"]
+# published tarball. The advisory snapshot is Canonical's data under CC BY-SA
+# 4.0 and ships only in release builds; see `build.rs`.
+exclude = ["audit/", ".github/", "public/", "windows/", "assets/advisories/"]
 description = "The official command-line interface to Zond. Discovers hosts, scans ports, fingerprints services, and reports what changed between two scans."
 keywords = ["network", "scanner", "portscan", "discovery", "security"]
 categories = ["command-line-utilities", "network-programming"]
@@ -68,6 +69,7 @@ depends = "$auto, libcap2-bin"
 assets = [
     ["target/release/zond", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/zond/README.md", "644"],
+    ["assets/advisories/NOTICE", "usr/share/doc/zond/NOTICE.ubuntu-data", "644"],
     ["target/assets/man/*.1.gz", "usr/share/man/man1/", "644"],
     ["target/assets/man/*.7.gz", "usr/share/man/man7/", "644"],
     ["target/assets/completions/zond.bash", "usr/share/bash-completion/completions/zond", "644"],
@@ -88,6 +90,7 @@ assets = [
     { source = "target/release/zond", dest = "/usr/bin/zond", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/zond/README.md", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/licenses/zond/LICENSE", mode = "644", doc = true },
+    { source = "assets/advisories/NOTICE", dest = "/usr/share/licenses/zond/NOTICE.ubuntu-data", mode = "644", doc = true },
     { source = "target/assets/man/*.1.gz", dest = "/usr/share/man/man1/", mode = "644", doc = true },
     { source = "target/assets/man/*.7.gz", dest = "/usr/share/man/man7/", mode = "644", doc = true },
     { source = "target/assets/completions/zond.bash", dest = "/usr/share/bash-completion/completions/zond", mode = "644" },

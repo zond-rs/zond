@@ -192,41 +192,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         tracing::warn!("{warning}");
     }
 
-    // The flag wins, then the file, then the built-in default, which is the
-    // order every other setting layers in. Resolved once here because four
-    // commands draw hosts and each of them asking separately is how one of them
-    // ends up ignoring the file.
-    //
-    // Certificates come from the verbosity rather than a key, since `-v` is what
-    // asks for the working behind anything.
-    let asked = cli.command.show().copied().unwrap_or_default();
-    let showing = render::field::Showing {
-        certificates: verbosity.explains(),
-        reasons: asked.reason || asked.explain || settings.reason().unwrap_or(false),
-        excerpts: asked.evidence || asked.explain || settings.evidence().unwrap_or(false),
-        remedies: asked.remedy || asked.explain || settings.remedy().unwrap_or(false),
-        // The flag, then the file, then the built-in floor, which is the order
-        // every other setting layers in.
-        risk: asked.risk.or_else(|| settings.risk()).unwrap_or_default(),
-        risks: asked.risks,
-        // A block that summarises says where the rest of the list is, and says
-        // it as a whole command wherever one can be written: after a run that
-        // records, the record it just wrote; while reading one, the scan the
-        // reader themselves named. A run that writes no record has none to name
-        // and is told the flag on its own.
-        //
-        // The scan's name is leaked rather than borrowed, so that `Showing`
-        // stays a `Copy` value passed by hand down the renderers. It is one
-        // string for the life of a process that is about to print and exit, and
-        // what it is, is this run's own command line.
-        recall: match &cli.command {
-            Command::Read(args) => render::field::Recall::Scan(String::leak(args.source.clone())),
-            command if command.records() && settings.journal().unwrap_or(true) => {
-                render::field::Recall::Latest
-            }
-            _ => render::field::Recall::Here,
-        },
-    };
+    let showing = showing(&cli.command, &settings, verbosity);
 
     // `journal` reads what is already on disk rather than watching a run, so it
     // takes the presentation and not a `Renderer`.
@@ -258,6 +224,7 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
             command::discover::run(args, recording(args.no_journal), renderer.as_mut()).await
         }
         Command::Scan(args) => {
+            command::advisories::offer_debian(presentation, verbosity).await;
             command::scan::run(
                 args,
                 recording(args.no_journal),
@@ -289,6 +256,50 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         | Command::Help { .. }
         | Command::Completions { .. }
         | Command::Generate { .. } => unreachable!("handled above"),
+    }
+}
+
+/// What the renderers show beyond a scan's findings.
+///
+/// The flag wins, then the file, then the built-in default, which is the
+/// order every other setting layers in. Resolved once, by `run`, because four
+/// commands draw hosts and each of them asking separately is how one of them
+/// ends up ignoring the file.
+///
+/// Certificates come from the verbosity rather than a key, since `-v` is what
+/// asks for the working behind anything.
+fn showing(
+    command: &Command,
+    settings: &settings::Settings,
+    verbosity: diagnostics::Verbosity,
+) -> render::field::Showing {
+    let asked = command.show().copied().unwrap_or_default();
+    render::field::Showing {
+        certificates: verbosity.explains(),
+        reasons: asked.reason || asked.explain || settings.reason().unwrap_or(false),
+        excerpts: asked.evidence || asked.explain || settings.evidence().unwrap_or(false),
+        remedies: asked.remedy || asked.explain || settings.remedy().unwrap_or(false),
+        // The flag, then the file, then the built-in floor, which is the order
+        // every other setting layers in.
+        risk: asked.risk.or_else(|| settings.risk()).unwrap_or_default(),
+        risks: asked.risks,
+        // A block that summarises says where the rest of the list is, and says
+        // it as a whole command wherever one can be written: after a run that
+        // records, the record it just wrote; while reading one, the scan the
+        // reader themselves named. A run that writes no record has none to name
+        // and is told the flag on its own.
+        //
+        // The scan's name is leaked rather than borrowed, so that `Showing`
+        // stays a `Copy` value passed by hand down the renderers. It is one
+        // string for the life of a process that is about to print and exit, and
+        // what it is, is this run's own command line.
+        recall: match command {
+            Command::Read(args) => render::field::Recall::Scan(String::leak(args.source.clone())),
+            command if command.records() && settings.journal().unwrap_or(true) => {
+                render::field::Recall::Latest
+            }
+            _ => render::field::Recall::Here,
+        },
     }
 }
 

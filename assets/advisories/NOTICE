@@ -1,0 +1,21 @@
+Ubuntu security data
+====================
+
+zond's release builds include `ubuntu.bin`, a filtered and converted copy of
+Canonical's Ubuntu security data: for the source packages zond can identify
+on the network, which package version fixed each vulnerability in each
+Ubuntu release, and which releases a vulnerability never affected.
+
+It is derived from the Ubuntu Security Notices data,
+Copyright Canonical Ltd., https://github.com/canonical/ubuntu-security-notices,
+published at https://security-metadata.canonical.com/ (the OSV and OpenVEX
+archives), and licensed under the Creative Commons Attribution-ShareAlike
+4.0 International License,
+https://creativecommons.org/licenses/by-sa/4.0/.
+
+The converted copy is licensed under the same terms. It is data read by the
+program and not part of the program's source code, which is licensed under
+the GNU Affero General Public License, version 3 or later.
+
+`zond update` fetches the current data from Canonical, and a scan uses
+whichever of the two is newer.

@@ -76,23 +76,8 @@ async fn update(client: &Client, store: &Store) -> Outcome {
     let resources = fetch::registry();
     let mut failed = 0;
     for resource in &resources {
-        let id = resource.id();
-        progress::downloading(id, 0, None);
-        let fetched = client
-            .fetch(resource, store, |received, total| {
-                progress::downloading(id, received, total);
-            })
-            .await;
-        match fetched {
-            Ok(fetched) => {
-                tracing::info!("{}", line(resource, &fetched));
-                tracing::info!(verbosity = 1, "{}", detail(resource, &fetched));
-            }
-            Err(e) => {
-                failed += 1;
-                tracing::warn!("{:<WIDTH$} failed: {e}", resource.id());
-                tracing::info!(verbosity = 1, "{}: {}", resource.id(), chain(&e));
-            }
+        if !fetch_one(client, store, resource).await {
+            failed += 1;
         }
     }
 
@@ -101,34 +86,67 @@ async fn update(client: &Client, store: &Store) -> Outcome {
     // feed changed or the engine did. A feed that failed above leaves the
     // copy it replaces, so its dataset still converts from what is stored.
     for dataset in Dataset::ALL {
-        let derived = dataset.derived();
-        let id = derived.id().to_owned();
-        progress::downloading(&id, 0, None);
-        let root = store.root().to_path_buf();
-        let converted =
-            tokio::task::spawn_blocking(move || dataset.convert(&Store::new(root))).await;
-        match converted {
-            Ok(Ok(derivation)) => {
-                let (metadata, word) = match &derivation {
-                    Derivation::Built(metadata) => (metadata, "converted"),
-                    Derivation::Current(metadata) => (metadata, "unchanged"),
-                    _ => continue,
-                };
-                tracing::info!("{id:<WIDTH$} {:>8}  {word}", field::bytes(metadata.size));
-            }
-            Ok(Err(e)) => {
-                failed += 1;
-                tracing::warn!("{id:<WIDTH$} failed: {e}");
-                tracing::info!(verbosity = 1, "{id}: {}", chain(&e));
-            }
-            Err(e) => {
-                failed += 1;
-                tracing::warn!("{id:<WIDTH$} failed: {e}");
-            }
+        if !convert_one(store, *dataset).await {
+            failed += 1;
         }
     }
 
     concluded(failed, resources.len() + Dataset::ALL.len())
+}
+
+/// Fetches `resource` into `store` with its one line, and says whether it
+/// worked.
+pub(crate) async fn fetch_one(client: &Client, store: &Store, resource: &Resource) -> bool {
+    let id = resource.id();
+    progress::downloading(id, 0, None);
+    let fetched = client
+        .fetch(resource, store, |received, total| {
+            progress::downloading(id, received, total);
+        })
+        .await;
+    match fetched {
+        Ok(fetched) => {
+            tracing::info!("{}", line(resource, &fetched));
+            tracing::info!(verbosity = 1, "{}", detail(resource, &fetched));
+            true
+        }
+        Err(e) => {
+            tracing::warn!("{:<WIDTH$} failed: {e}", resource.id());
+            tracing::info!(verbosity = 1, "{}: {}", resource.id(), chain(&e));
+            false
+        }
+    }
+}
+
+/// Converts `dataset` from its stored feeds with its one line, and says
+/// whether it worked. Off the runtime's workers, since Ubuntu's takes a
+/// minute.
+pub(crate) async fn convert_one(store: &Store, dataset: Dataset) -> bool {
+    let derived = dataset.derived();
+    let id = derived.id().to_owned();
+    progress::downloading(&id, 0, None);
+    let root = store.root().to_path_buf();
+    let converted = tokio::task::spawn_blocking(move || dataset.convert(&Store::new(root))).await;
+    match converted {
+        Ok(Ok(derivation)) => {
+            let (metadata, word) = match &derivation {
+                Derivation::Built(metadata) => (metadata, "converted"),
+                Derivation::Current(metadata) => (metadata, "unchanged"),
+                _ => return true,
+            };
+            tracing::info!("{id:<WIDTH$} {:>8}  {word}", field::bytes(metadata.size));
+            true
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("{id:<WIDTH$} failed: {e}");
+            tracing::info!(verbosity = 1, "{id}: {}", chain(&e));
+            false
+        }
+        Err(e) => {
+            tracing::warn!("{id:<WIDTH$} failed: {e}");
+            false
+        }
+    }
 }
 
 /// How wide the resource column is: the longest id the engine registers

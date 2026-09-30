@@ -34,6 +34,7 @@ LIBPCAP_LIBDIR="$PWD/$lib" LIBPCAP_VER=1.10.4 \
 
 x86_64-w64-mingw32-strip -o "$out/zond.exe" target/x86_64-pc-windows-gnu/release/zond.exe
 cp LICENSE "$out/LICENSE.txt"
+cp assets/advisories/NOTICE "$out/NOTICE-ubuntu-data.txt"
 cp windows/README.txt "$out/README.txt"
 
 # makensis aborts on every script without a UTF-8 locale.

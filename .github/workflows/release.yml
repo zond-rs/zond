@@ -172,8 +172,9 @@ jobs:
         working-directory: zond-cli
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      # The binary, the licence and the README in one directory named for
-      # what it is, and a checksum beside it for the formula to pin.
+      # The binary, the licence, the README and the notice for the Ubuntu
+      # security data the binary carries, in one directory named for what it
+      # is, and a checksum beside it for the formula to pin.
       - name: Package
         working-directory: zond-cli
         run: |
@@ -182,6 +183,7 @@ jobs:
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/zond" "dist/$name/"
           cp LICENSE README.md "dist/$name/"
+          cp assets/advisories/NOTICE "dist/$name/NOTICE.ubuntu-data"
           file "dist/$name/zond"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
