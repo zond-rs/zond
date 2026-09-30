@@ -97,6 +97,22 @@ on every row beside it.
   already drawn without the colour their severity would carry, so the word on
   each was the same thing said twice.
 
+A host with three findings or fewer is drawn whole, floor and all. Below that
+there is nothing to summarise: one medium drawn and a line under it saying a low
+is being held back saves no space and sends the reader for a second command to
+see two findings. A floor the reader set themselves still holds, however few
+there are.
+
+The certificate under a port had the same disease and takes the same cure. It
+led with the common name, which is free text of any length, so one
+forty-character subject set the column for every port on the host and pushed the
+cipher suites off the side of the terminal. It now leads with `expires in 1d`
+and follows with the name: the expiry is sixteen characters at its longest, so
+the column is bounded by construction, and the colour that says *this one is
+about to lapse* sits where the eye runs down instead of wherever a name happened
+to end. On a seven-port host with three certificates that is 106 columns down to
+86.
+
 `--pipe` and `--minimal` are unchanged: both are one line per finding for a
 reader who is grepping, and neither gathers, caps nor defers anything.
 

@@ -1771,17 +1771,25 @@ fn security_detail(port: &Port, detailed: bool, masking: &HostRedaction) -> Vec<
     detail.extend(unfinished_walks(port));
 
     if let Some(certificate) = security.certificate() {
-        let (note, urgency) = expiry(certificate.validity_end());
+        // The expiry leads and the name follows, which is the other way round
+        // from how it reads aloud and the right way round for a column. A
+        // common name is free text of any length a certificate authority felt
+        // like: with the name in the column, one forty-character subject set
+        // the width for every port on the host and pushed the cipher suites
+        // off the side of the terminal. The expiry is sixteen characters at
+        // its longest, so leading with it bounds the column by construction,
+        // and it is also the half of the line that ever needs a colour, which
+        // now sits where the eye runs down rather than wherever a name ended.
+        let (expiry, urgency) = expiry(certificate.validity_end());
         detail.push(PortDetail {
-            note: Some(note),
-            urgency,
-            ..PortDetail::new(
-                "cert",
+            note: Some(
                 masking
                     .redaction()
                     .hostname(certificate.common_name())
                     .into_owned(),
-            )
+            ),
+            urgency,
+            ..PortDetail::new("cert", expiry)
         });
 
         // The working behind it, for somebody checking the certificate rather
@@ -1949,6 +1957,20 @@ pub(crate) enum Folding {
     Summary,
 }
 
+/// How many findings a host may carry before a listing summarises it at all.
+///
+/// Three. Below that there is nothing to summarise: a block that draws one
+/// medium and then spends a line saying it is holding a low has saved nothing
+/// and asked the reader to go and fetch it. The line that would announce the
+/// omission is the same size as the row it omitted.
+///
+/// It suspends what this module decides by itself, which is the gathering's
+/// cap and the unverified being left to a count. The floor is not this
+/// module's to suspend where a reader set it: `--min-risk high` on a host with
+/// two low findings means they do not want to see two low findings. It is
+/// suspended only where the floor is the one nobody chose.
+pub(crate) const DRAWN_WHOLE: usize = 3;
+
 /// How many rows a [summarised](Folding::Summary) listing draws before it counts
 /// the rest.
 ///
@@ -2112,6 +2134,17 @@ pub(crate) fn findings(
         folded = gather(folded);
     }
 
+    // A host with three findings or fewer is drawn whole, whatever this module
+    // would otherwise have held back. See [`DRAWN_WHOLE`]: the floor goes with
+    // the rest of it only where the floor is the default, which is the one
+    // nobody asked for.
+    let whole: bool = folded.iter().map(|row| row.weight).sum::<usize>() <= DRAWN_WHOLE;
+    let floor = if whole && floor == Risk::default() {
+        Risk::everything()
+    } else {
+        floor
+    };
+
     order(&mut folded);
 
     // Held back before the columns are measured, so a row nobody sees does not
@@ -2144,7 +2177,7 @@ pub(crate) fn findings(
             // Both only under `Summary`. The floor above is the reader's own
             // setting and applies whatever the folding, which is why it is
             // counted apart from these.
-            if folding == Folding::Summary {
+            if folding == Folding::Summary && !whole {
                 if is_unverified(row.key.confidence) {
                     deferred += row.weight;
                     deferred_unverified += row.weight;

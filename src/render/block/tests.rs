@@ -184,8 +184,9 @@ fn a_scan_puts_its_ports_in_the_value_column() {
                         port("443/tcp", "open", Some(("https", "nginx 1.24"))),
                         vec![
                             Detail::new("tls", "1.3  X25519  alpn h2".to_owned()),
-                            Detail::new("cert", "router.example".to_owned())
-                                .noted("expires in 12d".to_owned(), Urgency::Caution),
+                            Detail::new("cert", "expires in 12d".to_owned())
+                                .urgent(Urgency::Caution)
+                                .noted("router.example".to_owned()),
                         ],
                     ),
                     Row::plain(port("5/tcp", "no-reply", None)),
@@ -204,7 +205,7 @@ fn a_scan_puts_its_ports_in_the_value_column() {
      ports     22/tcp   open      ssh    OpenSSH 9.6
                443/tcp  open      https  nginx 1.24
                   tls  1.3  X25519  alpn h2
-                 cert  router.example  expires in 12d
+                 cert  expires in 12d  router.example
                5/tcp    no-reply
                996 closed ports not listed
 "

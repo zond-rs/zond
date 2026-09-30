@@ -376,9 +376,15 @@ pub(crate) struct Detail {
     pub label: &'static str,
     /// The value.
     pub value: String,
-    /// The part whose colour says something, where there is one.
+    /// What follows the value, where anything does: a second field of the same
+    /// fact, drawn plainly in a column of its own.
     pub note: Option<String>,
-    /// How that part should read.
+    /// How the value should read, for the detail whose value is a verdict
+    /// rather than a name.
+    ///
+    /// On the value rather than on the note, because the value is the column:
+    /// a colour in it can be scanned down the block, and a colour after a
+    /// name of any length lands wherever that name happened to end.
     pub urgency: Urgency,
     /// Whether the value is drawn as quietly as its label.
     ///
@@ -409,13 +415,17 @@ impl Detail {
         }
     }
 
-    /// The same, with a part that carries a warning.
-    pub(crate) fn noted(self, note: String, urgency: Urgency) -> Self {
+    /// The same, with a second field after the value.
+    pub(crate) fn noted(self, note: String) -> Self {
         Self {
             note: Some(note),
-            urgency,
             ..self
         }
+    }
+
+    /// The same, with a value that carries a warning.
+    pub(crate) fn urgent(self, urgency: Urgency) -> Self {
+        Self { urgency, ..self }
     }
 }
 
@@ -819,10 +829,10 @@ fn hanging(style: Style, columns: &Columns, child: &Child<'_>, detail: &Detail) 
                 line.indent_to(value_column);
             }
 
-            let painted = if detail.quiet {
-                style.faint(piece)
-            } else {
-                style.plain(piece)
+            let painted = match detail.urgency {
+                Urgency::None if detail.quiet => style.faint(piece),
+                Urgency::None => style.plain(piece),
+                urgency => style.by_urgency(urgency, piece),
             };
             line.push(&painted, piece.chars().count());
 
@@ -833,7 +843,7 @@ fn hanging(style: Style, columns: &Columns, child: &Child<'_>, detail: &Detail) 
                 && let Some(note) = &detail.note
             {
                 line.pad_to(value_column + columns.detail_value_width(child.label) + GAP);
-                line.end_with(&style.by_urgency(detail.urgency, note));
+                line.end_with(&style.plain(note));
             }
 
             line.finish()

@@ -820,8 +820,9 @@ fn state(style: Style, row: &field::PortRow) -> String {
 fn hanging(detail: &field::PortDetail) -> Detail {
     let carried = Detail::new(detail.label, detail.value.clone());
 
+    let carried = carried.urgent(detail.urgency);
     match &detail.note {
-        Some(note) => carried.noted(note.clone(), detail.urgency),
+        Some(note) => carried.noted(note.clone()),
         None => carried,
     }
 }
@@ -949,6 +950,36 @@ mod tests {
     /// The block a run asked for detail writes.
     fn explained(host: &Host) -> String {
         rendered(field::Reader::default(), host, Verbosity::new(1, false))
+    }
+
+    /// The block a run with `floor` set writes.
+    ///
+    /// Not `drawn_showing`, which lifts the floor to draw whatever a fixture is
+    /// graded: these are the tests the floor itself is measured by.
+    fn floored(host: &Host, floor: Risk) -> String {
+        let showing = field::Showing {
+            risk: floor,
+            ..Default::default()
+        };
+        let style = Style::bare();
+        let reader = field::Reader::default();
+        let listing = field::port_listings(reader, &[host], true, showing);
+        let blocks = vec![Block {
+            header: header(style, reader, host, 1),
+            children: children(
+                style,
+                reader,
+                host,
+                &listing[0],
+                Verbosity::default(),
+                showing,
+            ),
+        }];
+
+        let mut out = Vec::new();
+        block::write_all(&mut out, style, &blocks, WIDTH, |_, _| Ok(()))
+            .expect("a vector cannot fail");
+        String::from_utf8(out).expect("the renderer writes text")
     }
 
     /// The block a run asked for the whole list writes.
@@ -2036,6 +2067,87 @@ mod tests {
         );
     }
 
+    /// A host with three findings or fewer is drawn whole.
+    ///
+    /// One medium drawn and a line under it saying a low is being held back has
+    /// saved nothing: the announcement is the same size as the row it replaced,
+    /// and it sends the reader for a second command to see two findings.
+    #[test]
+    fn a_host_with_barely_any_findings_is_drawn_whole() {
+        let graded = |grades: &[Severity]| {
+            let mut host = host(9);
+            host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+            for (index, grade) in grades.iter().enumerate() {
+                host.add_port_finding(
+                    443,
+                    Protocol::Tcp,
+                    finding(
+                        "zond:x",
+                        &format!("finding {index}"),
+                        *grade,
+                        Confidence::Certain,
+                    ),
+                );
+            }
+            host
+        };
+
+        let small = floored(&graded(&[Severity::Medium, Severity::Low]), Risk::default());
+        assert!(
+            small.contains("finding 0") && small.contains("finding 1"),
+            "both are drawn, floor or no floor: {small}"
+        );
+        assert!(
+            !small.contains('+'),
+            "and nothing is held back to announce: {small}"
+        );
+
+        // One more than the block draws whole, and the floor applies again.
+        let bigger = graded(&[
+            Severity::Medium,
+            Severity::Medium,
+            Severity::Medium,
+            Severity::Low,
+        ]);
+        let text = floored(&bigger, Risk::default());
+        assert!(
+            !text.contains("finding 3") && text.contains("+ 1 low"),
+            "past that the floor is back: {text}"
+        );
+    }
+
+    /// A floor the reader set holds however few findings there are.
+    ///
+    /// Drawing a low on a small host is this module deciding its own summary is
+    /// not worth the line; drawing one under `--min-risk high` is overruling
+    /// somebody who said which findings they wanted to see.
+    #[test]
+    fn a_chosen_floor_holds_on_a_small_host() {
+        let mut host = host(9);
+        host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            443,
+            Protocol::Tcp,
+            finding(
+                "zond:x",
+                "a low finding",
+                Severity::Low,
+                Confidence::Certain,
+            ),
+        );
+
+        let text = floored(&host, Risk::from_str("high").expect("a grade"));
+
+        assert!(
+            !text.contains("a low finding"),
+            "the reader said high: {text}"
+        );
+        assert!(
+            text.contains("1 low \u{b7} zond read latest --risks"),
+            "and is told what it is holding: {text}"
+        );
+    }
+
     /// Eyeballed by hand when the shape of this block changes.
     #[test]
     #[ignore = "prints the block for a person to look at"]
@@ -2440,8 +2552,14 @@ mod tests {
 
     /// TLS and the certificate hang off the port that negotiated them, in that
     /// port's own columns: the value under the service it was presented for, and
-    /// the second field in a column of its own so expiries compare down a
-    /// listing without being read.
+    /// the second field in a column of its own.
+    ///
+    /// The certificate leads with its expiry and follows with its name, which is
+    /// the other way round from how it reads aloud and the right way round for a
+    /// column. A common name is free text of any length, and in the value column
+    /// one long subject set the width for every port on the host; the expiry is
+    /// bounded by construction, so the names and the cipher suites start in one
+    /// place however long either runs.
     #[test]
     fn a_certificate_hangs_off_the_port_that_served_it() {
         let text = block(&serving_tls(away(12)));
@@ -2463,14 +2581,14 @@ mod tests {
         );
         assert_eq!(
             at("https"),
-            at("printer.example"),
-            "the certificate is not in the service column: {text}"
-        );
-
-        // And their second fields share a column of their own.
-        assert_eq!(
-            at("X25519"),
             at("expires in 12d"),
+            "the certificate's verdict is not in the service column: {text}"
+        );
+        // And their second fields share a column of their own: the suite the
+        // handshake settled on, and the name on the certificate it served.
+        assert_eq!(
+            at("printer.example"),
+            at("X25519"),
             "a detail's second field is not a column: {text}"
         );
 
