@@ -265,7 +265,7 @@ pub(crate) enum Command {
     /// Check the detections a scan would run, without scanning.
     Detections(DetectionsArgs),
 
-    /// Download the distributions' security data into the cache.
+    /// Download the latest vulnerability data into the cache.
     #[command(after_help = UPDATE_HELP)]
     Update,
 
@@ -309,22 +309,16 @@ A package install puts them where each shell looks already.";
 /// What `zond update --help` adds below the flags.
 const UPDATE_HELP: &str = "\
 Fetches the Ubuntu and Debian security feeds, which say which package build
-fixed which vulnerability. Only what changed since the last update is
-downloaded.
+fixed which vulnerability, and CISA's list of vulnerabilities known to be
+exploited in the wild. Only what changed since the last update is downloaded.
+
+A release already carries Ubuntu's data and CISA's list as they stood when it
+was built. This brings them up to date, and adds Debian's.
 
 Kept in $XDG_CACHE_HOME/zond, else ~/.cache/zond (%LOCALAPPDATA%\\zond\\cache
 on Windows); under sudo, the invoking user's.";
 
 impl Command {
-    /// Whether this command watches the network rather than reading what an
-    /// earlier one wrote down.
-    ///
-    /// The three that do produce a record of their own, and a record whose
-    /// transcript does not say which build made it or when is one nobody can
-    /// check a finding against a year later. The rest look things up: a stored
-    /// scan carries its own provenance inside it, and a catalogue of detections
-    /// is not a record of anything, so a build stamp on either is a line between
-    /// the reader and what they asked for.
     /// What this command was asked to show beside each verdict and finding,
     /// for the commands that draw them.
     pub(crate) const fn show(&self) -> Option<&ShowArgs> {
@@ -362,6 +356,15 @@ impl Command {
         }
     }
 
+    /// Whether this command watches the network rather than reading what an
+    /// earlier one wrote down.
+    ///
+    /// The three that do produce a record of their own, and a record whose
+    /// transcript does not say which build made it or when is one nobody can
+    /// check a finding against a year later. The rest look things up: a stored
+    /// scan carries its own provenance inside it, and a catalogue of detections
+    /// is not a record of anything, so a build stamp on either is a line between
+    /// the reader and what they asked for.
     pub(crate) const fn watches_the_network(&self) -> bool {
         matches!(
             self,
