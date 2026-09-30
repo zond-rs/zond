@@ -112,6 +112,7 @@ libcap = "*"
 zond-engine = { version = "0.19.0", path = "../zond-engine", features = [
     "fetch",
     "import-distro",
+    "import-kev",
     "import-settings",
     "export-all",
     "import-json",

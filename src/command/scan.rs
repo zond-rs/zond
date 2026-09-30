@@ -123,10 +123,13 @@ pub(crate) async fn run(
     //
     // With the distributions' own security data beside it, from the cache
     // `zond update` fills, so a distribution's build is judged by what its
-    // distributor fixed rather than by its upstream version.
+    // distributor fixed rather than by its upstream version, and CISA's list
+    // of what is exploited in the wild to mark what stands.
     let advisories = command::advisories::load();
-    let detections =
-        command::detections::corpus(&args.detections)?.with_advisories(advisories.clone());
+    let exploited = command::advisories::exploited();
+    let detections = command::detections::corpus(&args.detections)?
+        .with_advisories(advisories.clone())
+        .with_exploited(exploited.clone());
 
     // Read before the scan starts, for the reason the export destinations are:
     // a catalogue that will not parse is a mistake made in the first second of a
@@ -162,7 +165,9 @@ pub(crate) async fn run(
         // A plan half-walked: stopping leaves ground uncovered.
         Stopping::CutsShort,
         catalogue.as_ref().map(|catalogue| {
-            zond_engine::cve::Correlator::new(catalogue).with_advisories(&advisories)
+            zond_engine::cve::Correlator::new(catalogue)
+                .with_advisories(&advisories)
+                .with_exploited(&exploited)
         }),
         renderer,
     )

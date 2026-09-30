@@ -284,6 +284,11 @@ fn risk_lines(reader: field::Reader, host: &Host, showing: field::Showing) -> Ve
                 line.push_str(confidence);
                 line.push(']');
             }
+            if view.exploited > 0 {
+                line.push_str("  [");
+                line.push_str(&view.exploited.to_string());
+                line.push_str(" known exploited]");
+            }
 
             line
         })

@@ -18,6 +18,7 @@
 //! `1.420` in a unit that never changes.
 
 use std::cmp::Reverse;
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
@@ -1614,6 +1615,16 @@ pub(crate) struct RiskCount {
     pub by_grade: Vec<(Severity, usize)>,
     /// Findings too unsure to count as risks. See [`is_unverified`].
     pub unverified: usize,
+    /// How many vulnerabilities the findings that count cite as known to be
+    /// exploited in the wild, each counted once however many findings cite
+    /// it. The unverified are left out, since their rows are not what the
+    /// block draws first and a count naming what a reader cannot see is a
+    /// count they go looking for.
+    pub exploited: usize,
+    /// How many of the unverified findings cite a vulnerability known to be
+    /// exploited, so the count of them can say so rather than leave a reader
+    /// no reason to look.
+    pub unverified_exploited: usize,
 }
 
 /// How many findings a host carries, and the worst grade among those that
@@ -1630,12 +1641,21 @@ pub(crate) fn host_risks(host: &Host) -> Option<RiskCount> {
         worst: None,
         unverified: 0,
         by_grade: Vec::new(),
+        exploited: 0,
+        unverified_exploited: 0,
     };
+    let mut exploited: BTreeSet<&str> = BTreeSet::new();
     for finding in host.findings().chain(host.ports().flat_map(Port::findings)) {
         if is_unverified(finding.confidence()) {
             count.unverified += 1;
+            if finding.exploitation().is_some() {
+                count.unverified_exploited += 1;
+            }
         } else {
             count.settled += 1;
+            if let Some(marked) = finding.exploitation() {
+                exploited.extend(marked.cves());
+            }
             count.worst = Some(
                 count
                     .worst
@@ -1654,6 +1674,7 @@ pub(crate) fn host_risks(host: &Host) -> Option<RiskCount> {
     // Worst first, the order every other list of findings is in. `Severity`
     // orders weakest-to-strongest, so the comparison is reversed.
     count.by_grade.sort_by_key(|(grade, _)| Reverse(*grade));
+    count.exploited = exploited.len();
     (count.settled + count.unverified > 0).then_some(count)
 }
 
@@ -1895,6 +1916,9 @@ pub(crate) struct FindingView {
     /// Whether the finding is too unsure to count as a risk, so a mode draws
     /// it without the alarm its severity would otherwise carry.
     pub unverified: bool,
+    /// How many of the vulnerabilities it cites are known to be exploited in
+    /// the wild, which the correlation cited first. Zero for most findings.
+    pub exploited: usize,
     /// Every port this finding was raised on, where the listing folded more of
     /// them into a count than the subject column will spell. Shown under `-v`.
     pub ports: Option<String>,
@@ -1926,6 +1950,11 @@ pub(crate) struct FindingListing {
     /// How many of `deferred` are unverified, so the line saying what is not
     /// drawn can give the reason rather than only the number.
     pub deferred_unverified: usize,
+    /// How many of those unverified findings cite a vulnerability known to be
+    /// exploited in the wild, so the line counting them can say so: a reader
+    /// who is told only *4 unverified* has no reason to look, and one of them
+    /// may be the thing somebody is already using.
+    pub deferred_exploited: usize,
 }
 
 /// How much of a host's findings a listing puts on the page.
@@ -2028,6 +2057,8 @@ struct Claim {
     reference: Option<String>,
     /// The CVEs it cites, worst first and capped, drawn under the row.
     cves: Option<String>,
+    /// How many of them are known to be exploited in the wild.
+    exploited: usize,
     evidence: Option<String>,
     remediation: Option<String>,
 }
@@ -2047,6 +2078,7 @@ struct Fold {
     group: Option<GroupKey>,
     reference: Option<String>,
     cves: Option<String>,
+    exploited: usize,
     evidence: Option<String>,
     remediation: Option<String>,
 }
@@ -2106,18 +2138,7 @@ pub(crate) fn findings(
         folded = gather(folded);
     }
 
-    // What counts first, then worst first. `Severity` orders weakest-to-
-    // strongest, so the comparison is reversed; what the row is about breaks
-    // the tie, the host's own findings ahead of its ports' and the rest by
-    // number, so the order is total. An unverified critical below a probable
-    // medium, because the list is read top down and the top is what gets acted
-    // on.
-    folded.sort_by(|a, b| {
-        is_unverified(a.key.confidence)
-            .cmp(&is_unverified(b.key.confidence))
-            .then_with(|| b.key.severity.cmp(&a.key.severity))
-            .then_with(|| a.found.first().cmp(&b.found.first()))
-    });
+    order(&mut folded);
 
     // Held back before the columns are measured, so a row nobody sees does not
     // set the width of the ones they do.
@@ -2125,6 +2146,7 @@ pub(crate) fn findings(
     let mut withheld_by_grade: Vec<(Severity, usize)> = Vec::new();
     let mut deferred = 0usize;
     let mut deferred_unverified = 0usize;
+    let mut deferred_exploited = 0usize;
     let mut drawn = 0usize;
     let rows: Vec<(Fold, String, Option<String>)> = folded
         .into_iter()
@@ -2153,6 +2175,9 @@ pub(crate) fn findings(
                 if is_unverified(row.key.confidence) {
                     deferred += row.weight;
                     deferred_unverified += row.weight;
+                    if row.key.exploited > 0 {
+                        deferred_exploited += row.weight;
+                    }
                     return None;
                 }
                 if drawn == ROWS_SHOWN {
@@ -2199,6 +2224,7 @@ pub(crate) fn findings(
                 sure => Some(wire::confidence_name(sure)),
             },
             unverified: is_unverified(key.confidence),
+            exploited: key.exploited,
             ports,
             remediation: key.remediation,
         })
@@ -2213,7 +2239,28 @@ pub(crate) fn findings(
         withheld_by_grade,
         deferred,
         deferred_unverified,
+        deferred_exploited,
     }
+}
+
+/// Puts a listing's rows in the order they are read: what counts first, then
+/// what somebody is exploiting, then worst first.
+///
+/// `Severity` orders weakest-to-strongest, so the comparison is reversed; what
+/// the row is about breaks the tie, the host's own findings ahead of its
+/// ports' and the rest by number, so the order is total. An unverified
+/// critical below a probable medium, because the list is read top down and the
+/// top is what gets acted on; and a medium being exploited in the wild above a
+/// critical nobody is, because that is the order the work is done in, whatever
+/// the grades say about how bad each would be.
+fn order(rows: &mut [Folded]) {
+    rows.sort_by(|a, b| {
+        is_unverified(a.key.confidence)
+            .cmp(&is_unverified(b.key.confidence))
+            .then_with(|| (b.key.exploited > 0).cmp(&(a.key.exploited > 0)))
+            .then_with(|| b.key.severity.cmp(&a.key.severity))
+            .then_with(|| a.found.first().cmp(&b.found.first()))
+    });
 }
 
 /// The most CVE identifiers a row names before counting the rest.
@@ -2277,6 +2324,9 @@ fn claim(
         }),
         reference,
         cves,
+        exploited: finding
+            .exploitation()
+            .map_or(0, |marked| marked.cves().count()),
         evidence: (!excerpt.trim().is_empty()).then(|| one_line(&excerpt)),
         remediation: finding
             .remediation()
@@ -2320,6 +2370,7 @@ fn fold(claims: Vec<Claim>) -> Vec<Folded> {
             group: claim.group,
             reference: claim.reference,
             cves: claim.cves,
+            exploited: claim.exploited,
             evidence: claim.evidence,
             remediation: claim.remediation,
         };

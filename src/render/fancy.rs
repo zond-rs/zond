@@ -507,6 +507,27 @@ fn folding(verbosity: Verbosity, showing: field::Showing) -> field::Folding {
 /// the work.
 const CVE_HANG: &str = "";
 
+/// What trails a row whose finding cites vulnerabilities known to be exploited
+/// in the wild, painted: ` · known exploited`, or ` · 2 known exploited`.
+///
+/// `known exploited` rather than `exploited`, which would read as this host
+/// having been: it says somebody is using these against someone, which is the
+/// reason the row sits where it does. Coloured as the severity is and for the
+/// same reason, and not at all on a row too unsure to count.
+fn exploited_marker(style: Style, view: &field::FindingView) -> Option<String> {
+    let marker = match view.exploited {
+        0 => return None,
+        1 => "known exploited".to_owned(),
+        n => format!("{n} known exploited"),
+    };
+    let painted = if view.unverified {
+        style.faint(&marker)
+    } else {
+        style.by_urgency(field::Urgency::Alarm, &marker)
+    };
+    Some(format!("{}{painted}", style.faint(" \u{b7} ")))
+}
+
 /// The `risks` child: one line per finding, worst first, in columns.
 ///
 /// A child like any other. The severity leads as a short token and is the only
@@ -551,6 +572,12 @@ fn findings(
             .iter()
             .map(|(grade, number)| format!("{number} {}", wire::severity_name(*grade)))
             .collect();
+        // Beside the grades rather than among them: a count of vulnerabilities
+        // rather than of findings, and a fact about which of them to start on
+        // rather than about how bad they are.
+        if count.exploited > 0 {
+            parts.push(format!("{} known exploited", count.exploited));
+        }
         if count.unverified > 0 {
             // `other`, because alone at the end of a run of grades `4
             // unverified` reads as four of the findings just counted, which is
@@ -561,10 +588,11 @@ fn findings(
             // And only there: with no grades in front of it there is nothing
             // for these to be other than, and the word is a reference to
             // something the line does not say.
+            let exploited = of_them_exploited(count.unverified_exploited);
             parts.push(if parts.is_empty() {
-                format!("{} unverified", count.unverified)
+                format!("{} unverified{exploited}", count.unverified)
             } else {
-                format!("{} other unverified", count.unverified)
+                format!("{} other unverified{exploited}", count.unverified)
             });
         }
         // Where the block draws no row at all, the line at the foot would count
@@ -631,6 +659,9 @@ fn findings(
         if let Some(reference) = &view.reference {
             line.push_str(&style.faint(&format!(" \u{b7} {reference}")));
         }
+        if let Some(marker) = exploited_marker(style, view) {
+            line.push_str(&marker);
+        }
 
         // Raw, not painted: a `Detail` carries text and the block paints it,
         // which is also what lets the block measure it. Painting here would hand
@@ -667,14 +698,29 @@ fn findings(
         rows.push(Row::with_detail(line, detail));
     }
 
-    // Everything the block is not drawing, in one line at the foot, and where the
-    // rest of it is. One line rather than two: what the reader's own floor held
-    // back and what the block decided by itself are the same question to the
-    // person reading it, which is *what am I not being shown*, and one command
-    // answers both.
-    //
-    // At the foot rather than the head, because it is what the list ran out
-    // into. Nothing is out of sight without this line counting it.
+    if !views.is_empty()
+        && let Some(held) = held_back(listing, showing)
+    {
+        rows.push(Row::plain(style.faint(&held)));
+    }
+
+    let title_column = views.first().map_or(0, |view| {
+        view.token.chars().count() + block::GAP + view.subject.chars().count() + block::GAP
+    });
+
+    Child::rows("risks", rows).details_at(title_column)
+}
+
+/// Everything a risks block is not drawing, in one line for its foot, and where
+/// the rest of it is; `None` where it draws everything.
+///
+/// One line rather than two: what the reader's own floor held back and what
+/// the block decided by itself are the same question to the person reading
+/// it, which is *what am I not being shown*, and one command answers both.
+///
+/// At the foot rather than the head, because it is what the list ran out
+/// into. Nothing is out of sight without this line counting it.
+fn held_back(listing: &field::FindingListing, showing: field::Showing) -> Option<String> {
     let mut held: Vec<String> = Vec::new();
     let more = listing.deferred - listing.deferred_unverified;
     if more > 0 {
@@ -684,21 +730,23 @@ fn findings(
         held.push(format!("{number} {}", wire::severity_name(*grade)));
     }
     if listing.deferred_unverified > 0 {
-        held.push(format!("{} unverified", listing.deferred_unverified));
+        held.push(format!(
+            "{} unverified{}",
+            listing.deferred_unverified,
+            of_them_exploited(listing.deferred_exploited)
+        ));
     }
-    if !held.is_empty() && !views.is_empty() {
-        rows.push(Row::plain(style.faint(&format!(
-            "+ {} \u{b7} {}",
-            held.join(", "),
-            showing.recall.phrase()
-        ))));
+    (!held.is_empty()).then(|| format!("+ {} \u{b7} {}", held.join(", "), showing.recall.phrase()))
+}
+
+/// What a count of unverified findings adds where some of them cite a
+/// vulnerability known to be exploited: ` (1 known exploited)`, and nothing
+/// where none do.
+fn of_them_exploited(exploited: usize) -> String {
+    match exploited {
+        0 => String::new(),
+        n => format!(" ({n} known exploited)"),
     }
-
-    let title_column = views.first().map_or(0, |view| {
-        view.token.chars().count() + block::GAP + view.subject.chars().count() + block::GAP
-    });
-
-    Child::rows("risks", rows).details_at(title_column)
 }
 
 /// The `ports` child: a table, and whatever hangs off one of its rows.
@@ -896,7 +944,8 @@ mod tests {
     use std::time::Duration;
     use zond_engine::model::confidence::Confidence;
     use zond_engine::model::finding::{
-        DetectionClass, DetectionId, Excerpt, Finding, FindingGroup, Reference, Severity, Version,
+        DetectionClass, DetectionId, Excerpt, Exploitation, Finding, FindingGroup, Reference,
+        Severity, Version,
     };
     use zond_engine::model::host::OsFingerprint;
     use zond_engine::model::host::path::Hop;
@@ -1814,6 +1863,106 @@ mod tests {
             head.contains("2 other unverified"),
             "and the ones that do not count, said to be other than the grades \
              beside them rather than some of them: {text}"
+        );
+    }
+
+    /// A finding citing a vulnerability known to be exploited in the wild is
+    /// marked, drawn ahead of a worse grade nobody is exploiting, and counted
+    /// at the head of the block; its own grade stays what it was.
+    #[test]
+    fn a_known_exploited_finding_is_marked_and_drawn_first() {
+        let cve = |id: &str| Reference::cve(id).expect("a well-formed identifier");
+        let mut host = host(9);
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        host.add_port_finding(
+            80,
+            Protocol::Tcp,
+            finding(
+                "zond:cve/correlate",
+                "Apache HTTP Server 2.4.49: 20 known vulnerabilities",
+                Severity::Critical,
+                Confidence::Probable,
+            )
+            .with_reference(cve("CVE-2021-40438")),
+        );
+        let listed = Exploitation::new(
+            DetectionId::new("cisa:kev", Version::new(2026, 9, 29), "").expect("an id"),
+            ["CVE-2021-41773"],
+        )
+        .expect("a listed identifier");
+        host.add_port_finding(
+            80,
+            Protocol::Tcp,
+            finding(
+                "acme:advisories",
+                "Apache HTTP Server 2.4.49: path traversal",
+                Severity::Medium,
+                Confidence::Probable,
+            )
+            .with_reference(cve("CVE-2021-41773"))
+            .with_exploitation(listed),
+        );
+
+        let text = block(&host);
+        let lines: Vec<&str> = text.lines().collect();
+        let at = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("no line with {needle:?}: {text}"))
+        };
+        let marked = at("path traversal");
+        assert!(
+            marked < at("20 known vulnerabilities"),
+            "the exploited medium leads the critical: {text}"
+        );
+        assert!(
+            lines[marked].contains("MED") && lines[marked].ends_with("known exploited"),
+            "marked, and still a medium: {text}"
+        );
+        let head = lines
+            .iter()
+            .find(|line| line.contains("1 critical"))
+            .expect("the block has a head");
+        assert!(
+            head.contains("1 known exploited"),
+            "counted at the head: {text}"
+        );
+    }
+
+    /// An unverified finding citing a vulnerability known to be exploited is
+    /// held back with the other unverified ones, and the line counting them
+    /// says one of them is, so nobody reads past it.
+    #[test]
+    fn a_held_back_known_exploited_finding_is_said_to_be() {
+        let mut host = host(9);
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+        let listed = Exploitation::new(
+            DetectionId::new("cisa:kev", Version::new(2026, 9, 29), "").expect("an id"),
+            ["CVE-2024-38475"],
+        )
+        .expect("a listed identifier");
+        host.add_port_finding(
+            80,
+            Protocol::Tcp,
+            finding(
+                "zond:cve/correlate",
+                "Apache HTTP Server 2.4.7: 43 CVEs need a non-default setting",
+                Severity::Critical,
+                Confidence::Weak,
+            )
+            .with_reference(Reference::cve("CVE-2024-38475").expect("a well-formed id"))
+            .with_exploitation(listed),
+        );
+
+        let text = block(&host);
+        assert!(
+            text.contains("1 unverified (1 known exploited)"),
+            "the count says what it holds: {text}"
+        );
+        assert!(
+            !text.contains("need a non-default setting"),
+            "and the row still waits for detail: {text}"
         );
     }
 

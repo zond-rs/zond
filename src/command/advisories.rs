@@ -20,6 +20,11 @@
 //!   for Debian's, which no release carries until Debian states the terms its
 //!   tracker's data may be redistributed under.
 //!
+//! CISA's list of vulnerabilities known to be exploited is the same two ways,
+//! except that the engine carries the snapshot, since the list is in the
+//! public domain and ships on crates.io with it: a scan marks what it reports
+//! by the newer of that and the copy `zond update` fetched.
+//!
 //! A scan never fetches on its own. The one exception is asked first: the
 //! first interactive scan without Debian's data offers to fetch it, once,
 //! and a no is remembered in the cache so it is not asked again.
@@ -27,8 +32,8 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use zond_engine::cve::Advisories;
-use zond_engine::fetch::advisory::{Dataset, Feed};
+use zond_engine::cve::{Advisories, KnownExploited};
+use zond_engine::fetch::advisory::{self, Dataset, Feed};
 use zond_engine::fetch::{self, Client, Store};
 use zond_engine::model::finding::Version;
 
@@ -123,6 +128,39 @@ pub(crate) fn load() -> Vec<Advisories> {
         );
     }
     loaded
+}
+
+/// The list of exploited vulnerabilities a scan marks what it reports by: the
+/// copy `zond update` fetched where it is newer than the one the engine
+/// carries, with a `-v` line saying which.
+///
+/// No line when it is old, unlike the distributions' data: a stale list marks
+/// less than it could, and marks nothing wrongly.
+pub(crate) fn exploited() -> KnownExploited {
+    let carried = KnownExploited::embedded();
+    let cached = fetch::default_cache_dir()
+        .map(Store::new)
+        .and_then(|store| match advisory::known_exploited(&store) {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::warn!("{} unreadable: {e}", carried.id());
+                None
+            }
+        });
+    let (list, from, dated) = match cached {
+        Some(cached) if cached.exploited.version() >= carried.version() => {
+            (cached.exploited, "cached", Some(cached.metadata.fetched_at))
+        }
+        _ => (carried.clone(), "carried", date_of(carried.version())),
+    };
+    tracing::info!(
+        verbosity = 1,
+        "{} {} ({from}, {})",
+        list.id(),
+        list.version(),
+        dated.map_or_else(|| "undated".into(), field::age)
+    );
+    list
 }
 
 /// The snapshot this build carries for `dataset`, where it carries one this
