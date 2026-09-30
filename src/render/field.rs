@@ -18,7 +18,6 @@
 //! `1.420` in a unit that never changes.
 
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
@@ -1615,16 +1614,6 @@ pub(crate) struct RiskCount {
     pub by_grade: Vec<(Severity, usize)>,
     /// Findings too unsure to count as risks. See [`is_unverified`].
     pub unverified: usize,
-    /// How many vulnerabilities the findings that count cite as known to be
-    /// exploited in the wild, each counted once however many findings cite
-    /// it. The unverified are left out, since their rows are not what the
-    /// block draws first and a count naming what a reader cannot see is a
-    /// count they go looking for.
-    pub exploited: usize,
-    /// How many of the unverified findings cite a vulnerability known to be
-    /// exploited, so the count of them can say so rather than leave a reader
-    /// no reason to look.
-    pub unverified_exploited: usize,
 }
 
 /// How many findings a host carries, and the worst grade among those that
@@ -1641,21 +1630,12 @@ pub(crate) fn host_risks(host: &Host) -> Option<RiskCount> {
         worst: None,
         unverified: 0,
         by_grade: Vec::new(),
-        exploited: 0,
-        unverified_exploited: 0,
     };
-    let mut exploited: BTreeSet<&str> = BTreeSet::new();
     for finding in host.findings().chain(host.ports().flat_map(Port::findings)) {
         if is_unverified(finding.confidence()) {
             count.unverified += 1;
-            if finding.exploitation().is_some() {
-                count.unverified_exploited += 1;
-            }
         } else {
             count.settled += 1;
-            if let Some(marked) = finding.exploitation() {
-                exploited.extend(marked.cves());
-            }
             count.worst = Some(
                 count
                     .worst
@@ -1674,7 +1654,6 @@ pub(crate) fn host_risks(host: &Host) -> Option<RiskCount> {
     // Worst first, the order every other list of findings is in. `Severity`
     // orders weakest-to-strongest, so the comparison is reversed.
     count.by_grade.sort_by_key(|(grade, _)| Reverse(*grade));
-    count.exploited = exploited.len();
     (count.settled + count.unverified > 0).then_some(count)
 }
 
@@ -1950,11 +1929,6 @@ pub(crate) struct FindingListing {
     /// How many of `deferred` are unverified, so the line saying what is not
     /// drawn can give the reason rather than only the number.
     pub deferred_unverified: usize,
-    /// How many of those unverified findings cite a vulnerability known to be
-    /// exploited in the wild, so the line counting them can say so: a reader
-    /// who is told only *4 unverified* has no reason to look, and one of them
-    /// may be the thing somebody is already using.
-    pub deferred_exploited: usize,
 }
 
 /// How much of a host's findings a listing puts on the page.
@@ -2146,7 +2120,6 @@ pub(crate) fn findings(
     let mut withheld_by_grade: Vec<(Severity, usize)> = Vec::new();
     let mut deferred = 0usize;
     let mut deferred_unverified = 0usize;
-    let mut deferred_exploited = 0usize;
     let mut drawn = 0usize;
     let rows: Vec<(Fold, String, Option<String>)> = folded
         .into_iter()
@@ -2175,9 +2148,6 @@ pub(crate) fn findings(
                 if is_unverified(row.key.confidence) {
                     deferred += row.weight;
                     deferred_unverified += row.weight;
-                    if row.key.exploited > 0 {
-                        deferred_exploited += row.weight;
-                    }
                     return None;
                 }
                 if drawn == ROWS_SHOWN {
@@ -2239,7 +2209,6 @@ pub(crate) fn findings(
         withheld_by_grade,
         deferred,
         deferred_unverified,
-        deferred_exploited,
     }
 }
 
