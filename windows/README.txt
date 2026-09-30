@@ -21,4 +21,8 @@ through Npcap: ARP and ICMPv6 discovery, SYN and the other flag scans, UDP.
 Whatever a frame cannot reach (loopback, this machine's own addresses, targets
 behind a VPN tunnel) is reached by connection instead; -v shows which.
 
+Vulnerability data: the installer carries Ubuntu's security data and CISA's
+list of exploited vulnerabilities as they stood at release. `zond update`
+downloads newer copies, and Debian's data.
+
 zond --help lists everything else. Scan only networks you may scan.

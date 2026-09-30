@@ -1,0 +1,59 @@
+name: Bug report
+description: zond crashed, errored, or did something it shouldn't have.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a finding or an identification looks wrong, use "Wrong result" instead.
+        Scan output can contain addresses and hostnames you may not want public:
+        `--redact` masks them, or edit them out by hand.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Run it again with `-vv` if you can, and paste what it printed.
+      render: text
+  - type: textarea
+    id: version
+    attributes:
+      label: zond --version
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installed from
+      options:
+        - .deb package
+        - .rpm package
+        - Homebrew
+        - Windows installer
+        - cargo install
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: privileges
+    attributes:
+      label: Ran as
+      options:
+        - A normal user
+        - root, sudo, or Administrator
+        - Not sure

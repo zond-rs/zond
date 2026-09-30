@@ -13,7 +13,7 @@ is a lot of work to move.
 
 ## Before you start
 
-For anything larger than a bug fix, **open an issue or a discussion first**. Output
+For anything larger than a bug fix, **open an issue first**. Output
 format in particular is an interface: `--pipe` is a documented contract that
 scripts depend on, and exit codes are read by shell. Agreeing on an approach is
 much cheaper than reworking a finished pull request.

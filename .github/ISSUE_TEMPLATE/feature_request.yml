@@ -1,0 +1,16 @@
+name: Feature request
+description: Something zond doesn't do yet.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not just the feature. It's often solvable in more than one way.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: A flag, an output format, a protocol, whatever you have in mind. Examples from other tools are welcome.

@@ -1,0 +1,17 @@
+name: Question
+description: Not sure how to do something, or whether zond can.
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What you're trying to do, and what you've tried. `zond help` and `zond <command> --help` cover a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: If it's about a particular run.
+      render: text

@@ -2,13 +2,8 @@
 
 ## Supported versions
 
-Zond is in early development. Security updates are provided for the latest
-release only.
-
-| Version | Supported |
-| ------- | ------------------ |
-| latest  | :white_check_mark: |
-| older   | :x:                |
+Zond is in early development. Fixes go into the next release; older releases
+are not patched.
 
 ## Reporting a vulnerability
 

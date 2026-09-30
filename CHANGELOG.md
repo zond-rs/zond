@@ -2,9 +2,33 @@
 
 ## 0.19
 
-The command line is settled for the first testers. The flags below were renamed
-or removed outright, with no old spelling kept alongside, so a script written
-against 0.18 has to change where it uses them.
+The command line is settled for the first testers, and vulnerability findings
+now take the distribution's own fixes into account. The flags under *Renamed or
+removed* changed outright, with no old spelling kept alongside, so a script
+written against 0.18 has to change where it uses them.
+
+### Vulnerabilities
+
+A distribution patches the version it ships without changing the number, so
+`OpenSSH 6.6.1p1 Ubuntu-2ubuntu2.13` used to be reported with every CVE of
+upstream 6.6.1p1, most of them long fixed. A build that names its distribution
+is now judged by that distribution's own fix data.
+
+- What the build fixed, or never shipped, is no longer reported; `-v` counts
+  it in one line. What it still carries says why: *no fix for Ubuntu 14.04*,
+  *fixed in a newer build* with the version to install, or *fixed only in
+  Ubuntu Pro*.
+- What the data can't settle, such as an Apache whose banner hides its patch
+  level, is *unverified* and counted apart from the risks.
+- Client-side and local-only CVEs, such as ssh-agent's, are no longer charged
+  to the server. Those that need a non-default setting are their own,
+  unverified row.
+- Release packages carry Ubuntu's data. Debian's is offered on the first
+  interactive scan, and `zond update` fetches both, along with CISA's list of
+  vulnerabilities known to be exploited.
+- A row whose finding cites a CVE on CISA's list ends in `known exploited` and
+  is drawn ahead of worse grades nobody is exploiting.
+- The port row shows the build: `OpenSSH 6.6.1p1 (Ubuntu 14.04 2ubuntu2.13)`.
 
 ### Renamed or removed
 
@@ -94,7 +118,8 @@ reader who is grepping, and neither gathers, caps nor defers anything.
   service detection, and the rest of `--tcp-technique` and `--sctp-technique`.
 - `-Pn` for `--assume-up`, `-iL` for `--input-file`, `-sI` for `--idle-scan`,
   and `--excludefile`, `--max-retries`, `--version-all` and `--version-light`.
-  `-T`, `-A`, `-f` and `-S` are refused with what to write instead.
+  `-T0` to `-T5` set the pace, and `-A` is `-O -d --traceroute`. `-f` is
+  refused with what to write instead.
 - `journal show latest`.
 
 ### Help
