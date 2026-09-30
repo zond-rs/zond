@@ -146,9 +146,10 @@ impl Risk {
 impl Risk {
     /// The floor that draws every finding, however it is graded.
     ///
-    /// A run reaches it by name, through `--min-risk info`. This is the same floor
-    /// for the tests that measure a listing's shape rather than the floor.
-    #[cfg(test)]
+    /// A run reaches it by name through `--min-risk info`, and `--risks` reaches
+    /// it without naming a grade at all: a flag that promised the whole list and
+    /// then kept a floor would be the one line in a scan that lies. Also the
+    /// floor for the tests that measure a listing's shape rather than the floor.
     #[must_use]
     pub(crate) fn everything() -> Self {
         Self(Severity::Info)

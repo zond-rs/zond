@@ -344,6 +344,23 @@ impl Command {
         }
     }
 
+    /// Whether this run leaves a record `zond read latest` will find.
+    ///
+    /// What decides whether a block's last line names that command or the flag
+    /// on its own: a pointer at a record nobody wrote is worse than no pointer.
+    /// The settings file has the other half of the answer, so the caller asks
+    /// both.
+    pub(crate) const fn records(&self) -> bool {
+        match self {
+            Command::Discover(args) => !args.no_journal,
+            Command::Scan(args) => !args.no_journal,
+            Command::Listen(args) => !args.no_journal,
+            // It continues one, so there is one.
+            Command::Resume(_) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) const fn watches_the_network(&self) -> bool {
         matches!(
             self,
@@ -3443,6 +3460,22 @@ pub(crate) struct ShowArgs {
     )]
     pub risk: Option<Risk>,
 
+    /// List every finding, not the summary the block draws.
+    ///
+    /// The block a scan draws is a summary: findings whose detections say they
+    /// cover one weakness between them are gathered into a line each, the ones
+    /// the engine could not settle are counted rather than drawn, and a long
+    /// list stops and says how much of it is left. This draws all of them, one
+    /// row each, whatever `--min-risk` is set to.
+    ///
+    /// What the last line of a block points at, since a scan that is over is
+    /// worth re-reading rather than re-running: `zond read latest --risks`.
+    ///
+    /// Per run rather than a setting in cli.toml, which the flags beside it have
+    /// because they are a house style. This one is a second look.
+    #[arg(help_heading = "Output", display_order = 103, long = "risks")]
+    pub risks: bool,
+
     /// Show what to do about each finding.
     ///
     /// A detection that carries advice hangs it under the finding: which
@@ -3456,7 +3489,7 @@ pub(crate) struct ShowArgs {
     /// nothing else.
     ///
     /// The setting for every run: `remedy` in cli.toml.
-    #[arg(help_heading = "Output", display_order = 103, long = "remedy")]
+    #[arg(help_heading = "Output", display_order = 104, long = "remedy")]
     pub remedy: bool,
 
     /// Show the bytes each finding was drawn from.
@@ -3470,7 +3503,7 @@ pub(crate) struct ShowArgs {
     /// every port's packet along with them.
     ///
     /// The setting for every run: `evidence` in cli.toml.
-    #[arg(help_heading = "Output", display_order = 104, long = "evidence")]
+    #[arg(help_heading = "Output", display_order = 105, long = "evidence")]
     pub evidence: bool,
 }
 

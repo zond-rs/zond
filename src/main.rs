@@ -208,6 +208,24 @@ async fn run(cli: Cli) -> Result<Outcome, Error> {
         // The flag, then the file, then the built-in floor, which is the order
         // every other setting layers in.
         risk: asked.risk.or_else(|| settings.risk()).unwrap_or_default(),
+        risks: asked.risks,
+        // A block that summarises says where the rest of the list is, and says
+        // it as a whole command wherever one can be written: after a run that
+        // records, the record it just wrote; while reading one, the scan the
+        // reader themselves named. A run that writes no record has none to name
+        // and is told the flag on its own.
+        //
+        // The scan's name is leaked rather than borrowed, so that `Showing`
+        // stays a `Copy` value passed by hand down the renderers. It is one
+        // string for the life of a process that is about to print and exit, and
+        // what it is, is this run's own command line.
+        recall: match &cli.command {
+            Command::Read(args) => render::field::Recall::Scan(String::leak(args.source.clone())),
+            command if command.records() && settings.journal().unwrap_or(true) => {
+                render::field::Recall::Latest
+            }
+            _ => render::field::Recall::Here,
+        },
     };
 
     // `journal` reads what is already on disk rather than watching a run, so it

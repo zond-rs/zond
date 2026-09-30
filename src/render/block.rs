@@ -380,6 +380,13 @@ pub(crate) struct Detail {
     pub note: Option<String>,
     /// How that part should read.
     pub urgency: Urgency,
+    /// Whether the value is drawn as quietly as its label.
+    ///
+    /// A detail is ordinarily a fact of its own hanging off a row, and is drawn
+    /// in the ink a fact is drawn in. A few are not: they are the rest of what
+    /// the row above already said, and drawn at full strength they read as
+    /// another row and crowd the ones on either side of them.
+    pub quiet: bool,
 }
 
 impl Detail {
@@ -390,6 +397,15 @@ impl Detail {
             value,
             note: None,
             urgency: Urgency::None,
+            quiet: false,
+        }
+    }
+
+    /// The same, drawn as quietly as its own label.
+    pub(crate) fn quiet(self) -> Self {
+        Self {
+            quiet: true,
+            ..self
         }
     }
 
@@ -791,13 +807,24 @@ fn hanging(style: Style, columns: &Columns, child: &Child<'_>, detail: &Detail) 
                 let label = detail.label;
                 let width = label.chars().count();
                 line.indent_to(value_column.saturating_sub(GAP + width));
-                line.push(&style.faint(label), width);
+                // A detail that hangs off its row unlabelled writes no escape
+                // for the label it does not have: painting an empty string is
+                // two escape sequences around nothing, and the reset among them
+                // is a thing anybody reading this stream has to account for.
+                if width > 0 {
+                    line.push(&style.faint(label), width);
+                }
                 line.pad_to(value_column);
             } else {
                 line.indent_to(value_column);
             }
 
-            line.push(&style.plain(piece), piece.chars().count());
+            let painted = if detail.quiet {
+                style.faint(piece)
+            } else {
+                style.plain(piece)
+            };
+            line.push(&painted, piece.chars().count());
 
             // On the last line, because that is where the value ends. A value
             // that folded has nothing after it in practice; one that did not is

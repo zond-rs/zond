@@ -252,7 +252,11 @@ fn write_host(
 /// where the finding is short of certain. No colour: this stream is drawn bare,
 /// and the severity is a word a reader reads rather than a hue.
 fn risk_lines(reader: field::Reader, host: &Host, showing: field::Showing) -> Vec<String> {
-    field::findings(reader, host, showing.risk)
+    // Every finding, whatever the verbosity: this stream is one line per thing
+    // for a reader who is grepping rather than looking, and a line they have to
+    // pass a flag to get is a line their filter does not see. The gathering and
+    // the cap the block draws are for a page somebody reads top down.
+    field::findings(reader, host, showing.risk, field::Folding::Every)
         .rows
         .into_iter()
         .map(|view| {

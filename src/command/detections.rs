@@ -213,6 +213,10 @@ pub(crate) async fn test(
         reasons: false,
         excerpts: true,
         remedies: true,
+        // A catalogue entry is the one thing a detection ever finds, so there is
+        // no list to summarise and nowhere to send a reader for the rest of it.
+        risks: true,
+        recall: render::field::Recall::Here,
         risk: Risk::from_str("info").expect("info is a valid risk floor"),
     };
     let mut renderer = render::renderer(presentation, verbosity, palette, showing);

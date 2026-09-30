@@ -83,7 +83,6 @@
 use std::io::{self, BufWriter, Write};
 
 use zond_engine::export::Redaction;
-use zond_engine::model::finding::Severity;
 use zond_engine::record::wire;
 use zond_engine::{Host, HostStatus, PortState, ScanReport};
 
@@ -93,6 +92,7 @@ use crate::render::narrate::Narrator;
 use crate::render::progress::{self, Counting};
 use crate::render::style::{Palette, Style};
 use crate::render::{Phase, Renderer, field};
+use crate::settings::Risk;
 
 /// The tree renderer.
 pub(crate) struct FancyRenderer {
@@ -239,19 +239,20 @@ fn verdict(style: Style, host: &Host) -> Option<String> {
     // hosts worth opening. Coloured by the worst grade present, and the count and
     // the word are both spelled, so the colour only ranks what the text says.
     //
-    // Only what is at least probably true counts as a risk. A claim the engine
-    // could not settle is counted beside it, faint, so the number a reader
-    // triages by is not inflated by vulnerabilities a distribution has likely
-    // fixed, and none of them is hidden either.
-    if let Some(count) = field::host_risks(host) {
-        if let Some(worst) = count.worst {
-            let settled = count.settled;
-            let counted = format!("{settled} {}", if settled == 1 { "risk" } else { "risks" });
-            parts.push(style.by_urgency(field::severity_urgency(worst), &counted));
-        }
-        if count.unverified > 0 {
-            parts.push(style.faint(&format!("{} unverified", count.unverified)));
-        }
+    // Only what is at least probably true counts as a risk, so a claim the
+    // engine could not settle is not in this number: it would inflate what a
+    // reader triages by with vulnerabilities a distribution has likely fixed.
+    //
+    // Nor is it counted beside it any more. The head of the risks block spells
+    // every grade and the unverified together, which is the same fact told
+    // better, and a header that told half of it first had a reader meeting the
+    // same number twice and wondering which one to believe.
+    if let Some(count) = field::host_risks(host)
+        && let Some(worst) = count.worst
+    {
+        let settled = count.settled;
+        let counted = format!("{settled} {}", if settled == 1 { "risk" } else { "risks" });
+        parts.push(style.by_urgency(field::severity_urgency(worst), &counted));
     }
 
     // A column between them rather than a comma. Two reasons, and the second is
@@ -432,13 +433,79 @@ fn children<'a>(
     // says is wrong with this host or one of its ports. The severity carries the
     // colour, so the eye lands on the worst line first; the rest of the line is
     // plain, the subject included, so nothing competes with the verdict.
-    let risks = field::findings(reader, host, showing.risk);
-    if !risks.rows.is_empty() || risks.withheld > 0 {
-        children.push(findings(style, &risks, verbosity, showing));
+    if let Some(child) = risks(style, reader, host, verbosity, showing) {
+        children.push(child);
     }
 
     children
 }
+
+/// The `risks` child, where the host has anything to put in one.
+///
+/// `--risks` drops the floor as well as the folding: it is what the foot of a
+/// summarised block points at, and a flag that promised the whole list and then
+/// kept a floor would be the one line in a scan that lies.
+fn risks(
+    style: Style,
+    reader: field::Reader,
+    host: &Host,
+    verbosity: Verbosity,
+    showing: field::Showing,
+) -> Option<Child<'static>> {
+    let floor = if showing.risks {
+        Risk::everything()
+    } else {
+        showing.risk
+    };
+    let listing = field::findings(reader, host, floor, folding(verbosity, showing));
+    if listing.rows.is_empty() && listing.withheld == 0 && listing.deferred == 0 {
+        return None;
+    }
+
+    Some(findings(
+        style,
+        &listing,
+        field::host_risks(host).as_ref(),
+        verbosity,
+        showing,
+    ))
+}
+
+/// How much of a host's findings the block draws.
+///
+/// Summarised unless the run asked otherwise: gather what the detections say
+/// covers one weakness, count the unverified rather than draw them, and stop at
+/// a number of rows the scan above can carry.
+///
+/// Two flags ask otherwise, for two reasons. `--risks` is the reader coming back
+/// for the whole list, which is what the foot of a summarised block points them
+/// at. `-v` is the lever for the working behind every other line on the page and
+/// is this one's too: a reader checking an answer is shown the rows it was
+/// drawn from.
+fn folding(verbosity: Verbosity, showing: field::Showing) -> field::Folding {
+    if verbosity.explains() || showing.risks {
+        field::Folding::Every
+    } else {
+        field::Folding::Summary
+    }
+}
+
+/// What a finding's CVE line is labelled with, where every other detail under a
+/// row is labelled with a word.
+///
+/// Nothing. The line is not a field of the finding the way `remedy` and
+/// `evidence` are: it is the rest of what the row already said, forty-four
+/// identifiers the title counted. Labelled `cve`, the two lines read as a row
+/// and another row; labelled with nothing, the identifiers begin in the column
+/// the title began in and the second line reads as the first one continuing,
+/// which is what it is.
+///
+/// A mark was tried in the column instead — a box corner, an arrow — and every
+/// one of them had the same trouble: it sits alone with no column to line up
+/// with, and a glyph drawn from a different set at a different weight in a good
+/// many terminal fonts has nothing to hide behind. The indent was already doing
+/// the work.
+const CVE_HANG: &str = "";
 
 /// The `risks` child: one line per finding, worst first, in columns.
 ///
@@ -457,27 +524,84 @@ fn children<'a>(
 fn findings(
     style: Style,
     listing: &field::FindingListing,
+    tally: Option<&field::RiskCount>,
     verbosity: Verbosity,
     showing: field::Showing,
 ) -> Child<'static> {
     let mut rows = Vec::new();
     let views = &listing.rows;
 
-    // What the floor kept back, at the head of the child the way a port table's
-    // scope sits at the head of its own. A finding out of sight must not also be
-    // out of the count: the header still totals every one of them, and this says
-    // how many of that total are not drawn below.
-    if listing.withheld > 0 {
-        rows.push(Row::plain(style.faint(&format!(
-            "{} below {}, --min-risk {} to see {}",
-            listing.withheld,
-            showing.risk,
-            wire::severity_name(Severity::Info),
-            if listing.withheld == 1 { "it" } else { "them" }
-        ))));
+    // What the host carries, by grade, at the head of the child the way a port
+    // table's scope sits at the head of its own. The header above counts the
+    // findings; this is the count a reader decides from, since one high and six
+    // medium is a different afternoon from seven medium.
+    //
+    // Every finding of the host, the ones below the floor and the ones this
+    // block will not draw included: it is the shape of what was found rather
+    // than of what fitted.
+    //
+    // Faint, every count of it, including the grades. It is the scope of the
+    // list rather than an entry in it, and painting the grades here would put a
+    // second red thing on the page competing with the row that is actually
+    // critical — the colour in this block belongs to the findings, and a
+    // summary of them is furniture.
+    if let Some(count) = tally {
+        let mut parts: Vec<String> = count
+            .by_grade
+            .iter()
+            .map(|(grade, number)| format!("{number} {}", wire::severity_name(*grade)))
+            .collect();
+        if count.unverified > 0 {
+            // `other`, because alone at the end of a run of grades `4
+            // unverified` reads as four of the findings just counted, which is
+            // the one thing it never is: an unverified finding is counted apart
+            // from every grade beside it. One word says so, and says it without
+            // making the reader subtract anything.
+            //
+            // And only there: with no grades in front of it there is nothing
+            // for these to be other than, and the word is a reference to
+            // something the line does not say.
+            parts.push(if parts.is_empty() {
+                format!("{} unverified", count.unverified)
+            } else {
+                format!("{} other unverified", count.unverified)
+            });
+        }
+        // Where the block draws no row at all, the line at the foot would count
+        // the very findings this one just counted and nothing else, so this one
+        // takes the pointer and the foot is not written. A host with five
+        // findings under the floor is two lines saying the same thing twice, or
+        // one line saying it once.
+        if views.is_empty() {
+            parts.push(showing.recall.phrase());
+        }
+        if !parts.is_empty() {
+            // Dots between them rather than the gap two columns of a table
+            // take. These are not columns: they are one sentence of counts, and
+            // a run of them separated by whitespace alone reads as a row that
+            // lost its headings. The dot is the same one a citation trails its
+            // title with, doing the same job in both places, and it is furniture
+            // so it is drawn as furniture.
+            rows.push(Row::plain(style.faint(&parts.join(" \u{b7} "))));
+        }
     }
 
+    // Said once, where the list crosses over, rather than on every row that
+    // crossed. The rows below it are already drawn without the colour their
+    // severity would otherwise carry, which is the eye's half of the answer;
+    // this is the sentence half, and repeating it down the right-hand side of
+    // the block was the same word on every line and the widest thing on most of
+    // them.
+    let mut crossed = false;
+
     for view in views {
+        if view.unverified && !crossed {
+            crossed = true;
+            rows.push(Row::plain(style.faint(
+                "unverified below: matched, but not settled for this build",
+            )));
+        }
+
         // Every column is painted trimmed and padded after, so no escape
         // sequence ever wraps a run of spaces: what the terminal measures is
         // exactly what the widths were computed from.
@@ -501,23 +625,11 @@ fn findings(
             style.plain(&view.title)
         );
 
+        // Trailing the title rather than padded into a column of its own, and
+        // marked off with a middle dot so the two read as one line with a
+        // citation on it rather than as two columns that failed to line up.
         if let Some(reference) = &view.reference {
-            line.push_str(&" ".repeat(view.pad));
-            line.push_str("  ");
-            line.push_str(&style.faint(reference));
-        }
-
-        if let Some(confidence) = view.confidence {
-            if view.reference.is_none() {
-                line.push_str(&" ".repeat(view.pad));
-            }
-            line.push_str("  ");
-            let marked = if view.unverified {
-                confidence.to_owned()
-            } else {
-                format!("~{confidence}")
-            };
-            line.push_str(&style.faint(&marked));
+            line.push_str(&style.faint(&format!(" \u{b7} {reference}")));
         }
 
         // Raw, not painted: a `Detail` carries text and the block paints it,
@@ -530,7 +642,11 @@ fn findings(
         // one line because it is capped, which is the whole reason it can be
         // shown by default.
         if let Some(cves) = &view.cves {
-            detail.push(Detail::new("cve", cves.clone()));
+            // Quiet, because the line is the rest of what the row above it
+            // already said rather than a fact of its own. Drawn in the ink a
+            // title is drawn in, a run of identifiers is as loud as the finding
+            // it belongs to and crowds the rows on either side of it.
+            detail.push(Detail::new(CVE_HANG, cves.clone()).quiet());
         }
         if showing.excerpts
             && let Some(seen) = &view.evidence
@@ -549,6 +665,33 @@ fn findings(
         }
 
         rows.push(Row::with_detail(line, detail));
+    }
+
+    // Everything the block is not drawing, in one line at the foot, and where the
+    // rest of it is. One line rather than two: what the reader's own floor held
+    // back and what the block decided by itself are the same question to the
+    // person reading it, which is *what am I not being shown*, and one command
+    // answers both.
+    //
+    // At the foot rather than the head, because it is what the list ran out
+    // into. Nothing is out of sight without this line counting it.
+    let mut held: Vec<String> = Vec::new();
+    let more = listing.deferred - listing.deferred_unverified;
+    if more > 0 {
+        held.push(format!("{more} more"));
+    }
+    for (grade, number) in &listing.withheld_by_grade {
+        held.push(format!("{number} {}", wire::severity_name(*grade)));
+    }
+    if listing.deferred_unverified > 0 {
+        held.push(format!("{} unverified", listing.deferred_unverified));
+    }
+    if !held.is_empty() && !views.is_empty() {
+        rows.push(Row::plain(style.faint(&format!(
+            "+ {} \u{b7} {}",
+            held.join(", "),
+            showing.recall.phrase()
+        ))));
     }
 
     let title_column = views.first().map_or(0, |view| {
@@ -753,7 +896,7 @@ mod tests {
     use std::time::Duration;
     use zond_engine::model::confidence::Confidence;
     use zond_engine::model::finding::{
-        DetectionClass, DetectionId, Excerpt, Finding, Reference, Severity, Version,
+        DetectionClass, DetectionId, Excerpt, Finding, FindingGroup, Reference, Severity, Version,
     };
     use zond_engine::model::host::OsFingerprint;
     use zond_engine::model::host::path::Hop;
@@ -778,6 +921,20 @@ mod tests {
     /// The block a run asked for detail writes.
     fn explained(host: &Host) -> String {
         rendered(field::Reader::default(), host, Verbosity::new(1, false))
+    }
+
+    /// The block a run asked for the whole list writes.
+    fn risks(host: &Host) -> String {
+        drawn_showing(
+            Style::bare(),
+            field::Reader::default(),
+            host,
+            Verbosity::default(),
+            field::Showing {
+                risks: true,
+                ..field::Showing::default()
+            },
+        )
     }
 
     fn rendered(reader: field::Reader, host: &Host, verbosity: Verbosity) -> String {
@@ -1060,11 +1217,12 @@ mod tests {
     fn a_finding_is_drawn_worst_first_with_its_subject_and_its_cves_beneath() {
         let text = block(&at_risk());
 
-        // Past the header, which carries a risk count of its own now.
+        // Past the header, which carries a risk count of its own, and past the
+        // block's own summary line, which is the grades rather than a finding.
         let risks: Vec<&str> = text
             .lines()
             .skip(1)
-            .skip_while(|line| !line.contains("risks"))
+            .skip_while(|line| !line.contains("CRIT"))
             .collect();
 
         assert!(
@@ -1078,8 +1236,14 @@ mod tests {
             "the identifiers are not on the row: {text}"
         );
         assert!(
-            risks[1].contains("cve") && risks[1].contains("CVE-2021-44228"),
-            "they are on the line under it: {text}"
+            risks[1].contains("CVE-2021-44228") && !risks[1].contains("cve"),
+            "they hang off the line under it, unlabelled: {text}"
+        );
+        assert_eq!(
+            risks[1].find("CVE-2021-44228"),
+            risks[0].find("Log4Shell"),
+            "beginning in the column the title began in, which is what makes \
+             the line read as that one continuing: {text}"
         );
         assert!(
             risks.iter().any(|line| line.contains("MED")
@@ -1192,8 +1356,8 @@ mod tests {
             "the floor did not hold: {raised}"
         );
         assert!(
-            raised.contains("1 below high"),
-            "the block does not say what it held back: {raised}"
+            raised.contains("+ 1 medium \u{b7} zond read latest --risks"),
+            "the block does not say what it held back, or where the rest is: {raised}"
         );
 
         // And the header still totals both, whatever the floor draws.
@@ -1244,17 +1408,30 @@ mod tests {
         let text = String::from_utf8(out).expect("the renderer writes text");
 
         assert!(text.contains("1 risk"), "{text}");
-        assert!(text.contains("1 below critical"), "{text}");
+        // One line, not two. With no row drawn between them, the head counting
+        // the findings and the foot counting the ones it did not draw are the
+        // same list, so the head takes the pointer and the foot is not written.
+        assert!(
+            text.contains("1 low \u{b7} zond read latest --risks"),
+            "a host whose every finding is below the floor still says what it \
+             has and where to read it: {text}"
+        );
+        assert!(
+            !text.contains('+'),
+            "and does not then count the same findings again: {text}"
+        );
     }
 
-    /// A verbose title does not take its own citation out of the column.
+    /// A verbose title costs its own row and nobody else's.
     ///
-    /// The column used to be capped at forty-six characters without the titles
-    /// being capped, so a detection that wrote a long sentence carried its
-    /// reference past everybody else's — and the column the cap existed to
-    /// protect was ragged exactly where it mattered.
+    /// The citation used to be padded out to the longest title in the block, so
+    /// one correlation that wrote a sentence set a right edge for every row that
+    /// cited anything: the block was as wide as its worst line however short the
+    /// rest were, and a terminal narrower than that broke all of them to fit
+    /// one. The citation trails its own title now, which is a column the block
+    /// does not have rather than a column it keeps ragged.
     #[test]
-    fn a_long_title_does_not_break_the_citation_column() {
+    fn a_long_title_does_not_widen_the_rows_beside_it() {
         let mut host = host(11);
         host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
         host.add_port_finding(
@@ -1281,17 +1458,20 @@ mod tests {
         );
 
         let text = block(&host);
-        let citation = |needle: &str| {
+        let row = |needle: &str| {
             text.lines()
                 .find(|line| line.contains(needle))
-                .and_then(|line| line.find("CWE-"))
-                .unwrap_or_else(|| panic!("no citation beside {needle}: {text}"))
+                .unwrap_or_else(|| panic!("no row for {needle}: {text}"))
         };
 
-        assert_eq!(
-            citation("without a password"),
-            citation("missing 2 of 4"),
-            "a title past the old cap took its citation with it: {text}"
+        let short = row("missing 2 of 4");
+        assert!(
+            short.trim_end().ends_with("CWE-693"),
+            "the short row ends at its own citation: {text}"
+        );
+        assert!(
+            short.chars().count() < row("without a password").chars().count(),
+            "and is shorter than the verbose one beside it: {text}"
         );
     }
 
@@ -1340,21 +1520,436 @@ mod tests {
         );
     }
 
-    /// A confidence that is the same on every line is a word nobody reads, so
-    /// only a finding short of certain says how sure it is.
+    /// No row says how sure it is, in any mode.
+    ///
+    /// The block answers the question once, where it matters: everything above
+    /// the caption is at least probably true and everything below it is not
+    /// settled. Which of `probable`, `strong` or `certain` a settled row landed
+    /// on changes nothing a reader does next, and spelling it put a word on
+    /// every line that was the widest thing on most of them. The grade is in
+    /// every file the scan writes, and `--pipe` carries it per finding for
+    /// anyone filtering on it.
     #[test]
-    fn only_an_uncertain_finding_says_how_sure_it_is() {
-        let certain = block(&repeated(&[80], Severity::Medium, Confidence::Certain));
-        assert!(
-            !certain.contains("certain"),
-            "a certain finding spends no columns saying so: {certain}"
+    fn no_row_spends_a_column_on_how_sure_it_is() {
+        for confidence in [
+            Confidence::Probable,
+            Confidence::Strong,
+            Confidence::Certain,
+        ] {
+            let host = repeated(&[80], Severity::Medium, confidence);
+            for text in [block(&host), explained(&host), risks(&host)] {
+                assert!(
+                    !text.contains("probable")
+                        && !text.contains("strong")
+                        && !text.contains("certain"),
+                    "a row said how sure it was: {text}"
+                );
+            }
+        }
+    }
+
+    /// A host shaped like the one this block was rewritten for: an SSH server
+    /// whose four weak algorithms are one group, a correlation on each port, and
+    /// an unverified bucket of CVEs behind each of those.
+    fn ubuntu_14_04() -> Host {
+        const WEAK: [(&str, &str); 4] = [
+            (
+                "ssh-weak-cipher",
+                "SSH offered a CBC-mode or legacy stream cipher",
+            ),
+            ("ssh-weak-hostkey", "SSH offered a DSA host key"),
+            (
+                "ssh-weak-kex",
+                "SSH offered a SHA-1 or 1024-bit key exchange",
+            ),
+            ("ssh-weak-mac", "SSH offered an MD5 or truncated MAC"),
+        ];
+
+        let group = || {
+            FindingGroup::new("ssh-weak-algorithms", "weak SSH algorithms offered")
+                .expect("both halves are filled")
+        };
+
+        let mut host = host(9);
+        host.add_port(Port::new(22, Protocol::Tcp, PortState::Open));
+        host.add_port(Port::new(80, Protocol::Tcp, PortState::Open));
+
+        for (id, title) in WEAK {
+            host.add_port_finding(
+                22,
+                Protocol::Tcp,
+                finding(id, title, Severity::Medium, Confidence::Certain)
+                    .with_reference(Reference::cwe(327))
+                    .with_group(group()),
+            );
+        }
+
+        let correlation = |title: &str, severity, confidence, cves: &[&str]| {
+            let mut found = finding("zond:cve/correlate", title, severity, confidence);
+            for id in cves {
+                found =
+                    found.with_reference(Reference::cve(*id).expect("a well-formed identifier"));
+            }
+            found
+        };
+
+        host.add_port_finding(
+            80,
+            Protocol::Tcp,
+            correlation(
+                "Apache HTTP Server 2.4.7: 8 CVEs with no fix for Ubuntu 14.04",
+                Severity::High,
+                Confidence::Probable,
+                &[
+                    "CVE-2006-20001",
+                    "CVE-2019-10092",
+                    "CVE-2019-10098",
+                    "CVE-2018-1301",
+                ],
+            ),
+        );
+        host.add_port_finding(
+            22,
+            Protocol::Tcp,
+            correlation(
+                "OpenSSH 6.6.1p1: 2 CVEs with no fix for Ubuntu 14.04",
+                Severity::Medium,
+                Confidence::Probable,
+                &["CVE-2016-20012", "CVE-2023-48795"],
+            ),
+        );
+        host.add_port_finding(
+            80,
+            Protocol::Tcp,
+            finding(
+                "zond:http/missing-security-headers",
+                "missing 4 of 4 HTTP security headers",
+                Severity::Medium,
+                Confidence::Certain,
+            )
+            .with_reference(Reference::cwe(693)),
+        );
+        host.add_port_finding(
+            80,
+            Protocol::Tcp,
+            correlation(
+                "Apache HTTP Server 2.4.7: 43 CVEs need a non-default setting",
+                Severity::Critical,
+                Confidence::Weak,
+                &["CVE-2017-3167", "CVE-2017-9788", "CVE-2018-1312"],
+            ),
+        );
+        host.add_port_finding(
+            22,
+            Protocol::Tcp,
+            correlation(
+                "OpenSSH 6.6.1p1: 8 CVEs need a non-default setting",
+                Severity::High,
+                Confidence::Weak,
+                &["CVE-2021-41617", "CVE-2018-15919"],
+            ),
         );
 
-        let probable = block(&repeated(&[80], Severity::Medium, Confidence::Probable));
+        host
+    }
+
+    /// Detections that say they cover one weakness between them draw one row
+    /// saying so, with the count leading the phrase they wrote for it.
+    ///
+    /// Four readings of one SSH handshake are four findings and stay four:
+    /// separately true, separately fixed, and four in every file this scan
+    /// writes. They are also one sentence to a person, which is the sentence the
+    /// detections themselves supply.
+    #[test]
+    fn findings_their_detections_group_draw_one_row() {
+        let host = ubuntu_14_04();
+        let text = block(&host);
+
         assert!(
-            probable.contains("~probable"),
-            "anything short of certain says which: {probable}"
+            text.contains("4 weak SSH algorithms offered"),
+            "the group leads with its count: {text}"
         );
+        assert!(
+            !text.contains("DSA host key"),
+            "and none of the members takes a row of its own: {text}"
+        );
+
+        let detailed = explained(&host);
+        assert!(
+            detailed.contains("DSA host key") && detailed.contains("truncated MAC"),
+            "-v draws every one of them: {detailed}"
+        );
+        assert!(
+            !detailed.contains("4 weak SSH algorithms offered"),
+            "and does not also draw the row that stood for them: {detailed}"
+        );
+    }
+
+    /// A gathered row keeps a citation only where every member cites the same
+    /// one, since a citation on it is a claim about all of them.
+    #[test]
+    fn a_gathered_row_cites_only_what_its_members_agree_on() {
+        let text = block(&ubuntu_14_04());
+        let row = text
+            .lines()
+            .find(|line| line.contains("4 weak SSH algorithms"))
+            .expect("the group is drawn");
+
+        assert!(row.contains("CWE-327"), "all four cite it: {text}");
+    }
+
+    /// The unverified findings are counted at the foot of the block rather than
+    /// drawn, and the line says which flag prints them.
+    ///
+    /// They are what the engine says it could not settle: a vulnerability
+    /// matched on the upstream version of a distribution's build, which the
+    /// distribution may well have fixed. Three of them outnumbered everything
+    /// the scan was sure of, and they are the rows a reader acts on last.
+    #[test]
+    fn the_unverified_findings_are_counted_and_wait_for_detail() {
+        let host = ubuntu_14_04();
+        let text = block(&host);
+
+        assert!(
+            !text.contains("need a non-default setting"),
+            "no unverified row is drawn: {text}"
+        );
+        assert!(
+            text.contains("+ 2 unverified \u{b7} zond read latest --risks"),
+            "the foot of the block says how many and where the rest is: {text}"
+        );
+
+        let detailed = explained(&host);
+        assert!(
+            detailed.contains("43 CVEs need a non-default setting"),
+            "-v draws them: {detailed}"
+        );
+        assert!(
+            !detailed.contains("--risks"),
+            "and holds nothing back to say so: {detailed}"
+        );
+    }
+
+    /// The identifiers hang off the row rather than sitting under it.
+    #[test]
+    fn the_identifiers_hang_off_the_row_that_counted_them() {
+        let text = block(&ubuntu_14_04());
+        let lines: Vec<&str> = text.lines().collect();
+        let row = lines
+            .iter()
+            .position(|line| line.contains("8 CVEs with no fix"))
+            .expect("the correlation is drawn");
+
+        assert!(
+            lines[row + 1].contains(CVE_HANG) && lines[row + 1].contains("CVE-2006-20001"),
+            "the line under it is the rest of what it said: {text}"
+        );
+        assert!(
+            lines[row + 1].contains("+1"),
+            "capped, and counting what it did not name: {text}"
+        );
+    }
+
+    /// Past the rows the block spends, the tail is counted rather than drawn.
+    #[test]
+    fn a_long_list_stops_at_the_rows_it_spends() {
+        let ports: Vec<u16> =
+            (1..=u16::try_from(field::ROWS_SHOWN).expect("a small count") + 3).collect();
+        let mut host = host(9);
+        for (index, number) in ports.iter().enumerate() {
+            host.add_port(Port::new(*number, Protocol::Tcp, PortState::Open));
+            host.add_port_finding(
+                *number,
+                Protocol::Tcp,
+                finding(
+                    "zond:http/missing-security-headers",
+                    &format!("finding {index}"),
+                    Severity::Medium,
+                    Confidence::Certain,
+                ),
+            );
+        }
+
+        let text = block(&host);
+        let drawn = text
+            .lines()
+            .filter(|line| line.contains("finding "))
+            .count();
+
+        assert_eq!(drawn, field::ROWS_SHOWN, "it stops where it said: {text}");
+        assert!(
+            text.contains("+ 3 more \u{b7} zond read latest --risks"),
+            "and counts the rest: {text}"
+        );
+    }
+
+    /// The line at the head is what the host carries, by grade, whatever the
+    /// block goes on to draw.
+    ///
+    /// Including the grades below the floor and the rows the block will not
+    /// spend a line on: it is the shape of what was found rather than of what
+    /// fitted, and a reader deciding whether to look further decides from it.
+    #[test]
+    fn the_head_of_the_block_counts_every_grade_the_host_carries() {
+        let text = block(&ubuntu_14_04());
+        // The block's own head, not the header above it, which counts the
+        // findings on the same line as the open ports.
+        let head = text
+            .lines()
+            .find(|line| line.contains("risks") && !line.contains("open"))
+            .expect("the block has a head");
+
+        // The two criticals this host carries are unverified, so they are not
+        // among the grades: the run of counts is what counts as a risk, and the
+        // rest is the number behind the dot.
+        assert!(
+            head.contains("1 high") && head.contains("6 medium"),
+            "every grade that counts, worst first: {text}"
+        );
+        assert!(
+            head.find("1 high") < head.find("6 medium"),
+            "worst first: {text}"
+        );
+        assert!(
+            head.contains("2 other unverified"),
+            "and the ones that do not count, said to be other than the grades \
+             beside them rather than some of them: {text}"
+        );
+    }
+
+    /// `--risks` is what the foot of a summarised block points at, so it draws
+    /// every finding the scan recorded: gathered rows come apart, the unverified
+    /// are drawn, and the floor does not apply.
+    ///
+    /// A flag that promised the whole list and then kept a floor would be the
+    /// one line in a scan that lies.
+    #[test]
+    fn asking_for_the_risks_draws_all_of_them() {
+        let host = ubuntu_14_04();
+        let showing = field::Showing {
+            risks: true,
+            risk: Risk::from_str("high").expect("a grade"),
+            ..field::Showing::default()
+        };
+        let text = drawn_showing(
+            Style::bare(),
+            field::Reader::default(),
+            &host,
+            Verbosity::default(),
+            showing,
+        );
+
+        assert!(
+            text.contains("DSA host key"),
+            "the gathered rows come apart: {text}"
+        );
+        assert!(
+            text.contains("43 CVEs need a non-default setting"),
+            "the unverified are drawn: {text}"
+        );
+        assert!(
+            text.contains("missing 4 of 4 HTTP security headers"),
+            "and a finding under the floor it was given is drawn too: {text}"
+        );
+        assert!(
+            !text.contains("--risks"),
+            "with nothing left to point at: {text}"
+        );
+    }
+
+    /// The foot names the scan the reader named, so the command it prints is one
+    /// they can paste, and falls back to the flag where the name is too long to
+    /// spell without setting the width of the block.
+    #[test]
+    fn the_foot_names_the_scan_it_points_at() {
+        let host = ubuntu_14_04();
+        let foot = |recall: field::Recall| {
+            let text = drawn_showing(
+                Style::bare(),
+                field::Reader::default(),
+                &host,
+                Verbosity::default(),
+                field::Showing {
+                    recall,
+                    ..field::Showing::default()
+                },
+            );
+            text.lines()
+                .find(|line| line.trim_start().starts_with('+'))
+                .expect("the block holds something back")
+                .to_owned()
+        };
+
+        assert!(foot(field::Recall::Latest).ends_with("zond read latest --risks"));
+        assert!(
+            foot(field::Recall::Scan("06GF30M5C57JBT3X"))
+                .ends_with("zond read 06GF30M5C57JBT3X --risks"),
+            "the record the reader named, not whichever is newest"
+        );
+        assert!(
+            foot(field::Recall::Scan(
+                "/a/very/long/path/to/somebody/s/scan.json"
+            ))
+            .ends_with("--risks to list them"),
+            "a name too long to spell is not spelled"
+        );
+        assert!(
+            foot(field::Recall::Scan("last tuesday.json"))
+                .ends_with("zond read 'last tuesday.json' --risks"),
+            "and one with a space in it is quoted"
+        );
+    }
+
+    /// The unverified rows say so once, in a line above the first of them,
+    /// rather than each carrying the word at the end of it.
+    ///
+    /// They are already drawn without the colour their severity would carry, so
+    /// the eye has half the answer; the line gives the other half and says it
+    /// where the list crosses over. On every row it was the same word repeated
+    /// and the widest thing on most of them.
+    #[test]
+    fn the_unverified_rows_are_captioned_once_rather_than_marked_each() {
+        let host = ubuntu_14_04();
+        let text = drawn_showing(
+            Style::bare(),
+            field::Reader::default(),
+            &host,
+            Verbosity::default(),
+            field::Showing {
+                risks: true,
+                ..field::Showing::default()
+            },
+        );
+
+        let lines: Vec<&str> = text.lines().collect();
+        let caption = lines
+            .iter()
+            .position(|line| line.contains("unverified below"))
+            .expect("the crossing is captioned");
+
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("unverified")).count(),
+            2,
+            "once in the caption and once in the head's count, nowhere else: {text}"
+        );
+        assert!(
+            lines[caption + 1].contains("43 CVEs need a non-default setting"),
+            "and it sits directly above the first of them: {text}"
+        );
+        assert!(
+            lines[..caption]
+                .iter()
+                .any(|line| line.contains("missing 4 of 4 HTTP security headers")),
+            "with everything that counts above it: {text}"
+        );
+    }
+
+    /// Eyeballed by hand when the shape of this block changes.
+    #[test]
+    #[ignore = "prints the block for a person to look at"]
+    fn the_block_as_a_person_sees_it() {
+        println!("{}", block(&ubuntu_14_04()));
+        println!("{}", explained(&ubuntu_14_04()));
     }
 
     /// Two ports the same detection graded differently are two findings, however
@@ -1388,10 +1983,10 @@ mod tests {
         );
     }
 
-    /// A title carrying a control character is escaped before it is measured,
-    /// so the columns beside it stay where the widths said they would.
+    /// A title carrying a control character is escaped before it is drawn, so a
+    /// finding cannot forge a row of its own.
     #[test]
-    fn a_title_is_measured_after_escaping() {
+    fn a_title_is_escaped_before_it_is_drawn() {
         let mut host = repeated(&[80], Severity::Medium, Confidence::Certain);
         host.add_port(Port::new(443, Protocol::Tcp, PortState::Open));
         host.add_port_finding(
@@ -1412,13 +2007,13 @@ mod tests {
             "the newline never reaches the terminal: {text}"
         );
 
+        assert!(
+            text.contains("banner said\\nmissing"),
+            "it is drawn as the escape it is: {text}"
+        );
+
         let citations: Vec<usize> = text.lines().filter_map(|line| line.find("CWE-")).collect();
         assert_eq!(citations.len(), 2, "both rows cite something: {text}");
-        assert_eq!(
-            citations[0], citations[1],
-            "the escaped title is two columns wider than it is stored, and the \
-             citations still share a column: {text}"
-        );
     }
 
     /// What a detection saw waits for `--evidence`, and for that flag alone:

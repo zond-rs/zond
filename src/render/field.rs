@@ -17,6 +17,7 @@
 //! reads fastest and what a script cannot parse. [`rtt_millis`] writes a bare
 //! `1.420` in a unit that never changes.
 
+use std::cmp::Reverse;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
@@ -1185,6 +1186,71 @@ pub(crate) struct Showing {
     /// floor. What it governs stays on the page either way, since a host says
     /// how many findings it has whatever this is set to.
     pub(crate) risk: Risk,
+    /// Every finding, one row each, rather than the summary a block draws.
+    /// From `--risks`, which overrides `risk` above: a flag that promised the
+    /// whole list and then kept a floor would be the one line in a scan that
+    /// lies.
+    pub(crate) risks: bool,
+    /// How a block tells a reader where the rest of the list is.
+    pub(crate) recall: Recall,
+}
+
+/// Where a reader goes for the findings a block summarised.
+///
+/// A whole command wherever one can be written, because the reader is at a
+/// prompt with a scan that is over: a command they can paste is the difference
+/// between reading the rest of the list and deciding not to bother.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Recall {
+    /// A run that wrote a record: the scan is over, and re-reading it beats
+    /// re-running it. `zond read latest --risks`.
+    #[default]
+    Latest,
+    /// A reader already looking at a record, named as they named it:
+    /// `zond read 06GF30M5C57JBT3X --risks`.
+    ///
+    /// Their own argument rather than `latest`, which after a scan is the same
+    /// record and after reading an older one is a different scan entirely. A
+    /// pointer that quietly changed which scan it meant would be worse than no
+    /// pointer.
+    ///
+    /// Borrowed for the life of the run, which is what it is: the command line
+    /// this process was started with.
+    Scan(&'static str),
+    /// Neither: a run that wrote no record, or one drawing something that is
+    /// not a scan. The command to repeat is the one they typed, so the block
+    /// names only the flag to add to it.
+    Here,
+}
+
+/// The longest a scan's name may be before the line names the flag instead.
+///
+/// Twenty-four, which holds a record id and every ordinary way of saying
+/// `latest`, and not the absolute path of a file three directories down. This
+/// line exists inside a block that was rewritten to stop one long value setting
+/// the width of everything around it, and a pointer that did the same thing
+/// would be that mistake made twice.
+const RECALL_NAME_SHOWN: usize = 24;
+
+impl Recall {
+    /// What the block prints for it.
+    pub(crate) fn phrase(self) -> String {
+        match self {
+            Recall::Latest => String::from("zond read latest --risks"),
+            // A name too long to spell is not spelled: the reader is at the
+            // prompt they typed it at, and the flag is the only part of the
+            // command they are missing.
+            Recall::Scan(scan) if scan.chars().count() > RECALL_NAME_SHOWN => Recall::Here.phrase(),
+            // Quoted where it would otherwise be two arguments. A scan named by
+            // a path is a path somebody may have put a space in, and a command
+            // that cannot be pasted is not a command.
+            Recall::Scan(scan) if scan.contains(char::is_whitespace) => {
+                format!("zond read '{scan}' --risks")
+            }
+            Recall::Scan(scan) => format!("zond read {scan} --risks"),
+            Recall::Here => String::from("--risks to list them"),
+        }
+    }
 }
 
 /// The ports worth a line, and the notes about what was left out.
@@ -1524,20 +1590,28 @@ fn endpoint(port: &Port) -> String {
 /// Below [`Probable`](Confidence::Probable): a claim the engine made on
 /// evidence it says does not settle the question, such as a vulnerability
 /// matched on the upstream version of a distribution's build, which the
-/// distribution may well have fixed. Shown, since it may be true, and never
-/// counted with the claims that are probably true, since a count is what a
-/// reader acts on.
+/// distribution may well have fixed. Never counted with the claims that are
+/// probably true, since a count is what a reader acts on, and never dropped,
+/// since it may be true: a [summarised](Folding::Summary) listing counts it at
+/// the foot of the block and `-v` draws it, while a listing of
+/// [every](Folding::Every) finding draws it in its own right, after everything
+/// that counts.
 pub(crate) fn is_unverified(confidence: Confidence) -> bool {
     confidence < Confidence::Probable
 }
 
 /// A host's findings, counted the way its header states them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RiskCount {
     /// Findings at least probably true.
     pub settled: usize,
     /// The worst grade among them, where there are any.
     pub worst: Option<Severity>,
+    /// How many of each grade, worst first, and only the grades with any. What
+    /// the line at the head of a block spells: a host's eight risks are one
+    /// number, and *one high, six medium, one info* is what a reader decides
+    /// from.
+    pub by_grade: Vec<(Severity, usize)>,
     /// Findings too unsure to count as risks. See [`is_unverified`].
     pub unverified: usize,
 }
@@ -1555,6 +1629,7 @@ pub(crate) fn host_risks(host: &Host) -> Option<RiskCount> {
         settled: 0,
         worst: None,
         unverified: 0,
+        by_grade: Vec::new(),
     };
     for finding in host.findings().chain(host.ports().flat_map(Port::findings)) {
         if is_unverified(finding.confidence()) {
@@ -1566,8 +1641,19 @@ pub(crate) fn host_risks(host: &Host) -> Option<RiskCount> {
                     .worst
                     .map_or(finding.severity(), |held| held.max(finding.severity())),
             );
+            match count
+                .by_grade
+                .iter_mut()
+                .find(|(grade, _)| *grade == finding.severity())
+            {
+                Some((_, tally)) => *tally += 1,
+                None => count.by_grade.push((finding.severity(), 1)),
+            }
         }
     }
+    // Worst first, the order every other list of findings is in. `Severity`
+    // orders weakest-to-strongest, so the comparison is reversed.
+    count.by_grade.sort_by_key(|(grade, _)| Reverse(*grade));
     (count.settled + count.unverified > 0).then_some(count)
 }
 
@@ -1789,10 +1875,9 @@ pub(crate) struct FindingView {
     /// `80, 631/tcp`, or `host` for a finding about the host itself, padded
     /// likewise.
     pub subject: String,
-    /// The title, as the detection wrote it.
+    /// The title, as the detection wrote it, or the count and phrase a group of
+    /// them reads as.
     pub title: String,
-    /// How many spaces follow the title, so citations land in one column.
-    pub pad: usize,
     /// `CVE-2021-44228`, where the finding cites anything.
     pub reference: Option<String>,
     /// The CVEs it cites, worst first and capped, drawn on a line of its own
@@ -1830,7 +1915,45 @@ pub(crate) struct FindingListing {
     /// one line, and two totals that disagreed about what a finding is would be
     /// worse than either.
     pub withheld: usize,
+    /// How many of each grade those are, worst first, so the line naming them
+    /// can say *1 info* rather than only how many there were.
+    pub withheld_by_grade: Vec<(Severity, usize)>,
+    /// How many findings a [summarised](Folding::Summary) listing left for `-v`:
+    /// the unverified ones, and whatever ran past [`ROWS_SHOWN`]. Counted in
+    /// findings for the reason `withheld` is, and zero in a listing that drew
+    /// them all.
+    pub deferred: usize,
+    /// How many of `deferred` are unverified, so the line saying what is not
+    /// drawn can give the reason rather than only the number.
+    pub deferred_unverified: usize,
 }
+
+/// How much of a host's findings a listing puts on the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Folding {
+    /// Every finding that clears the floor, one row each, the unverified ones
+    /// among them: what `-v` asks for, and what a stream meant for grepping
+    /// wants whatever the verbosity.
+    Every,
+    /// What a person reads first: findings whose detections declare a group
+    /// gathered into one row, the unverified ones left to a count, and whatever
+    /// runs past [`ROWS_SHOWN`] left with them.
+    ///
+    /// Nothing is dropped and nothing is silent: the block says in one line what
+    /// it is holding and which flag prints it. A host running a 2014
+    /// distribution produces a dozen findings, and a reader's first question is
+    /// which two matter; a dozen lines answer it by burying it.
+    Summary,
+}
+
+/// How many rows a [summarised](Folding::Summary) listing draws before it counts
+/// the rest.
+///
+/// Six: enough that an ordinary host with something wrong is drawn whole, and
+/// short enough that the findings do not outgrow the scan they hang under, which
+/// is eight lines for a host with two open ports. A seventh row is rarely the
+/// one a reader was missing; it is where they stop reading rows.
+pub(crate) const ROWS_SHOWN: usize = 6;
 
 /// How a severity reads as an urgency, so a finding borrows the same colours a
 /// certificate's expiry does rather than inventing a second scale.
@@ -1883,6 +2006,16 @@ const SUBJECTS_SPELLED: usize = 3;
 /// itself.
 type Origin = Option<(u16, String)>;
 
+/// What a detection says it covers a weakness together with, where it says so.
+///
+/// Both halves as the detection wrote them: the identity its siblings repeat,
+/// and the phrase the lot of them read as once a count leads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupKey {
+    id: String,
+    summary: String,
+}
+
 /// One finding as it comes off a host, before rows are folded or padded.
 struct Claim {
     /// The port it is about, `None` for one about the host itself.
@@ -1890,6 +2023,8 @@ struct Claim {
     severity: Severity,
     confidence: Confidence,
     title: String,
+    /// The group its detection declared, where it declared one.
+    group: Option<GroupKey>,
     reference: Option<String>,
     /// The CVEs it cites, worst first and capped, drawn under the row.
     cves: Option<String>,
@@ -1909,6 +2044,7 @@ struct Fold {
     severity: Severity,
     confidence: Confidence,
     title: String,
+    group: Option<GroupKey>,
     reference: Option<String>,
     cves: Option<String>,
     evidence: Option<String>,
@@ -1921,6 +2057,17 @@ struct Folded {
     key: Fold,
     /// Where each of them was found, sorted and without repeats.
     found: Vec<Origin>,
+    /// How many findings the row stands for.
+    ///
+    /// The same as the length of `found` for a row folded from one detection
+    /// seen on several ports, and more than it for a row a group gathered: four
+    /// detections on one port are four findings and one origin. Carried rather
+    /// than derived, because every count this module hands out is counted in
+    /// findings, so that it and the host's header are the same arithmetic.
+    weight: usize,
+    /// How many rows a group gathered into this one, `1` for a row that is one
+    /// detection's own.
+    members: usize,
 }
 
 /// The findings a host carries, its own and its ports', worst first.
@@ -1935,7 +2082,12 @@ struct Folded {
 ///
 /// Empty for the ordinary host, which carries no findings at all: nothing here
 /// draws a heading for a host that has nothing wrong with it.
-pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListing {
+pub(crate) fn findings(
+    reader: Reader,
+    host: &Host,
+    floor: Risk,
+    folding: Folding,
+) -> FindingListing {
     let masking = reader.masking(host);
     let mut claims: Vec<Claim> = host
         .findings()
@@ -1950,6 +2102,9 @@ pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListi
     }
 
     let mut folded = fold(claims);
+    if folding == Folding::Summary {
+        folded = gather(folded);
+    }
 
     // What counts first, then worst first. `Severity` orders weakest-to-
     // strongest, so the comparison is reversed; what the row is about breaks
@@ -1967,13 +2122,45 @@ pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListi
     // Held back before the columns are measured, so a row nobody sees does not
     // set the width of the ones they do.
     let mut withheld = 0usize;
+    let mut withheld_by_grade: Vec<(Severity, usize)> = Vec::new();
+    let mut deferred = 0usize;
+    let mut deferred_unverified = 0usize;
+    let mut drawn = 0usize;
     let rows: Vec<(Fold, String, Option<String>)> = folded
         .into_iter()
         .filter_map(|row| {
             if !floor.admits(row.key.severity) {
-                withheld += row.found.len();
+                withheld += row.weight;
+                match withheld_by_grade
+                    .iter_mut()
+                    .find(|(grade, _)| *grade == row.key.severity)
+                {
+                    Some((_, tally)) => *tally += row.weight,
+                    None => withheld_by_grade.push((row.key.severity, row.weight)),
+                }
                 return None;
             }
+
+            // Left for `-v`, and counted rather than dropped. The unverified
+            // first, whatever their grade: the sort has already put them last,
+            // and what a reader acts on is what is probably true. Then the tail
+            // past the rows this listing spends.
+            //
+            // Both only under `Summary`. The floor above is the reader's own
+            // setting and applies whatever the folding, which is why it is
+            // counted apart from these.
+            if folding == Folding::Summary {
+                if is_unverified(row.key.confidence) {
+                    deferred += row.weight;
+                    deferred_unverified += row.weight;
+                    return None;
+                }
+                if drawn == ROWS_SHOWN {
+                    deferred += row.weight;
+                    return None;
+                }
+            }
+            drawn += 1;
 
             let (subject, spelled) = subject(&row.found);
             Some((row.key, subject, spelled))
@@ -1990,29 +2177,18 @@ pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListi
         .map(|(_, subject, _)| subject.chars().count())
         .max()
         .unwrap_or(0);
-    // From the titles that have something after them: a row ending at its title
-    // needs no padding, so a long one that ends there should not push everything
-    // else out to meet it.
-    //
-    // Uncapped, because a cap does not do what it looks like it does. It bounded
-    // the column without bounding the titles, so a title past the cap carried
-    // its own citation out past everybody else's and the column it was meant to
-    // protect was ragged exactly where it mattered. A column is measured from
-    // the things that share it or it is not a column.
-    let title_width = rows
-        .iter()
-        .filter(|(key, ..)| key.reference.is_some() || key.confidence != Confidence::Certain)
-        .map(|(key, ..)| width(&key.title))
-        .max()
-        .unwrap_or(0);
-
+    // No column after the title, and so no width measured for one. A citation
+    // and a confidence used to be padded out to the longest title in the block,
+    // which made one verbose correlation set a right edge for every row that had
+    // anything to say after its own: the block was as wide as its worst line
+    // however short the rest were, and a terminal broke all of them to fit one.
+    // They trail the title now, a row's own length its own business.
     let rows = rows
         .into_iter()
         .map(|(key, subject, ports)| FindingView {
             token: format!("{:<token_width$}", severity_token(key.severity)),
             severity: key.severity,
             subject: format!("{subject:<subject_width$}"),
-            pad: title_width.saturating_sub(width(&key.title)),
             title: key.title,
             reference: key.reference,
             cves: key.cves,
@@ -2028,7 +2204,16 @@ pub(crate) fn findings(reader: Reader, host: &Host, floor: Risk) -> FindingListi
         })
         .collect();
 
-    FindingListing { rows, withheld }
+    // Worst first, as every other list of findings is.
+    withheld_by_grade.sort_by_key(|(grade, _)| Reverse(*grade));
+
+    FindingListing {
+        rows,
+        withheld,
+        withheld_by_grade,
+        deferred,
+        deferred_unverified,
+    }
 }
 
 /// The most CVE identifiers a row names before counting the rest.
@@ -2086,6 +2271,10 @@ fn claim(
         severity: finding.severity(),
         confidence: finding.confidence(),
         title: masking.text(finding.title()).into_owned(),
+        group: finding.group().map(|group| GroupKey {
+            id: masking.text(group.id()).into_owned(),
+            summary: masking.text(group.summary()).into_owned(),
+        }),
         reference,
         cves,
         evidence: (!excerpt.trim().is_empty()).then(|| one_line(&excerpt)),
@@ -2128,6 +2317,7 @@ fn fold(claims: Vec<Claim>) -> Vec<Folded> {
             severity: claim.severity,
             confidence: claim.confidence,
             title: claim.title,
+            group: claim.group,
             reference: claim.reference,
             cves: claim.cves,
             evidence: claim.evidence,
@@ -2139,6 +2329,8 @@ fn fold(claims: Vec<Claim>) -> Vec<Folded> {
             None => rows.push(Folded {
                 key,
                 found: vec![claim.port],
+                weight: 0,
+                members: 1,
             }),
         }
     }
@@ -2146,9 +2338,85 @@ fn fold(claims: Vec<Claim>) -> Vec<Folded> {
     for row in &mut rows {
         row.found.sort();
         row.found.dedup();
+        // After the dedup, since what the row stands for is what is left of it.
+        // One detection cannot fire twice on one port, so this is the number of
+        // findings behind the row either way; it is set from the survivors so
+        // that it stays the number if one ever does.
+        row.weight = row.found.len();
     }
 
     rows
+}
+
+/// Rows whose detections say they cover one weakness between them, gathered.
+///
+/// Four detections read one SSH handshake and each reports a different weak
+/// algorithm in it. Each is separately true and separately fixed, so the engine
+/// keeps four findings and every file format carries four; a person reading a
+/// scan wants the sentence they add up to, which is the one their detections
+/// wrote into a [group](GroupKey).
+///
+/// What gathers: rows of the same group, found on the same subject, that are
+/// alike in whether they count as risks. What does not: a row citing CVEs, which
+/// is a claim too specific to speak for its neighbours, and a group with one
+/// member, which is a row already.
+///
+/// The gathered row takes the worst severity among its members and the least
+/// certain confidence, so nothing is softened by being counted, and keeps a
+/// citation only where every member cites the same one. First-seen order is
+/// kept, as [`fold`] keeps it, because the caller sorts.
+fn gather(rows: Vec<Folded>) -> Vec<Folded> {
+    let mut gathered: Vec<Folded> = Vec::new();
+
+    for row in rows {
+        let joinable = row.key.cves.is_none();
+        let held = joinable
+            .then_some(row.key.group.as_ref())
+            .flatten()
+            .and_then(|group| {
+                gathered.iter_mut().find(|other| {
+                    other.key.group.as_ref() == Some(group)
+                        && other.key.cves.is_none()
+                        && other.found == row.found
+                        && is_unverified(other.key.confidence) == is_unverified(row.key.confidence)
+                })
+            });
+
+        let Some(into) = held else {
+            gathered.push(row);
+            continue;
+        };
+
+        into.key.severity = into.key.severity.max(row.key.severity);
+        into.key.confidence = into.key.confidence.min(row.key.confidence);
+        // Kept only where the members agree: a citation on a gathered row is a
+        // claim about every finding under it, and one member's CWE is not.
+        if into.key.reference != row.key.reference {
+            into.key.reference = None;
+        }
+        if into.key.evidence != row.key.evidence {
+            into.key.evidence = None;
+        }
+        if into.key.remediation != row.key.remediation {
+            into.key.remediation = None;
+        }
+        into.weight += row.weight;
+        into.members += 1;
+    }
+
+    // The title last, once the members are all in: a group reads as its count
+    // and its own phrase, and the count is not known until nothing more can
+    // join. A group that gathered nobody keeps the title its detection wrote,
+    // which is the whole of what it claims.
+    for row in &mut gathered {
+        if row.members > 1
+            && let Some(group) = &row.key.group
+        {
+            row.key.title = format!("{} {}", row.members, group.summary);
+        }
+    }
+
+    gathered
 }
 
 /// What a row is about, and the full port list where the column would not hold
@@ -2196,15 +2464,6 @@ fn spell(ports: &[&(u16, String)]) -> String {
         .map(|(number, proto)| format!("{number}/{proto}"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// How many columns a value the scan chose will occupy once it is printable.
-///
-/// Measured after escaping, because that is what the terminal will be handed: a
-/// title carrying a newline is two characters wider drawn than it is stored, and
-/// a column padded from the stored length would be short by exactly that much.
-fn width(value: &str) -> usize {
-    printable(value).chars().count()
 }
 
 /// A reference as the short identifier a reader recognises.
@@ -4171,7 +4430,7 @@ mod tests {
             "the unverified critical ranks nothing"
         );
 
-        let rows = findings(Reader::default(), &host, Risk::default()).rows;
+        let rows = findings(Reader::default(), &host, Risk::default(), Folding::Every).rows;
         assert_eq!(rows.len(), 2);
         assert!(!rows[0].unverified, "what counts is listed first");
         assert!(rows[1].unverified);
@@ -4234,7 +4493,7 @@ mod tests {
         host.add_port(port);
 
         let printed = |reader: Reader| {
-            findings(reader, &host, Risk::default())
+            findings(reader, &host, Risk::default(), Folding::Every)
                 .rows
                 .iter()
                 .filter_map(|row| row.reference.clone())

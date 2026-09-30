@@ -97,6 +97,15 @@ impl Verbosity {
     /// readings behind it are the working, and a person only wants those when
     /// they are checking the answer rather than using it. That is what asking
     /// for detail means.
+    ///
+    /// The risks block reads the same distinction one step further out. What the
+    /// scan concluded is the findings it is at least fairly sure of, and those
+    /// are drawn; a finding the engine says it could not settle is a candidate
+    /// rather than a conclusion, and is counted by default and drawn here. So is
+    /// the tail of a list long enough to bury its own top, and so is each member
+    /// of a group its detections said reads as one line. None of it is silent:
+    /// the block says on its last line how many it is holding and that this flag
+    /// prints them.
     #[must_use]
     pub(crate) fn explains(self) -> bool {
         !self.quiet && self.detail >= 1
