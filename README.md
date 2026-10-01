@@ -19,11 +19,9 @@
   Linux, macOS and Windows. Currently in beta.
 </p>
 
-<!--
-  Showcase goes here. For an mp4, drag the file into a GitHub comment or
-  issue box, copy the https://github.com/user-attachments/assets/... link it
-  produces, and paste that link on its own line in place of this comment.
--->
+<p align="center">
+  <video src="https://github.com/zond-rs/zond/raw/main/public/demo.mp4" width="100%" controls muted playsinline></video>
+</p>
 
 ## Install
 
