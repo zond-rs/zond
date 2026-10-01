@@ -329,14 +329,21 @@ pub(crate) fn newest_if_latest(id: &str) -> Result<String, Error> {
         return Ok(id.to_owned());
     }
 
-    read()?
-        .entries
-        .first()
-        .map(|entry| entry.manifest.id.clone())
-        .ok_or(Error::NoSuchJournal {
-            id: id.to_owned(),
-            known: 0,
-        })
+    newest(&read()?.entries).ok_or(Error::NoSuchJournal {
+        id: id.to_owned(),
+        known: 0,
+    })
+}
+
+/// The id of the most recent record, as the name of the directory the listing
+/// found it in.
+///
+/// The name, not the id its manifest gives: a resume joins what this returns to
+/// the journal root, and a manifest is a file anyone who can write there wrote,
+/// whose id could name another record or a path out of the root.
+fn newest(entries: &[Entry]) -> Option<String> {
+    let directory = &entries.first()?.directory;
+    Some(directory.file_name()?.to_string_lossy().into_owned())
 }
 
 /// The journal `id` names, by its whole id, `latest`, or any prefix that names
@@ -606,6 +613,37 @@ mod tests {
             4 + 98 + 1,
             "with -v every one is named"
         );
+    }
+
+    /// The most recent record is resumed by the directory the listing found it
+    /// in, never by the id its manifest claims, which may lead anywhere.
+    #[test]
+    fn the_latest_record_is_named_by_its_directory() {
+        use zond_engine::Exclusions;
+        use zond_engine::journal::lock::LockState;
+        use zond_engine::journal::manifest::{JournalManifest, Plan};
+        use zond_engine::system::privilege::Privilege;
+
+        let ips = "192.0.2.0/24".parse().expect("a range");
+        let manifest = JournalManifest::new(
+            "../../../../etc/zond",
+            &Plan::discovery(&ips, &Exclusions::none(), false),
+            Privilege::Raw,
+            "192.0.2.0/24",
+        );
+        let entry = Entry::new(
+            PathBuf::from("/journals/06GAAAAAAAAAAAAA"),
+            manifest,
+            None,
+            LockState::Free,
+        );
+
+        assert_eq!(
+            newest(&[entry]).as_deref(),
+            Some("06GAAAAAAAAAAAAA"),
+            "the manifest's id was taken as the record's name"
+        );
+        assert_eq!(newest(&[]), None);
     }
 
     /// A record the listing only counted can still be deleted by the name it

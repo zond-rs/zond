@@ -359,7 +359,17 @@ impl Resumed {
 pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result<Resumed, Error> {
     let id = journal::newest_if_latest(id)?;
 
-    let directory = paths::scan(&id).ok_or(Error::NoJournalDirectory)?;
+    let unknown = || Error::NoSuchJournal {
+        id: id.clone(),
+        known: paths::root()
+            .and_then(|root| store::list(&root).ok())
+            .map_or(0, |listing| listing.entries.len()),
+    };
+    // Something that is not an id names no record, and is told as one nobody recorded.
+    let directory = paths::scan(&id).map_err(|error| match error {
+        paths::ScanPathError::NotAnId(_) => unknown(),
+        _ => Error::NoJournalDirectory,
+    })?;
 
     let opened = if take_over {
         Journal::take_over(&directory, Privilege::current())
@@ -376,12 +386,7 @@ pub(crate) fn reopen(id: &str, counted: &'static str, take_over: bool) -> Result
         OpenError::Journal(JournalError::Io(missing))
             if missing.kind() == std::io::ErrorKind::NotFound =>
         {
-            Error::NoSuchJournal {
-                id: id.clone(),
-                known: paths::root()
-                    .and_then(|root| store::list(&root).ok())
-                    .map_or(0, |listing| listing.entries.len()),
-            }
+            unknown()
         }
         other => Error::JournalOpen(other),
     })?;
