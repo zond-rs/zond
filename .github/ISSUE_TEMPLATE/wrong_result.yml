@@ -1,13 +1,12 @@
 name: Wrong result
-description: A vulnerability, service, version or OS that zond got wrong, or missed.
+description: A vulnerability, service, version or OS that zond got wrong or missed.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        These reports are how the fingerprints and the vulnerability matching get
-        better, so thank you. The more precisely you can say what's really there,
-        the easier it is to fix.
+        Thank you. Reports like this are how the matching gets better.
+        Scan output can include addresses you'd rather not post. `--redact` hides them.
   - type: textarea
     id: reported
     attributes:
@@ -21,22 +20,15 @@ body:
     attributes:
       label: What's actually there
       description: |
-        And how you know. For a package, the output of `dpkg -l <package>` or
-        `rpm -q <package>` on the target helps a lot. For a false vulnerability,
-        a link to the distribution's advisory saying it's fixed.
+        And how you know. For a package, `dpkg -l <package>` or `rpm -q <package>`
+        on the target helps a lot. For a false vulnerability, a link to the advisory saying it's fixed.
     validations:
       required: true
-  - type: textarea
-    id: banner
-    attributes:
-      label: Banner or response
-      description: If you have it, what the service sends. `zond scan <target> -p <port> -vv` shows it.
-      render: text
   - type: textarea
     id: command
     attributes:
       label: Command and version
-      description: The command you ran, and the output of `zond --version`.
+      description: The command you ran and the output of `zond --version`.
       render: text
     validations:
       required: true

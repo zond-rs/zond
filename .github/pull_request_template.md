@@ -4,12 +4,11 @@
 
 Fixes #
 
-## How you checked it
+## How you tested it
 
-<!-- The commands you ran, and on what. If it changes what zond sends or prints, show the before and after. -->
+<!-- The commands you ran, and on what. If the output changes, show before and after. -->
 
 - [ ] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass
-- [ ] `--pipe` output and exit codes are unchanged, or the change is described above
+- [ ] `--pipe` output and exit codes are unchanged, or the change is explained above
 
-On your first pull request the CLA bot will ask you to sign the
-[Contributor License Agreement](https://github.com/zond-rs/zond/blob/main/CLA.md) with a comment.
+On your first pull request, a bot will ask you to sign the [CLA](https://github.com/zond-rs/zond/blob/main/CLA.md). It's a one-line comment.

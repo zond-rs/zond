@@ -5,13 +5,7 @@ body:
   - type: textarea
     id: question
     attributes:
-      label: Question
-      description: What you're trying to do, and what you've tried. `zond help` and `zond <command> --help` cover a lot.
+      label: Your question
+      description: What you're trying to do and what you've tried so far.
     validations:
       required: true
-  - type: textarea
-    id: command
-    attributes:
-      label: Command and output
-      description: If it's about a particular run.
-      render: text
