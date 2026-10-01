@@ -19,9 +19,7 @@
   Linux, macOS and Windows. Currently in beta.
 </p>
 
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/78750698-2ff1-4e2b-bfb9-837399a7482b">▶ Watch a scan (57 seconds)</a>
-</p>
+https://github.com/user-attachments/assets/59a37a4e-bb89-4310-8b82-8230c41bc43c
 
 ## Install
 
