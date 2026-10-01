@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn naming_nothing_is_how_a_comparison_reaches_the_terminal() {
-        assert!(destinations(&[]).expect("no destinations").is_empty());
+        assert_eq!(destinations(&[]).expect("no destinations"), Vec::new());
     }
 }
 
