@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <video src="https://github.com/zond-rs/zond/raw/main/public/demo.mp4" width="100%" controls muted playsinline></video>
+  <a href="https://github.com/zond-rs/zond/blob/main/public/demo.mp4">▶ Watch a scan (57 seconds)</a>
 </p>
 
 ## Install
