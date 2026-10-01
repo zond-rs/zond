@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zond-rs/zond/blob/main/public/demo.mp4">▶ Watch a scan (57 seconds)</a>
+  <a href="https://github.com/user-attachments/assets/78750698-2ff1-4e2b-bfb9-837399a7482b">▶ Watch a scan (57 seconds)</a>
 </p>
 
 ## Install
