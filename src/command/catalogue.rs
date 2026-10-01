@@ -495,6 +495,6 @@ mod tests {
         });
 
         assert_eq!(line, "--search grafana --class dos --port 3000");
-        assert!(asked_for(&CatalogueArgs::default()).is_empty());
+        assert_eq!(asked_for(&CatalogueArgs::default()), "");
     }
 }

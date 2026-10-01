@@ -4108,7 +4108,7 @@ mod tests {
         assert_eq!(spoken_vendor("Ltd"), "Ltd");
         assert_eq!(spoken_vendor("Trading Ltd"), "Trading");
         assert_eq!(spoken_vendor("Group Holdings Ltd"), "Group");
-        assert!(!spoken_vendor("Inc Inc Inc").is_empty());
+        assert_ne!(spoken_vendor("Inc Inc Inc"), "");
     }
 
     /// A vendor with nothing to trim is left exactly as it was.
@@ -4979,7 +4979,10 @@ mod tests {
 
     #[test]
     fn a_host_that_was_never_port_scanned_has_no_port_lines() {
-        assert!(ports(Reader::default(), &host(1), true, Showing::default()).is_empty());
+        assert_eq!(
+            ports(Reader::default(), &host(1), true, Showing::default()),
+            Vec::<String>::new()
+        );
         assert_eq!(closed_ports(&host(1)), None);
     }
 
