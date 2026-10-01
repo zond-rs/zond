@@ -35,6 +35,12 @@ sudo apt install ./zond_*.deb
 sudo dnf install ./zond-*.rpm
 ```
 
+**Arch Linux:** from the [AUR](https://aur.archlinux.org/packages/zond).
+
+```bash
+yay -S zond
+```
+
 **macOS:**
 
 ```bash
