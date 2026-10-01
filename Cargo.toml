@@ -109,7 +109,7 @@ libcap = "*"
 # distributions' security feeds with; it runs only when that command is run. `export-csv`, `export-html` and `export-nmap`
 # add no dependencies at all; the JSON pair shares the `serde_json` the journal
 # already pulls in.
-zond-engine = { version = "0.19.0", path = "../zond-engine", features = [
+zond-engine = { version = "0.19.0", features = [
     "fetch",
     "import-distro",
     "import-kev",

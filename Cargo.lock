@@ -1863,7 +1863,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3032,6 +3032,8 @@ dependencies = [
 [[package]]
 name = "zond-engine"
 version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25e29b23c04e5c40eb2f20578bf4aa33127eb87864bc8daae30ed820b2ba5f05"
 dependencies = [
  "aho-corasick",
  "async-trait",
