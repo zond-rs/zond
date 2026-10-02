@@ -1,43 +1,21 @@
 [package]
-# The crate is `zond-cli`; the binary it installs is `zond`. `zond` on crates.io
-# is an unrelated crate somebody else owns, so the package cannot have that
-# name. Nothing about what a user types changes, because the name that reaches
-# their PATH is the `[[bin]]` one below.
 name = "zond-cli"
-# The engine's line, so that `zond --version` and the engine it wraps are one
-# number a person can compare. Not the same field as the dependency requirement
-# below, which is what actually decides which engine is built against.
 version = "0.20.0"
 edition = "2024"
-# The engine's minimum, because this crate cannot compile on a toolchain that
-# cannot compile what it wraps. Raising it here without raising it there would
-# be a promise about a dependency this crate does not control.
 rust-version = "1.93"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/zond-rs/zond"
 homepage = "https://zond.rs"
-# None of these is code, and each would otherwise ride along in every
-# published tarball. The advisory snapshot is Canonical's data under CC BY-SA
-# 4.0 and ships only in release builds; see `build.rs`.
 exclude = ["audit/", ".github/", "windows/", "assets/advisories/"]
 description = "The official command-line interface to Zond. Discovers hosts, scans ports, fingerprints services, and reports what changed between two scans."
 keywords = ["network", "scanner", "portscan", "discovery", "security"]
 categories = ["command-line-utilities", "network-programming"]
 readme = "README.md"
 
-# What a user types, and deliberately not the package name. `cargo install
-# zond-cli` puts `zond` on the PATH.
 [[bin]]
 name = "zond"
 path = "src/main.rs"
 
-
-# What `cargo deb` builds from, driven by the `release` workflow.
-#
-# The package is named for the command rather than for the crate. `zond-cli`
-# exists because crates.io already has an unrelated `zond`, and that constraint
-# does not follow the binary onto a Debian system, where `apt install ./zond_*`
-# and the thing it puts on the PATH should read as the same program.
 [package.metadata.deb]
 name = "zond"
 maintainer = "hollowpointer <hollowpointer@pm.me>"
@@ -54,18 +32,7 @@ Scans are journalled while they run, so one that was interrupted can be \
 continued and two of them can be compared. Reports are written as JSON, JSONL, \
 CSV, HTML, or nmap-compatible XML, for the pipelines that already read those.
 """
-# `$auto` reads the linked libraries out of the built binary. It is the only way
-# to get the libc constraint right for both architectures this ships for, and it
-# resolves libpcap to whatever the build host calls it: a package built on a
-# post-t64 runner depends on `libpcap0.8t64`, which is the name Kali and Debian
-# trixie use. Building for anything older than that transition means naming
-# `libpcap0.8` here instead.
-#
-# `libcap2-bin` is named rather than discovered, because nothing in the binary
-# links it. It is there for the `setcap` the postinst calls.
 depends = "$auto, libcap2-bin"
-# The pages and scripts under `target/assets` are written by `zond __generate`
-# in the release workflow, before this is packaged.
 assets = [
     ["target/release/zond", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/zond/README.md", "644"],
@@ -78,11 +45,6 @@ assets = [
 ]
 maintainer-scripts = "debian/"
 
-# The Fedora package, built by `cargo generate-rpm` in release.yml on the oldest
-# Fedora still carried, so its glibc floor admits every current one. The shared
-# libraries, libpcap among them, are read off the binary by rpm's own
-# find-requires; `libcap` is named because `setcap` comes from it and nothing in
-# the binary links it.
 [package.metadata.generate-rpm]
 name = "zond"
 summary = "Network scanner that maps hosts, ports and services and says what is wrong with them"
@@ -102,13 +64,7 @@ post_install_script = "rpm/post.sh"
 [package.metadata.generate-rpm.requires]
 libcap = "*"
 
-
 [dependencies]
-# Every format the engine can write, because a scanner nobody can get results
-# out of is not much of a scanner. `fetch` is what `zond update` downloads the
-# distributions' security feeds with; it runs only when that command is run. `export-csv`, `export-html` and `export-nmap`
-# add no dependencies at all; the JSON pair shares the `serde_json` the journal
-# already pulls in.
 zond-engine = { version = "0.20.0", path = "../zond-engine", features = [
     "fetch",
     "import-distro",
@@ -120,64 +76,28 @@ zond-engine = { version = "0.20.0", path = "../zond-engine", features = [
 ] }
 
 clap = { version = "4.5", features = ["derive", "wrap_help", "string"] }
-# Shell completions and man pages, both generated from the same definition the
-# parser is, so neither can describe a flag the parser does not have. The
-# clap project's own, and the only way to get either without writing them by
-# hand and keeping them in step.
 clap_complete = "4.5"
 clap_mangen = "0.2"
-# Only the runtime and the signal handler. The engine brings the rest of tokio
-# with it; naming `full` here would say this crate needs it, and it does not.
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
-# No `fmt`, no `ansi`, no `env-filter`. The engine's diagnostics carry a
-# `verbosity` field that decides whether a line is shown at all, and no
-# off-the-shelf formatter knows that convention, so `diagnostics` writes its own
-# layer and needs only the registry to hang it on.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
 thiserror = "2.0"
-# This crate's own settings document. The engine reads its file with the same
-# crate; parsing two files with two TOML implementations would mean two answers
-# about what a comment or an escape means.
 toml = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 
-# Reading a single keypress means taking the terminal out of line-buffered mode,
-# which is a `tcsetattr` call. `rustix` wraps it safely, so reading a key needs
-# no `unsafe` here, where raw `libc` would. Unix only, because the termios call
-# is: on anything else the key watcher is compiled out and Ctrl-C remains the
-# way to stop a scan. `process` is the same reasoning for `setrlimit`, which
-# raises the binary's own file limit before a scan sizes itself from it.
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["termios", "stdio", "process"] }
 
-# The classic Windows console prints escape sequences as text until a program
-# asks it to interpret them, and asking is `GetConsoleMode` and
-# `SetConsoleMode`, which std does not wrap. The engine's version, so the build
-# holds one copy, and the console feature alone.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
 
 [lints.rust]
 unreachable_pub = "warn"
-# Denied rather than forbidden, because `render::terminal` has to call the
-# Windows console, which has no safe wrapper, and `forbid` cannot be lifted even
-# for one module. That module lifts it for itself; anywhere else `unsafe` still
-# fails the build.
 unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# Every public error type here is `#[non_exhaustive]`-shaped prose already, and
-# the module docs carry the failure modes. Demanding an `# Errors` heading on
-# each function repeats them without adding anything.
 missing_errors_doc = "allow"
-# Protocol names are words. `ICMPv6`, `ARP` and `DNS` in a sentence are the
-# nouns this program is about, not identifiers, and backticking them turns
-# ordinary prose into a wall of code spans.
 doc_markdown = "allow"
-# What this lint asks for is `Duration::from_days` and `Duration::from_hours`,
-# and both are still unstable, so every site it fires on is one it cannot fix on
-# the toolchain this crate compiles against.
 duration_suboptimal_units = "allow"
